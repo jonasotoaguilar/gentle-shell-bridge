@@ -107,6 +107,41 @@ Capturing an array reference is also why a marker on the captured array (non-enu
 via `Object.defineProperty`) matters: a second factory call for the same menu hands over
 the same array, and rows must be injected once.
 
+A mapped array counts as row-like when it holds at least three objects that each expose a
+callable `action`. The threshold comes from the probe's verified run against the real menu;
+the cost is explicit: a menu with fewer than three host rows would not be captured, and the
+`/bridge-status` command reports `uncaptured (no-capture)` rather than passing silently.
+
+### Capture-selection rule
+
+Each wrapped `custom` call owns one capture *session* with its own candidate list, and
+the probe records a mapped array into the innermost active session only. That fixes
+the target without guessing:
+
+- A nested `custom` call — from the host factory or from a provider's own `rows()` —
+  gets its own session, so it can never steal the outer menu's capture, and the nested
+  menu receives its own injection.
+- A nested session whose factory throws never resolves, so nothing is injected into
+  it; the outer session continues and resolves its own array.
+- When one session captures **more than one** row-like array (an incidental
+  row-shaped array before the menu, for example), the bridge does not guess: the
+  outcome is `uncaptured (ambiguous)` and nothing is injected.
+
+Arming is idempotent per target *and per function*: the non-enumerable marker holds the
+exact wrapper installed and is read as an own property, so a rebind that gives an
+instance a new `custom` always rearms even when it inherits an already-wrapped
+prototype.
+
+Two boundaries around that rule:
+
+- The probe is installed around the **factory invocation**, not around the host call, so a
+  host that resolves its factory in a later microtask (`Promise.resolve().then(factory)`)
+  is still captured. A factory that itself returns a promise remains the documented
+  unsupported case, `uncaptured (async-factory)`.
+- Every wrapper carries the generation it was armed in. `disableCaptureBackend()` bumps the
+  generation, so a wrapper that foreign code kept a reference to becomes a pass-through
+  instead of injecting into a menu after the backend was switched off.
+
 ## 6. Why one bridge beats N wrappers
 
 Two independent map-swapping wrappers chain badly. Whichever installs its patch last sees
@@ -119,7 +154,7 @@ trigger further UI work), and fans the single capture out to every registered pr
 
 1. snapshot the provider list in subscription order,
 2. build each provider's rows independently, inside its own `try`,
-3. drop a provider's rows on throw, record the failure for `status`, continue,
+3. drop a provider's rows on throw, record the failure for `/bridge-status`, continue,
 4. push the surviving rows into the captured array and invalidate once.
 
 Failure isolation is per provider, so a broken plugin costs its own rows and nothing else:
@@ -137,6 +172,13 @@ documents the consequence directly — every extension gets a copy of any import
 The npm package is a typed facade over that process-global bus. Registration, diagnostics
 and the capture marker all resolve through the same `Symbol.for` slot, so three providers
 loaded from three copies of the package see one bus.
+
+The bridge's own key is `Symbol.for("gentle-shell-bridge.providers")` for the registration
+list, with sibling slots for backend state and markers (`…capture.state.v1`,
+`…capture.wrapped.v1`, `…capture.injected.v1`, `…hook.state.v1`, `…hook.armed.v1`,
+`…store.state.v1`). The host key `Symbol.for("gentle-pi.customize-row-providers")` is only
+ever **read**: the bridge pushes one fan-out provider into it when a host exposes one, and
+otherwise leaves the slot absent.
 
 ## 8. Row grouping semantics the bridge relies on (it does not re-implement them)
 
@@ -172,25 +214,62 @@ surface. The package replaces all three.
 
 ## 10. Detection and reporting
 
-Every branch that can end with "no rows appeared" is a reportable outcome on the `status`
+Every branch that can end with "no rows appeared" is a reportable outcome on the `/bridge-status`
 command: armed but never captured, captured a row array that failed the shape check,
 provider threw, provider returned nothing, duplicate `category` + `setting` across
 providers. Silent success is not a valid state.
+
+## 11. Backend selection and module boundaries
+
+Arming happens once per `ctx.ui` object, from `session_start` in `src/extension.ts`. The
+order is fixed: if `globalThis[Symbol.for("gentle-pi.customize-row-providers")]` exists and
+is usable — a plain array, or an object with a callable `register` — the bridge pushes one
+fan-out provider and patches nothing at all. A present-but-unusable registry — or one that
+does not accept the provider, because `push` did nothing, `register` returned `false`, or
+either threw — is reported as `fallback-capture` and the capture backend is used instead,
+never silently ignored. Dedupe does not mutate the host registry: identity in a
+`WeakSet` in the process-global state is authoritative, so a frozen registry still gets
+exactly one provider across arms and package copies. When the host removes the slot,
+diagnostics stop reporting `hook`.
+
+| Module | Owns |
+| --- | --- |
+| `src/index.ts` | the plugin-facing API: `registerRows`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, types |
+| `src/extension.ts` | the Pi entry from `pi.extensions`: `session_start` arming and the `/bridge-status` command |
+| `src/arm.ts` | backend selection and the arm result |
+| `src/capture.ts` | the single `Array.prototype.map` patch and the captured array |
+| `src/hook.ts` | the host-registry probe and the one fan-out provider |
+| `src/bus.ts` | the `globalThis` provider list and its ordered snapshot |
+| `src/rows.ts` | the one row builder both backends call, with per-provider isolation |
+| `src/store.ts` | `createStore`, the namespaced path and the atomic write |
+| `src/status.ts` | the `/bridge-status` text |
+| `src/config.ts`, `src/types.ts` | config-home resolution; the row, provider and context types |
+
+Because both backends call `src/rows.ts`, a plugin sees the same `registerRows` semantics on
+either one. Because the arming markers live on the target objects and the state slots live on
+`globalThis`, a second copy of the package arms nothing new and reads the same diagnostics.
 
 ## Limits
 
 - **Internals, not an API.** Everything here depends on one constructor line, one adapter
   shape and one call chain in code gentle-shell does not export. No upstream row-provider
   hook exists today.
+- **The hook backend is unverified.** `Symbol.for("gentle-pi.customize-row-providers")` is
+  accepted as a plain array or an object with a callable `register`, and anything else is
+  reported as unusable so the capture backend takes over. No host has been observed emitting
+  that registry, so the pushed provider's shape (`{ id, rows }`) is an inference.
 - **`Array.prototype.map` is patched**, briefly: one synchronous factory call, restored in
   `finally`. A callback that stores the patched function for later use is out of scope;
   nothing in the observed chain does that.
 - **Capture is heuristic.** A menu that builds rows through a different array (or not at
   all) yields no capture. Reported, never silent — but not fixed.
-- **No new categories.** `CustomizeRow.category` is a closed union of existing categories,
-  so the bridge adds rows only to categories gentle-shell already renders.
-- **No automated tests.** The evidence is one manual TUI run plus source reading; the
-  extraction has not yet been exercised by a test suite.
-- **Async factories are assumed, not exercised.** `Promise.resolve(factory(...))` accepts a
+- **No new categories.** The renderer's `category` is a closed union of existing categories
+  (`lib/visual-customize-view.ts:105`) while the bridge's `CustomizeRow.category` is a
+  `string`, so a category gentle-shell does not already render renders nothing.
+- **Tests exercise a fake host, not the TUI.** 115 tests run under `node --test`; the
+  end-to-end ones drive a fake host that models `gentle-shell.ts:3550-3562`. The technique
+  itself is verified in the real TUI only by the reference probe.
+- **Async factories are reported, not supported.** `Promise.resolve(factory(...))` accepts a
   promise (`interactive-mode.ts:3136`), but the capture window closes with the synchronous
-  call, so a factory that builds its rows in a later microtask is unproven.
+  call. A promise-returning factory is returned untouched and recorded as
+  `uncaptured (async-factory)`, so no rows are injected; this is a test case, not a fix.

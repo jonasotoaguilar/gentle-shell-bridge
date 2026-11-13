@@ -1,7 +1,7 @@
 # ADR 0001 — Stateless composition, with an optional per-plugin store
 
-- **Status:** accepted for the extraction; not implemented yet (this repository is
-  documentation only).
+- **Status:** accepted for the extraction; implemented in `src/store.ts` and exercised by the
+  test suite.
 - **Context:** [contract.md](contract.md), [architecture.md](architecture.md)
 - **Deciders:** package author and gentle-shell maintainers.
 
@@ -40,6 +40,12 @@ zero boilerplate gets:
   target, so a crash mid-write cannot truncate the live file;
 - a schema version field (integer `schemaVersion`, currently `1`) so a future shape change
   can migrate instead of guessing;
+- a document shape of `{ "schemaVersion": 1, "values": { … } }`, decided during
+  implementation: the `values` envelope keeps a plugin key from ever colliding with
+  `schemaVersion`;
+- `pluginId` validation before any filesystem access: one non-empty path segment, no
+  separators, no `.` or `..`, and a resolved path that cannot leave
+  `<config home>/gentle-shell-bridge`;
 - read/write accessors (`get(key, fallback)`, `set(key, value)`) scoped to that one file.
 
 **3. A plugin may keep using its own file** — gentle-shell plugins do this today, e.g.
@@ -71,13 +77,22 @@ at registration produces a stale `●` and the diagnostics command will not dete
   write contention and no cross-plugin lock protocol to design.
 - Duplicate work is accepted: N plugins may each implement a small atomic-write helper.
   The alternative was N plugins contending on one file owned by the bridge.
-- A malformed store file is reported through `status` and reads fall back to the plugin's
-  defaults; the bridge does not repair or delete the file, and a later `set` writes a valid
-  document.
+- A malformed store file is reported through `/bridge-status` and reads fall back to the
+  plugin's defaults; the bridge does not repair or delete the file, and a later `set` writes
+  a valid document. Existing `values` are carried into that write **only** when the file was
+  a usable `schemaVersion: 1` document (so a partially written file keeps its other keys).
+  For an unknown `schemaVersion` the write stores only the keys the caller set and records
+  the discarded payload as a store problem: the bridge cannot know what a future schema's
+  payload means, so re-labelling it as schema 1 would be a lie about its format, and
+  silently destroying it while pretending it is valid would be worse than reporting it.
+  Foreign top-level keys are always dropped. A reported problem stays on record until a
+  write resolves it, so reading the repaired file cannot erase it from `/bridge-status`.
 - A plugin that keeps its own file gets no migration help from the bridge — this is the
   documented cost of the opt-in helper.
-- The bridge acquires disk-write code it must test; if `createStore` proves to add more
-  risk than boilerplate it removes, it can be dropped without changing `registerRows`.
+- The bridge acquires disk-write code it must test, and it does test it (round-trip,
+  malformed file, atomicity, path rejection on temporary directories); if `createStore`
+  proves to add more risk than boilerplate it removes, it can be dropped without changing
+  `registerRows`.
 
 ## Alternatives rejected
 
@@ -100,17 +115,18 @@ leaves existing plugin files untouched.
 ## Open questions
 
 - Should `createStore` ship at all in the first release, or follow once a second plugin
-  needs it? Deferring is compatible with this decision; nothing in `registerRows` depends
-  on the store.
+  needs it? — **Settled during implementation: it ships.** Deferring would have been
+  compatible with this decision; nothing in `registerRows` depends on the store.
 - Whether migrations beyond `schemaVersion: 1` belong in the bridge or in the plugin.
 - Whether a plugin that keeps its own file should be able to *declare* that path to
-  `status` for diagnostics only. No read, no write — purely visibility.
+  `/bridge-status` for diagnostics only. No read, no write — purely visibility.
 
 ## Limits
 
 - No file locking is specified: atomic rename prevents torn writes, not lost updates from
   two processes editing the same plugin file. A plugin that runs in parallel sessions must
   accept last-writer-wins or guard its own writes.
-- `createStore` has not been implemented or exercised; its behaviour above is the intended
-  contract, not observed output.
+- `createStore` is implemented and tested against temporary directories, including the
+  malformed-file path; it has not been exercised inside a running Pi session, and it has no
+  cross-process locking (see the first limit).
 - Secrets do not belong in these files; the store provides no redaction.

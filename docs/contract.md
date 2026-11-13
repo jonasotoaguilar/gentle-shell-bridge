@@ -18,6 +18,11 @@ registration instead of stacking rows.
 Registration does **not** open the menu. Rows are built when a menu is actually
 constructed.
 
+The package's public entry exports exactly `registerRows`, `createStore`,
+`STORE_SCHEMA_VERSION`, `VERSION` and the row/provider/store types. `snapshotProviders` is
+**internal**: it exists so the bridge's own backends can read one ordered list, and it is not
+part of this contract.
+
 ## 2. Provider
 
 ```ts
@@ -120,15 +125,16 @@ determined by insertion order:
 Recommended policy: **namespace the `setting`** with the plugin's name, e.g.
 `"Loon → Banner source"`. Namespacing makes collisions impossible by construction and
 keeps each line's meaning intact. The bridge warns on duplicate `category` + `setting`
-pairs and reports them through `status`; it does not rename rows, because a row's setting
-name is its identity in the renderer.
+pairs and reports them through `/bridge-status`, comparing the rows of the last menu build
+(`no build yet` before the first build); it does not rename rows, because a row's
+setting name is its identity in the renderer.
 
 ## 7. Failure isolation
 
 A provider that throws while its rows are built loses its rows and nothing else:
 
 - the menu still opens, with the other providers' rows;
-- the failure is recorded as the last failure for `status`, with the provider `id` and the
+- the failure is recorded as the last failure for `/bridge-status`, with the provider `id` and the
   error message;
 - the remaining providers still apply, in order.
 
@@ -137,16 +143,18 @@ rejection from `action()`. Both sync throws and async rejections are routed by t
 `withBusy()` to `options.onError` (`lib/visual-customize-view.ts:224-235`), which
 gentle-shell already wires to an error notification; the menu stays usable.
 
-## 8. Diagnostics: `status`
+## 8. Diagnostics: `/bridge-status`
 
-One command, `status`, reporting:
+One command, `/bridge-status`, reporting:
 
 | Field | Meaning |
 | --- | --- |
 | Providers | every registered provider, `id` and `category`, in subscription order |
-| Backend | which interception backend is active |
+| Backend | which interception backend is active: `hook` or `capture` |
 | Last capture | outcome of the most recent menu build, with the number of rows injected |
 | Last failures | most recent provider failures: `id`, message, and whether rows were dropped |
+| Store problems | store files this process could not use, with the plugin id and the reason |
+| Duplicate settings | every `category` + `setting` pair contributed by more than one provider in the rows of the last menu build; `no build yet` before the first build |
 
 A menu that opened without the bridge's rows must show up here — armed-but-uncaptured,
 shape mismatch, or provider failure. That is the contract's answer to "the plugin is
@@ -157,7 +165,16 @@ installed but nothing appeared".
 The bridge composes rows; it does not own preferences. A plugin reads and writes its own
 state. `createStore(pluginId)` is an **optional** helper for a namespaced file with atomic
 writes and a schema version; a plugin may keep its own file instead, and the bridge never
-reads or writes that file. Rationale and rejected alternatives: [state.md](state.md).
+reads or writes that file.
+
+The document is `{ "schemaVersion": 1, "values": { … } }`. `values` is an envelope, so a
+plugin key cannot collide with `schemaVersion`. The file lives at
+`<bridge config home>/<pluginId>.json`, where `<bridge config home>` is `<gentle config
+home>/gentle-shell-bridge`; `pluginId` is rejected before it reaches the filesystem unless
+it is one non-empty path segment. A malformed file, or one whose `schemaVersion` is not `1`,
+reads as empty and is reported by `/bridge-status`; the file is not repaired or deleted, and
+a later `set` writes a valid document that carries over existing `values` entries while
+dropping foreign top-level keys. Rationale and rejected alternatives: [state.md](state.md).
 
 ## Limits
 

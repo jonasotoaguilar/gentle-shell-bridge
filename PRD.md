@@ -43,16 +43,22 @@ behind the adapter.
 
 ## Requirements
 
-| ID | Requirement | Contract |
-| --- | --- | --- |
-| R1 | `registerRows(provider)` accepts providers and returns a disposer that removes exactly that provider's rows. | `registerRows`, provider shape |
-| R2 | Providers are evaluated lazily when the menu is built, in subscription order, with a context carrying at least the active theme and the resolved config home. | Provider `rows(ctx)`, ordering |
-| R3 | The bridge supports every row kind gentle-shell's renderer understands: `category`, `label`, `choice`, `preview`, `visible`, `keyhint`, `action`. | Row kinds |
-| R4 | A toggle is expressed as consecutive rows sharing `choice.setting`, and works with the renderer's own `●`/`○` and arrow/Enter handling. | Toggle recipe |
-| R5 | Arm-time state is idempotent: repeated `session_start`, rebinds and double loads never double-wrap or double-inject. | Idempotency |
-| R6 | A throwing provider loses its rows, is reported, and never breaks the menu or other providers. | Failure isolation |
-| R7 | A diagnostics command reports providers, active backend, last capture outcome and last failures. | `status` |
-| R8 | Composition is stateless; persistence is the plugin's, with an optional namespaced store helper. | `createStore`, [docs/state.md](docs/state.md) |
+| ID | Requirement | Contract | Status |
+| --- | --- | --- | --- |
+| R1 | `registerRows(provider)` accepts providers and returns a disposer that removes exactly that provider's rows. | `registerRows`, provider shape | Implemented; unit tests plus the end-to-end suite |
+| R2 | Providers are evaluated lazily when the menu is built, in subscription order, with a context carrying at least the active theme and the resolved config home. | Provider `rows(ctx)`, ordering | Implemented; `ctx` carries the factory's theme and the resolved config home, tested |
+| R3 | The bridge supports every row kind gentle-shell's renderer understands: `category`, `label`, `choice`, `preview`, `visible`, `keyhint`, `action`. | Row kinds | Implemented as typed pass-through fields; exercised against the fake host, not the real renderer |
+| R4 | A toggle is expressed as consecutive rows sharing `choice.setting`, and works with the renderer's own `●`/`○` and arrow/Enter handling. | Toggle recipe | Implemented; the end-to-end suite shows the `●` moving after `action()` on a fake host |
+| R5 | Arm-time state is idempotent: repeated `session_start`, rebinds and double loads never double-wrap or double-inject. | Idempotency | Implemented; tested across two `session_start` events and a double entry load |
+| R6 | A throwing provider loses its rows, is reported, and never breaks the menu or other providers. | Failure isolation | Implemented; tested per provider, with the failure reported by `/bridge-status` |
+| R7 | A diagnostics command reports providers, active backend, last capture outcome and last failures. | `/bridge-status` | Implemented as `/bridge-status`; formatter and entry tested, including store problems and duplicate settings from the last menu build |
+| R8 | Composition is stateless; persistence is the plugin's, with an optional namespaced store helper. | `createStore`, [docs/state.md](docs/state.md) | Implemented; `createStore` tested against temporary directories |
+
+All eight requirements are implemented and covered by the 115-test `node --test` suite. The
+end-to-end tests drive a fake host that models `gentle-shell.ts:3550-3562`; none of them has
+been re-run in the real TUI through the package, and R7's hook branch has never met a host
+that exposes a registry. The capture technique itself is proven in the real TUI by the
+reference probe, not by these tests.
 
 ## Success criteria
 
@@ -61,25 +67,30 @@ behind the adapter.
 - A toggle persists through `action()`, the menu re-renders, and the `●` moves to the
   applied value.
 - No silent failure: an uncaptured menu, a broken provider or a duplicate `setting` is
-  visible in `status`.
+  visible in `/bridge-status`.
 - When gentle-shell changes its menu construction, exactly one module needs repair.
-- The reference probe's observed result reproduces through the package: a `Cards` category
-  showing the injected line `Card bash   ● activity ○ output`.
+- The reference probe's observed result reproduces through the package against the fake host
+  that models the real call chain: a `Cards` category showing the injected line
+  `Card bash   ● activity ○ output`. It has not yet been re-run in the real TUI through the
+  package.
 
 ## Risks and open questions
 
 - **Upstream hook availability.** If Pi or gentle-shell adds a supported row-provider
   registry, the capture backend becomes dead weight; the contract should stay stable
-  across that switch, but the backend boundary is untested against a real hook.
+  across that switch. A hook backend now exists (`src/hook.ts`) and prefers a recognized
+  registry over patching, but no host has been observed emitting
+  `Symbol.for("gentle-pi.customize-row-providers")` — that branch is implemented and
+  unverified.
 - **Namespace policy.** Requiring namespaced `setting` names (`"Loon → Banner source"`)
   avoids accidental merges but depends on authors complying; the bridge can warn on
   duplicates but cannot rename rows without breaking identity.
 - **Whether the store belongs in the package at all.** It is the only piece that writes to
   disk and the only piece a plugin could implement itself. Shipping it is a convenience
   bet, recorded with its alternatives in [docs/state.md](docs/state.md).
-- **Diagnostics spelling.** The `status` command must live in gentle-shell's command
-  namespace; the exact invocation is settled when the package registers commands against a
-  real host, not in these docs.
+- **Diagnostics spelling.** Settled in code: the command is `/bridge-status`. Pi has no
+  built-in `/status`, and gentle-shell's commands live under the `gentle:` prefix, so a bare
+  `bridge-status` collides with neither. It has not yet been typed into a real host.
 - **Compatibility drift.** The capture depends on one constructor line and one adapter
   shape; every gentle-shell upgrade is a potential silent break until an upstream hook
   exists.

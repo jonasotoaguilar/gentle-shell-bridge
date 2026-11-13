@@ -12,8 +12,11 @@
   ],
   "pi": {
     "extensions": [
-      "./src/index.ts"
+      "./src/extension.ts"
     ]
+  },
+  "engines": {
+    "node": ">=22.18.0"
   },
   "scripts": {
     "test": "node --test",

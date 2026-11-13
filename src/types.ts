@@ -53,7 +53,12 @@ export interface InlineHelpers {
  * categories the host already renders; the bridge cannot create new ones.
  */
 export interface CustomizeRow {
-  category: string;
+  /**
+   * Optional here: a provider whose rows all belong to its own `provider.category` may omit it,
+   * and the capture backend fills it from there (shallow-cloning the row, never mutating it).
+   * The host's renderer still requires a category on every row it receives.
+   */
+  category?: string;
   label?: RowLabel;
   choice?: RowChoice;
   preview?: () => RowPreview;

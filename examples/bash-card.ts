@@ -11,6 +11,13 @@
  *    sharing one `choice.setting`, and `createStore("bash-card-example")` persists the choice, so
  *    the row and the renderer read the same value.
  *
+ * C. The sidebar section — through the bridge too. `registerSection` adds a `BASH CARD` card to
+ *    gentle-shell's fullscreen sidebar, drawn by the host's own frame, whose body reports the mode
+ *    and whether this load actually wired the bash renderer. The same registration gives it a
+ *    `Sections` toggle in `/gentle:customize`, so the card can be hidden without the plugin writing
+ *    a row, a setting or a store for it. An older package without `registerSection` still gets A and
+ *    B: the section is skipped with one warning.
+ *
  * Loading: copy this file into `~/.pi/agent/extensions/` (or point Pi's `packages` entry at this
  * repository) and `/reload`. The toggle defaults to `default`, so installing the example changes
  * no rendering until the user asks for it.
@@ -138,10 +145,28 @@ interface RowProviderLike {
   rows(ctx: { theme: unknown; configHome: string }): CustomizeRowLike[];
 }
 
-/** The two exports of `gentle-shell-bridge` this example uses (`docs/contract.md`, Limits). */
+/**
+ * The section contract (`docs/contract.md` §10), structural like every host shape here. A section
+ * writes content only: no `choice`, no `action`, no `preview` — the bridge contributes the toggle.
+ */
+interface SidebarSectionLike {
+  id: string;
+  title: string;
+  meta?(ctx: { theme: unknown; configHome: string }): string | undefined;
+  lines(ctx: { theme: unknown; configHome: string }): string[];
+  defaultVisible?: boolean;
+  order?: number;
+}
+
+/** The exports of `gentle-shell-bridge` this example uses (`docs/contract.md`, Limits). */
 interface BridgeModuleLike {
   registerRows(provider: RowProviderLike): () => void;
   createStore(pluginId: string): BridgeStoreLike;
+  /**
+   * Added with the sidebar surface (0.1.0), so it is OPTIONAL here: an installed package may
+   * predate it, and the example must keep the row side working on such an install.
+   */
+  registerSection?(section: SidebarSectionLike): () => void;
 }
 
 /** The part of `ExtensionAPI` this extension uses. */
@@ -525,15 +550,27 @@ function readStoredMode(store: BridgeStoreLike | undefined): BashRenderingMode {
 
 /**
  * Specifiers to try, most portable first. Proven on this machine: the bare specifier does NOT
- * resolve from `~/.pi/agent/extensions/` (no node_modules on that path), while the package's
+ * resolve from `~/.pi/agent/extensions/` (no node_modules on that path), while a checkout's
  * absolute `src/index.ts` does, through jiti and through Node's own loader.
+ *
+ * The two absolute checkout paths are a LOCAL convention for a package that is not resolvable by
+ * name yet — not an install guarantee. The main checkout comes first because merged work lives
+ * there; the feature worktree follows because that is where unreleased work is tested. A real
+ * install resolves through the bare specifier above, and `GENTLE_SHELL_BRIDGE_MODULE` overrides
+ * everything.
  */
 function bridgeCandidates(): string[] {
   const candidates: string[] = [];
   const override = process.env.GENTLE_SHELL_BRIDGE_MODULE;
   if (typeof override === "string" && override.trim() !== "") candidates.push(override.trim());
   candidates.push("gentle-shell-bridge");
-  candidates.push(resolve(homedir(), "dev/projects/gentle-shell-bridge-worktrees/row-bridge-package/src/index.ts"));
+  candidates.push(resolve(homedir(), "dev/projects/gentle-shell-bridge/src/index.ts"));
+  candidates.push(
+    resolve(
+      homedir(),
+      "dev/projects/gentle-shell-bridge-worktrees/sidebar-sections/src/index.ts",
+    ),
+  );
   candidates.push(resolve(homedir(), ".pi/agent/npm/node_modules/gentle-shell-bridge/src/index.ts"));
   return candidates;
 }
@@ -563,9 +600,10 @@ async function loadBridge(): Promise<BridgeModuleLike | undefined> {
     }
   }
   console.warn(
-    "[bash-card] gentle-shell-bridge could not be imported, so this example adds no toggle row " +
-      "and leaves bash rendering alone. Point GENTLE_SHELL_BRIDGE_MODULE at the package's " +
-      `src/index.ts to use a checkout. Tried:\n  ${tried.join("\n  ")}`,
+    "[bash-card] gentle-shell-bridge could not be imported, so this example adds no toggle row, " +
+      "no sidebar section, and leaves bash rendering alone. Set GENTLE_SHELL_BRIDGE_MODULE to the " +
+      "package's src/index.ts to point it at a checkout; the absolute paths below are a local " +
+      `convention for this machine, not an install guarantee. Tried:\n  ${tried.join("\n  ")}`,
   );
   return undefined;
 }
@@ -628,18 +666,53 @@ function renderingRow(store: BridgeStoreLike, value: BashRenderingMode): Customi
 }
 
 // ---------------------------------------------------------------------------------------------
+// The sidebar section
+// ---------------------------------------------------------------------------------------------
+
+/** Stable across loads, so `/reload` replaces this section instead of stacking it (S1, S2). */
+const SECTION_ID = "bash-card.status";
+/** The card heading, drawn by the host's own frame like `AGENTS` / `STATS`. */
+const SECTION_TITLE = "BASH CARD";
+
+/**
+ * Live state for the card: the mode the user chose, and whether this load really wired the bash
+ * renderer. Both are cheap on purpose — `lines()` runs once per rail frame, so this is one store
+ * read plus one boolean, with no card built and nothing invented.
+ */
+function bashCardSection(store: BridgeStoreLike, rendererRegistered: boolean): SidebarSectionLike {
+  return {
+    id: SECTION_ID,
+    title: SECTION_TITLE,
+    // The right-aligned count: the same value the `Cards` toggle writes, so the two surfaces
+    // cannot disagree.
+    meta: () => readStoredMode(store),
+    lines: () => [
+      `rendering  ${readStoredMode(store)}`,
+      `renderer   ${rendererRegistered ? "registered" : "absent"}`,
+    ],
+    // Visible on install: a section needs no extra step from the plugin or the user (S1).
+    defaultVisible: true,
+    // After any section the host or another plugin leaves unordered; the host's own parts come
+    // first regardless (S3).
+    order: 20,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
 // Extension entry
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Registers the bash renderer resolver. The setting is read inside the resolver — once per call,
- * never at load time — which is what lets `/gentle:customize` change rendering without a reload.
+ * Registers the bash renderer resolver and reports whether the slot was actually claimed. The
+ * setting is read inside the resolver — once per call, never at load time — which is what lets
+ * `/gentle:customize` change rendering without a reload. The return value is honest state for the
+ * sidebar section, not a decoration: a Pi without `registerToolRenderer` must not claim one.
  */
-function registerBashRenderer(pi: ExtensionApiLike, readMode: () => BashRenderingMode): void {
+function registerBashRenderer(pi: ExtensionApiLike, readMode: () => BashRenderingMode): boolean {
   const register = pi.registerToolRenderer;
   if (typeof register !== "function") {
     console.warn("[bash-card] this Pi has no pi.registerToolRenderer; bash keeps its native rendering.");
-    return;
+    return false;
   }
 
   // `next()` is the renderer chain this resolver did not take; a host whose chain throws
@@ -664,17 +737,22 @@ function registerBashRenderer(pi: ExtensionApiLike, readMode: () => BashRenderin
       return fallback(next);
     }
   });
+  return true;
 }
 
-export default async function bashCardExample(pi: ExtensionApiLike): Promise<void> {
+/** Nothing registered, nothing to dispose. */
+const NO_DISPOSER = (): void => {};
+
+export default async function bashCardExample(pi: ExtensionApiLike): Promise<() => void> {
   // Holds the store once it exists; `undefined` means the bridge has not loaded (or failed), and
   // every read then reports `default`, so bash rendering is untouched.
   const state: { store?: BridgeStoreLike } = {};
 
-  registerBashRenderer(pi, () => readStoredMode(state.store));
+  // Claimed before the bridge loads: the section below reports whether this actually happened.
+  const rendererRegistered = registerBashRenderer(pi, () => readStoredMode(state.store));
 
   const bridge = await loadBridge();
-  if (bridge === undefined) return;
+  if (bridge === undefined) return NO_DISPOSER;
 
   let store: BridgeStoreLike;
   try {
@@ -684,14 +762,37 @@ export default async function bashCardExample(pi: ExtensionApiLike): Promise<voi
       `[bash-card] could not open the bridge store for "${PLUGIN_ID}": ` +
         `${error instanceof Error ? error.message : String(error)}`,
     );
-    return;
+    return NO_DISPOSER;
   }
   state.store = store;
 
   // Same provider id on every load, so a `/reload` replaces these rows instead of stacking them.
-  bridge.registerRows({
+  const disposeRows = bridge.registerRows({
     id: "bash-card-example.rendering",
     category: ROW_CATEGORY,
     rows: () => bashRenderingRows(store),
   });
+
+  // The sidebar half. `registerSection` arrived with the sidebar surface (0.1.0), so an installed
+  // package may predate it: skip the section, say so ONCE, and keep the row side working.
+  let disposeSection = NO_DISPOSER;
+  const registerSection = bridge.registerSection;
+  if (typeof registerSection !== "function") {
+    console.warn(
+      "[bash-card] this gentle-shell-bridge has no registerSection (it predates 0.1.0), so this " +
+        "example adds no sidebar section. The Cards toggle still works; update the package to get " +
+        "the BASH CARD card.",
+    );
+  } else {
+    // Same stable id on every load, so `/reload` replaces the section instead of stacking one.
+    disposeSection = registerSection.call(bridge, bashCardSection(store, rendererRegistered));
+  }
+
+  // Both surfaces belong to one registration lifetime: disposing the example must not leave half of
+  // it behind. Nothing depends on this return value — the stable ids are what make a `/reload`
+  // replace rather than stack — it exists so a programmatic caller can tear both down together.
+  return () => {
+    disposeSection();
+    disposeRows();
+  };
 }

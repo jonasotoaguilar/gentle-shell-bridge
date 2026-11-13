@@ -23,15 +23,25 @@ what is not proven is listed under **Limits**.
 
 ## Worked consumer
 
-[`examples/bash-card.ts`](examples/bash-card.ts) is a standalone Pi extension that uses both
-surfaces the package sits between: its own bash card through `pi.registerToolRenderer`, and a
-`Cards` toggle through `registerRows` + `createStore`. Copy it into `~/.pi/agent/extensions/`
-and `/reload` to load it; the toggle defaults to `default`, so installing it changes no
-rendering until the row is switched. It reaches the package with a dynamic `import()` of its
-`src/index.ts`, because a bare specifier does not resolve from Pi's extensions directory.
+[`examples/bash-card.ts`](examples/bash-card.ts) is a standalone Pi extension that covers both
+surfaces the package sits between: its own bash card through `pi.registerToolRenderer`, a `Cards`
+toggle through `registerRows` + `createStore`, and a **`BASH CARD` sidebar section** through
+`registerSection`. The section reports the mode the user chose and whether this load actually wired
+the bash renderer, and it is toggled from **`Sections`** in `/gentle:customize` — the plugin writes
+no setting, row or store for it. Copy the file into `~/.pi/agent/extensions/` and `/reload` to load
+it; the toggle defaults to `default`, so installing it changes no rendering until the row is
+switched, while the section is visible immediately (`defaultVisible: true`). It reaches the package
+with a dynamic `import()` of its `src/index.ts`, because a bare specifier does not resolve from Pi's
+extensions directory. `GENTLE_SHELL_BRIDGE_MODULE` overrides that lookup with any path or specifier;
+after the bare package name it tries a few absolute checkout paths, which are a local workaround for
+a package that is not yet resolvable by name — not an install guarantee.
 
 Both rows carry `preview()`, so `/gentle:customize` draws a literal sample of the card each
 mode produces instead of "Preview unavailable".
+
+A package that predates the sidebar surface (anything before `0.1.0`) has no `registerSection`; the
+example then skips the section with a single warning and keeps the renderer and the `Cards` toggle
+working, because the new member is optional in the module shape it probes.
 
 The choice applies to the **next bash call**: the resolver runs when a bash row is built, not per
 frame, so rows already on screen keep the rendering they were built with. Scrolling or `Esc` does

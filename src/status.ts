@@ -16,8 +16,10 @@ import { getLastRowBuild, type RowBuildRecord } from "./rows.ts";
 import {
   getSidebarDiagnostics,
   type SidebarDiagnostics,
+  type SidebarFailure,
 } from "./sidebar.ts";
 import { getSectionFailures, type SectionRenderFailure } from "./sidebar-render.ts";
+import { SECTION_ROWS_PROVIDER_ID } from "./sections-rows.ts";
 import { getStoreDiagnostics, type StoreProblem } from "./store.ts";
 import type { CustomizeRow, RowContext, RowProvider } from "./types.ts";
 import { getSectionVisibility, isSectionVisible } from "./visibility.ts";
@@ -75,6 +77,11 @@ export interface StatusSnapshot {
   sections?: StatusSectionEntry[];
   /** Absent when the most recent sidebar frame had no section failure. */
   sectionFailures?: SectionRenderFailure[];
+  /**
+   * Failures the RAIL BACKEND recorded in the most recent frame (a throwing host `render`, a
+   * throwing contributor, a failed card-group call). Absent when there were none.
+   */
+  sidebarFailures?: SidebarFailure[];
   /** Absent when the sidebar backend was never installed (reported as "not armed"). */
   sidebar?: StatusSidebarEntry;
 }
@@ -94,7 +101,12 @@ export function collectStatus(): StatusSnapshot {
   // Diagnostics never run providers: duplicate detection comes from the rows the LAST menu build
   // actually received, and is unknown until such a build exists.
   const snapshot: StatusSnapshot = {
-    providers: providers.map((provider) => ({ id: provider.id, category: provider.category })),
+    // The bridge's own `Sections` provider is plumbing, not a plugin provider: its effect is the
+    // sections table below, and listing it would make a row-only session report a provider it never
+    // registered (B3).
+    providers: providers
+      .filter((provider) => provider.id !== SECTION_ROWS_PROVIDER_ID)
+      .map((provider) => ({ id: provider.id, category: provider.category })),
     backend,
     // Report the failures and the capture outcome of the backend that is actually in use.
     failures:
@@ -126,8 +138,22 @@ export function collectStatus(): StatusSnapshot {
   }
   const sectionFailures = getSectionFailures();
   if (sectionFailures.length > 0) snapshot.sectionFailures = sectionFailures;
-  const sidebarEntry = describeSidebar(getSidebarDiagnostics());
-  if (sidebarEntry !== undefined) snapshot.sidebar = sidebarEntry;
+  const sidebarDiagnostics = getSidebarDiagnostics();
+  if (sidebarDiagnostics.lastFailures.length > 0) {
+    // The rail backend's own failures are a separate class: a throwing host render, a throwing
+    // contributor. Without them, a frame that lost every section would report nothing (B1).
+    snapshot.sidebarFailures = sidebarDiagnostics.lastFailures;
+  }
+  const sidebarEntry = describeSidebar(sidebarDiagnostics);
+  // The sidebar line is worth a line only when it explains something: a registered section that may
+  // not be appearing, or a rail that IS intercepted. A row-only session with no rail keeps the
+  // pre-feature output exactly (B3).
+  if (
+    sidebarEntry !== undefined &&
+    (snapshot.sections !== undefined || sidebarEntry.state === "intercepted")
+  ) {
+    snapshot.sidebar = sidebarEntry;
+  }
 
   return snapshot;
 }
@@ -270,8 +296,11 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
     }
   }
 
-  // The sidebar blocks are emitted only when they have something to say, so a run that registered
-  // no section keeps the historical output byte for byte.
+  // These blocks are emitted only when they have something to say. What is guaranteed: a session
+  // that registers no section and never intercepts a rail prints exactly the pre-feature output
+  // (proved through the real entry, not just this formatter). The sections table appears once a
+  // section is registered; the sidebar line appears when a section is registered — so an
+  // unreachable rail is an answer — or when a rail is actually intercepted.
   if (snapshot.sections !== undefined) {
     lines.push(`sections: ${snapshot.sections.length}`);
     for (const section of snapshot.sections) {
@@ -286,6 +315,13 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
     lines.push(`section failures: ${snapshot.sectionFailures.length}`);
     for (const failure of snapshot.sectionFailures) {
       lines.push(`  - ${failure.sectionId} (${failure.phase}): ${failure.message}`);
+    }
+  }
+
+  if (snapshot.sidebarFailures !== undefined) {
+    lines.push(`sidebar failures: ${snapshot.sidebarFailures.length}`);
+    for (const failure of snapshot.sidebarFailures) {
+      lines.push(`  - ${failure.key} (${failure.phase}): ${failure.message}`);
     }
   }
 

@@ -118,8 +118,13 @@ export interface RailMouseResult {
 }
 
 /**
- * The part of a rail this backend depends on. Every other field is carried through the spread, so
- * this is deliberately not the host's whole interface.
+ * The part of a rail this backend depends on. Every OTHER own enumerable string-keyed property of
+ * the host's rail is carried through the wrapper's spread — in practice `digest`, `spend`,
+ * `surface`, `summary`, `open`, `alert` and `invalidate` — but "every field" would be false: a
+ * non-enumerable property, a method that lives on the prototype, and a getter (snapshotted once at
+ * wrap time) do not survive the spread. Every host rail observed so far is an object literal
+ * (`extensions/gentle-shell.ts:2681`, `extensions/gentle-agents.ts:2172`), so nothing it carries is
+ * lost; `test/sidebar-independent.test.ts` pins the limit rather than leaving it to prose.
  */
 export interface SidebarRailLike {
   render(width: number): string[];
@@ -217,6 +222,8 @@ type Rail = SidebarRailLike & Record<string, unknown>;
 type RailMap = Map<string, RailMapValue>;
 type MapSet = RailMap["set"];
 type MapGet = RailMap["get"];
+type MapDelete = RailMap["delete"];
+type MapClear = RailMap["clear"];
 
 /** One patched map, with everything a restore needs. */
 interface Interception {
@@ -224,11 +231,17 @@ interface Interception {
   /** The own descriptor the map had before us, if any, so a restore is exact. */
   ownSet?: PropertyDescriptor;
   ownGet?: PropertyDescriptor;
+  ownDelete?: PropertyDescriptor;
+  ownClear?: PropertyDescriptor;
   /** The methods that were in force before us; a foreign patch stays reachable through them. */
   originalSet: MapSet;
   originalGet: MapGet;
+  originalDelete: MapDelete;
+  originalClear: MapClear;
   patchedSet: MapSet;
   patchedGet: MapGet;
+  patchedDelete: MapDelete;
+  patchedClear: MapClear;
 }
 
 /** One wrapped part, per (map, key), so a disable can put the host's own rail back. */
@@ -399,9 +412,13 @@ function intercept(parts: RailMap): InstallSidebarResult {
 
   const ownSet = Object.getOwnPropertyDescriptor(parts, "set");
   const ownGet = Object.getOwnPropertyDescriptor(parts, "get");
+  const ownDelete = Object.getOwnPropertyDescriptor(parts, "delete");
+  const ownClear = Object.getOwnPropertyDescriptor(parts, "clear");
   // Whatever is in force now stays reachable, so a foreign patch already on the map keeps running.
   const originalSet = parts.set;
   const originalGet = parts.get;
+  const originalDelete = parts.delete;
+  const originalClear = parts.clear;
 
   const patchedSet = function (this: RailMap, key: string, value: RailMapValue) {
     const stored = key === SIDEBAR_RAIL_KEY ? wrapRail(parts, key, value) : value;
@@ -418,13 +435,53 @@ function intercept(parts: RailMap): InstallSidebarResult {
     return wrapped;
   } as MapGet;
 
+  // Deletion prunes the wrapped record, so diagnostics cannot claim a part is wrapped after the host
+  // dropped it.
+  const patchedDelete = function (this: RailMap, key: string): boolean {
+    const deleted = originalDelete.call(this, key);
+    if (deleted) forgetWrapped(parts, key);
+    return deleted;
+  } as MapDelete;
+
+  const patchedClear = function (this: RailMap): void {
+    originalClear.call(this);
+    forgetWrapped(parts);
+  } as MapClear;
+
   defineHidden(parts, "set", patchedSet);
   defineHidden(parts, "get", patchedGet);
+  defineHidden(parts, "delete", patchedDelete);
+  defineHidden(parts, "clear", patchedClear);
   defineHidden(parts, PARTS_INTERCEPTED, patchedSet);
 
-  state.intercepted.push({ parts, ownSet, ownGet, originalSet, originalGet, patchedSet, patchedGet });
+  state.intercepted.push({
+    parts,
+    ownSet,
+    ownGet,
+    ownDelete,
+    ownClear,
+    originalSet,
+    originalGet,
+    originalDelete,
+    originalClear,
+    patchedSet,
+    patchedGet,
+    patchedDelete,
+    patchedClear,
+  });
   void parts.get(SIDEBAR_RAIL_KEY);
   return { installed: true, outcome: "intercepted", rail: railStatus(parts) };
+}
+
+/** Drop the wrapped-rail records for a part, so a deleted or cleared key is not reported as wrapped. */
+function forgetWrapped(parts: RailMap, key?: string): void {
+  const state = sidebarState();
+  for (let index = state.wrapped.length - 1; index >= 0; index -= 1) {
+    const record = state.wrapped[index];
+    if (record.parts !== parts) continue;
+    if (key !== undefined && record.key !== key) continue;
+    state.wrapped.splice(index, 1);
+  }
 }
 
 function railStatus(parts: RailMap): "wrapped" | "pending" {
@@ -448,6 +505,18 @@ export function disableSidebarBackend(): number {
     }
     restoreOwnMethod(interception.parts, "set", interception.patchedSet, interception.ownSet);
     restoreOwnMethod(interception.parts, "get", interception.patchedGet, interception.ownGet);
+    restoreOwnMethod(
+      interception.parts,
+      "delete",
+      interception.patchedDelete,
+      interception.ownDelete,
+    );
+    restoreOwnMethod(
+      interception.parts,
+      "clear",
+      interception.patchedClear,
+      interception.ownClear,
+    );
     if (Object.hasOwn(interception.parts, PARTS_INTERCEPTED)) {
       // SAFETY: the marker is the only symbol-keyed property this module writes on the map, and a
       // `Map` is an object, so it is reachable through a widened index type; this only removes it.
@@ -464,7 +533,7 @@ export function disableSidebarBackend(): number {
 
 function restoreOwnMethod(
   parts: RailMap,
-  name: "set" | "get",
+  name: "set" | "get" | "delete" | "clear",
   patched: unknown,
   own: PropertyDescriptor | undefined,
 ): void {

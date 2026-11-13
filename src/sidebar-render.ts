@@ -106,7 +106,15 @@ export function buildSectionContribution(
     const body = meta.ok ? readBody(section, ctx) : [];
     const start = lines.length;
     lines.push(headingRow(section.title, meta.text, width));
-    for (const row of body) lines.push(clipRow(row, width));
+    // Isolation is per SECTION, not per frame (S8): one section must never be able to throw away
+    // its siblings' rows or its own heading. The validation in `readBody` catches the cases we know
+    // about; this guard covers the ones we do not.
+    try {
+      for (const row of body) lines.push(clipRow(row, width));
+    } catch (error) {
+      recordFailure(section.id, "lines", error);
+      lines.length = start + 1; // keep the heading, drop the broken body
+    }
     groups.push({ start, end: lines.length });
   }
 
@@ -169,12 +177,23 @@ function readBody(section: SidebarSection, ctx: SectionContext): string[] {
     recordFailure(section.id, "lines", new Error("lines() must return an array of strings"));
     return [];
   }
+  // Index by index, NOT `every`/`map`: those skip array holes, and a hole reaches the clipping code
+  // as `undefined`, which used to throw and drop every section's rows with it (B1).
   const rows: unknown[] = value;
-  if (!rows.every((row): row is string => typeof row === "string")) {
-    recordFailure(section.id, "lines", new Error("lines() must return an array of strings"));
-    return [];
+  const dense: string[] = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    if (!Object.hasOwn(rows, index)) {
+      recordFailure(section.id, "lines", new Error("lines() must not return a sparse array"));
+      return [];
+    }
+    const row: unknown = rows[index];
+    if (typeof row !== "string") {
+      recordFailure(section.id, "lines", new Error("lines() must return an array of strings"));
+      return [];
+    }
+    dense.push(row);
   }
-  return capBody(rows);
+  return capBody(dense);
 }
 
 /** Keep the body inside the row budget, marking the elision visibly. */
@@ -201,9 +220,10 @@ function headingRow(title: string, meta: string | undefined, width: number): str
 /**
  * Clamp one row to the width the host passes, with a visible marker instead of a silent cut.
  *
- * Measured in code units, not display cells: the bridge carries a section's text through untouched
- * and does no styling of its own, so a plugin that emits ANSI itself is responsible for its own
- * width (the same caveat as a customize row's `label`).
+ * Measured in UTF-16 code units (`.length`), NOT terminal columns: an emoji or a wide CJK glyph
+ * therefore costs what a plain character costs here, and a plugin that emits ANSI styling owns its
+ * own width — the bridge neither parses escape sequences nor strips them (the same caveat as a
+ * customize row's `label`).
  */
 function clipRow(row: string, width: number): string {
   if (row.length <= width) return row;

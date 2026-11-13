@@ -42,8 +42,11 @@ export const SECTIONS_STORE_KEY = "sections";
 export type SectionVisibility = Record<string, boolean>;
 
 function toVisibilityMap(value: unknown): SectionVisibility {
-  if (!isRecord(value)) return {};
-  const map: SectionVisibility = {};
+  // A NULL-prototype map on purpose: a persisted key such as `__proto__` must be an ordinary entry.
+  // On a plain `{}` that write hits the inherited setter, is silently dropped, and the next toggle
+  // erases it (B2).
+  const map = Object.create(null) as SectionVisibility;
+  if (!isRecord(value)) return map;
   for (const [id, entry] of Object.entries(value)) {
     if (typeof entry === "boolean") map[id] = entry;
   }
@@ -66,7 +69,9 @@ export function isSectionVisible(
   visibility: SectionVisibility,
   section: Pick<SidebarSection, "id" | "defaultVisible">,
 ): boolean {
-  const stored = visibility[section.id];
+  // Own property only: the map has no prototype, but a caller may hand us an ordinary object, and
+  // `visibility["constructor"]` must never resolve to `Object`'s.
+  const stored = Object.hasOwn(visibility, section.id) ? visibility[section.id] : undefined;
   return typeof stored === "boolean" ? stored : section.defaultVisible !== false;
 }
 
@@ -78,5 +83,10 @@ export function isSectionVisible(
 export function setSectionVisible(id: string, visible: boolean): void {
   const store = createStore(SECTIONS_STORE_ID);
   const current = toVisibilityMap(store.get<unknown>(SECTIONS_STORE_KEY, {}));
-  store.set(SECTIONS_STORE_KEY, { ...current, [id]: visible });
+  // Build the write map with the same null prototype as the read map, copying entry by entry, so a
+  // key like `__proto__` is stored as data rather than routed through a setter.
+  const next = Object.create(null) as SectionVisibility;
+  for (const [key, value] of Object.entries(current)) next[key] = value;
+  next[id] = visible;
+  store.set(SECTIONS_STORE_KEY, next);
 }

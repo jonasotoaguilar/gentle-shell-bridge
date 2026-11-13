@@ -126,7 +126,33 @@ export function resetBusForTests(): void {
  * The disposer removes the section from the rail and from `Sections` together, because both surfaces
  * are built from this one registration.
  */
+/** Ids that collide with `Object.prototype` and therefore cannot be used as a plain-object key. */
+const RESERVED_SECTION_IDS = new Set(["__proto__", "constructor", "prototype"]);
+
+/**
+ * A section id is identity: it keys the ordering, the replacement and the persisted toggle. A bad id
+ * is a plugin bug and is rejected with a clear error BEFORE anything is stored, so a rejected
+ * section can never half-register (B2).
+ */
+function sectionIdProblem(id: unknown): string | undefined {
+  if (typeof id !== "string") return "it must be a non-empty string";
+  if (id.trim() === "") return "it must be a non-empty string";
+  if (RESERVED_SECTION_IDS.has(id)) return "it collides with Object.prototype";
+  if (id.includes("\0")) return "it contains a NUL byte";
+  return undefined;
+}
+
+function assertSectionId(id: unknown): asserts id is string {
+  const problem = sectionIdProblem(id);
+  if (problem === undefined) return;
+  throw new Error(
+    `gentle-shell-bridge: invalid section id ${JSON.stringify(id)}: ${problem}. ` +
+      "A section id must be a non-empty string that can be used as a plain object key.",
+  );
+}
+
 export function registerSection(section: SidebarSection): () => void {
+  assertSectionId(section.id);
   const state = bus();
   const entry: SectionEntry = { section };
   const index = state.sections.findIndex((candidate) => candidate.section.id === section.id);

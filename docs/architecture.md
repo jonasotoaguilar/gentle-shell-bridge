@@ -288,9 +288,11 @@ and leaves any retained wrapper as a pass-through (a generation guard).
 ### The renderer
 
 `src/sidebar-render.ts` contributes the section rows and their card groups per frame. A hidden
-section is not built at all; a throwing `lines()`/`meta()` loses only its body and is recorded for
-`/bridge-status`. Rows are clipped to the width the host passes and the body is capped at 8 rows
-with a visible `… +N more` marker.
+section is not built at all; a throwing `lines()`/`meta()`, a sparse array or a non-string row
+loses only that section's body and is recorded for `/bridge-status`. Rows are clipped to the width
+the host passes and the body is capped at 8 rows with a visible `… +N more` marker. Width is
+measured in **UTF-16 code units**, not terminal columns, and a plugin that emits ANSI owns its own
+width — the bridge does not parse or strip escape sequences.
 
 ### Acquiring a `tui` — and what is unconfirmed
 

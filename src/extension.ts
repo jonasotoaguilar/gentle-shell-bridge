@@ -85,15 +85,18 @@ interface BridgeUiSurface {
  * records `no-widget-surface` for `/bridge-status`, and the row side keeps working.
  */
 export function armSidebar(ui: unknown): SidebarArmResult {
-  const surface = isRecord(ui) ? (ui as BridgeUiSurface) : undefined;
-  const setWidget = surface?.setWidget;
-  if (surface === undefined || typeof setWidget !== "function") {
-    noteSidebarUnavailable("ctx.ui has no setWidget, so a tui cannot be acquired");
-    return { outcome: "no-set-widget" };
-  }
-
   let captured: SidebarTuiLike | undefined;
   try {
+    // Reading `setWidget` can itself throw (a getter on the host's UI object), so the whole
+    // acquisition happens inside this guard: a broken accessor must never escape the session
+    // handler and take the row side with it.
+    const surface = isRecord(ui) ? (ui as BridgeUiSurface) : undefined;
+    const setWidget = surface?.setWidget;
+    if (surface === undefined || typeof setWidget !== "function") {
+      noteSidebarUnavailable("ctx.ui has no setWidget, so a tui cannot be acquired");
+      return { outcome: "no-set-widget" };
+    }
+
     // `this` matters: Pi's setWidget is a method on the UI context.
     setWidget.call(surface, SIDEBAR_WIDGET_KEY, (tui: unknown) => {
       captured = isRecord(tui) ? (tui as SidebarTuiLike) : undefined;

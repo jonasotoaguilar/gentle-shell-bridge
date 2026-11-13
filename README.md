@@ -82,8 +82,10 @@ const dispose = registerSection({
 
 What the bridge does with those fields, and what it will not do: the card is drawn by the
 host's own frame code, the body is clipped to the rail width and capped at 8 rows (with a
-`… +N more` marker), a hidden section is not built at all (its `lines()`/`meta()` are not
-called), and a throwing section loses only its own body and is reported by `/bridge-status`.
+`… +N more` marker; width is counted in UTF-16 code units, not terminal columns, and a plugin
+that emits ANSI owns its own width), a hidden section is not built at all (its `lines()`/`meta()`
+are not called), and a throwing section loses only its own body and is reported by
+`/bridge-status`.
 Sections always render **after** the native cards — interleaving is impossible because the
 host builds its status sections in a closure. Visibility lives in
 `~/.pi/gentle-ai/gentle-shell-bridge/bridge-sections.json` as

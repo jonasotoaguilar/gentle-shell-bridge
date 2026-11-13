@@ -221,7 +221,10 @@ host theme where one is available (the rail render call carries none, so a secti
 A section is drawn by the host's own card code: the bridge contributes the part's rows and
 the card groups over them, and the layout calls `sectionCardRows` on them. A body row is
 clipped to the width the host passes and the body is capped at 8 rows, with a visible
-`… +N more` marker when the cap bites. The bridge never returns a row wider than the width.
+`… +N more` marker when the cap bites. The bridge never returns a row wider than that number —
+which is **UTF-16 code units, not terminal columns**: a wide CJK glyph or an emoji counts as one
+unit here, so the host may still clip what we thought fitted. A plugin that emits ANSI escape
+sequences owns its own width: the bridge neither parses nor strips them.
 
 **Sections render after the native ones. Interleaving is impossible**: the host's status
 sections (`CHANGES`, `STATS`, `INTEGRATIONS`) are built in a closure the bridge cannot reach

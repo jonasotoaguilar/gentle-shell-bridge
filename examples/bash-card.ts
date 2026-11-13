@@ -15,12 +15,17 @@
  *    gentle-shell's fullscreen sidebar, drawn by the host's own frame, whose body reports the mode
  *    and whether this load actually wired the bash renderer. The same registration gives it a
  *    `Sections` toggle in `/gentle:customize`, so the card can be hidden without the plugin writing
- *    a row, a setting or a store for it. An older package without `registerSection` still gets A and
- *    B: the section is skipped with one warning.
+ *    a row, a setting or a store for it. A bridge that publishes an incompatible API is treated as
+ *    absent: B and C wait in the early-loader queue instead of calling an object they cannot trust.
  *
  * Loading: copy this file into `~/.pi/agent/extensions/` (or point Pi's `packages` entry at this
  * repository) and `/reload`. The toggle defaults to `default`, so installing the example changes
  * no rendering until the user asks for it.
+ *
+ * Reaching the bridge needs no path, no environment variable and no import: the file and the
+ * bridge meet on `globalThis` behind two `Symbol.for` keys (see "Reaching gentle-shell-bridge"
+ * below). Either load order works — if the bridge is not loaded yet, this example queues its
+ * registration and the bridge runs it when it arrives.
  *
  * Stale rows: the choice is read when a bash row is BUILT, not per frame, so switching it applies
  * to the next bash call. Rows already on screen keep the rendering they were built with; `Esc` or
@@ -33,9 +38,6 @@
  * below, the way `src/extension.ts` declares the extension API it uses. The renderer returns plain
  * strings, which is all a `Component` is required to do.
  */
-
-import { homedir } from "node:os";
-import { resolve } from "node:path";
 
 // ---------------------------------------------------------------------------------------------
 // The one value both surfaces agree on
@@ -158,15 +160,16 @@ interface SidebarSectionLike {
   order?: number;
 }
 
-/** The exports of `gentle-shell-bridge` this example uses (`docs/contract.md`, Limits). */
-interface BridgeModuleLike {
+/**
+ * The API object `gentle-shell-bridge` publishes (`src/api.ts`, `BridgeApi`): the members this
+ * example calls, structurally. Nothing here imports the package, so the shape has to be declared.
+ */
+interface BridgeApiLike {
+  readonly schema: string;
+  readonly version: number;
   registerRows(provider: RowProviderLike): () => void;
+  registerSection(section: SidebarSectionLike): () => void;
   createStore(pluginId: string): BridgeStoreLike;
-  /**
-   * Added with the sidebar surface (0.1.0), so it is OPTIONAL here: an installed package may
-   * predate it, and the example must keep the row side working on such an install.
-   */
-  registerSection?(section: SidebarSectionLike): () => void;
 }
 
 /** The part of `ExtensionAPI` this extension uses. */
@@ -545,67 +548,72 @@ function readStoredMode(store: BridgeStoreLike | undefined): BashRenderingMode {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Resolving `gentle-shell-bridge`. An extension file lives outside the package, so probe it.
+// Reaching gentle-shell-bridge: a runtime handshake, not a path
 // ---------------------------------------------------------------------------------------------
+//
+// A Pi extension lives outside every package, so it cannot resolve a bare specifier, and an
+// absolute path is not a contract between two independent projects: it names one checkout on one
+// machine and breaks the day either project moves. So the bridge and the plugin meet on
+// `globalThis`, the one channel Pi sanctions (`docs/extensions.md:1965-1972`), behind two stable
+// symbols:
+//
+//   Symbol.for("gentle-shell-bridge/api/v1")      → the frozen, versioned API object
+//   Symbol.for("gentle-shell-bridge/pending/v1")  → an array of `init(api)` callbacks
+//
+// Either order works. If the bridge is already loaded, `init` runs now; if it is not, `init` is
+// queued and the bridge drains the queue when it publishes (module load) and on every
+// `session_start`.
+//
+// The two constants and `attachBridge` MIRROR `src/api.ts`, which exports the same helper, and are
+// inlined on purpose: this file must not import the bridge, not even to say hello, and a
+// copy-pasteable handshake is the smallest way to keep that promise. Keep them in sync — a
+// breaking change is a new `v2` key, never a mutation of this one.
 
-/**
- * Specifiers to try, most portable first. Proven on this machine: the bare specifier does NOT
- * resolve from `~/.pi/agent/extensions/` (no node_modules on that path), while a checkout's
- * absolute `src/index.ts` does, through jiti and through Node's own loader.
- *
- * The two absolute checkout paths are a LOCAL convention for a package that is not resolvable by
- * name yet — not an install guarantee. The main checkout comes first because merged work lives
- * there; the feature worktree follows because that is where unreleased work is tested. A real
- * install resolves through the bare specifier above, and `GENTLE_SHELL_BRIDGE_MODULE` overrides
- * everything.
- */
-function bridgeCandidates(): string[] {
-  const candidates: string[] = [];
-  const override = process.env.GENTLE_SHELL_BRIDGE_MODULE;
-  if (typeof override === "string" && override.trim() !== "") candidates.push(override.trim());
-  candidates.push("gentle-shell-bridge");
-  candidates.push(resolve(homedir(), "dev/projects/gentle-shell-bridge/src/index.ts"));
-  candidates.push(
-    resolve(
-      homedir(),
-      "dev/projects/gentle-shell-bridge-worktrees/sidebar-sections/src/index.ts",
-    ),
-  );
-  candidates.push(resolve(homedir(), ".pi/agent/npm/node_modules/gentle-shell-bridge/src/index.ts"));
-  return candidates;
+/** The published API object's key. */
+const BRIDGE_API_KEY = Symbol.for("gentle-shell-bridge/api/v1");
+/** The early-loader queue's key: plugins that loaded first leave an `init(api)` here. */
+const BRIDGE_PENDING_KEY = Symbol.for("gentle-shell-bridge/pending/v1");
+
+type BridgeInitLike = (api: BridgeApiLike) => void;
+
+function bridgeHost(): Record<symbol, unknown> {
+  // SAFETY: `globalThis` accepts symbol keys; every value read through this view is gated by
+  // `isBridgeApi` before use.
+  return globalThis as unknown as Record<symbol, unknown>;
 }
 
-function isBridgeModule(value: unknown): value is BridgeModuleLike {
+/**
+ * The shape gate: the schema string, `version === 1` and the three members this example calls.
+ * Anything else — another library's object, a future major version, a partial object — is treated
+ * as ABSENT, never as an error, exactly as the bridge's own `isBridgeApi` does.
+ */
+function isBridgeApi(value: unknown): value is BridgeApiLike {
   if (typeof value !== "object" || value === null) return false;
-  const candidate = value as { registerRows?: unknown; createStore?: unknown };
-  return typeof candidate.registerRows === "function" && typeof candidate.createStore === "function";
+  const candidate = value as Record<string, unknown>;
+  return (
+    candidate.schema === "gentle-shell-bridge/api" &&
+    candidate.version === 1 &&
+    typeof candidate.registerRows === "function" &&
+    typeof candidate.registerSection === "function" &&
+    typeof candidate.createStore === "function"
+  );
 }
 
 /**
- * Load the package, or report why it could not be loaded and let the extension keep running:
- * without the bridge there is no toggle, so `default` is the only reachable mode and bash keeps
- * its native rendering.
+ * The whole handshake: run `init` now if a compatible bridge is here, otherwise leave it for the
+ * bridge. A plugin that does not depend on the package inlines exactly this; README.md carries the
+ * same form.
  */
-async function loadBridge(): Promise<BridgeModuleLike | undefined> {
-  const tried: string[] = [];
-  for (const specifier of bridgeCandidates()) {
-    try {
-      // A non-literal specifier: the host runtime resolves it against the extension's own
-      // location, which is exactly the question this example has to answer empirically.
-      const loaded: unknown = await import(specifier);
-      if (isBridgeModule(loaded)) return loaded;
-      tried.push(`${specifier} — loaded, but it exports no registerRows/createStore`);
-    } catch (error) {
-      tried.push(`${specifier} — ${error instanceof Error ? error.message : String(error)}`);
-    }
+function attachBridge(init: BridgeInitLike): void {
+  const host = bridgeHost();
+  const api = host[BRIDGE_API_KEY];
+  if (isBridgeApi(api)) {
+    init(api);
+    return;
   }
-  console.warn(
-    "[bash-card] gentle-shell-bridge could not be imported, so this example adds no toggle row, " +
-      "no sidebar section, and leaves bash rendering alone. Set GENTLE_SHELL_BRIDGE_MODULE to the " +
-      "package's src/index.ts to point it at a checkout; the absolute paths below are a local " +
-      `convention for this machine, not an install guarantee. Tried:\n  ${tried.join("\n  ")}`,
-  );
-  return undefined;
+  const queue = host[BRIDGE_PENDING_KEY];
+  if (Array.isArray(queue)) (queue as BridgeInitLike[]).push(init);
+  else host[BRIDGE_PENDING_KEY] = [init] as BridgeInitLike[];
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -740,59 +748,68 @@ function registerBashRenderer(pi: ExtensionApiLike, readMode: () => BashRenderin
   return true;
 }
 
-/** Nothing registered, nothing to dispose. */
-const NO_DISPOSER = (): void => {};
-
-export default async function bashCardExample(pi: ExtensionApiLike): Promise<() => void> {
-  // Holds the store once it exists; `undefined` means the bridge has not loaded (or failed), and
-  // every read then reports `default`, so bash rendering is untouched.
+export default function bashCardExample(pi: ExtensionApiLike): () => void {
+  // Holds the store once it exists; `undefined` means the bridge is not here yet, and every read
+  // then reports `default`, so bash rendering is untouched.
   const state: { store?: BridgeStoreLike } = {};
 
-  // Claimed before the bridge loads: the section below reports whether this actually happened.
+  // Claimed before the bridge is reached: the sidebar section reports whether this happened.
   const rendererRegistered = registerBashRenderer(pi, () => readStoredMode(state.store));
 
-  const bridge = await loadBridge();
-  if (bridge === undefined) return NO_DISPOSER;
+  const disposers: Array<() => void> = [];
+  let closed = false;
 
-  let store: BridgeStoreLike;
-  try {
-    store = bridge.createStore(PLUGIN_ID);
-  } catch (error) {
+  /** Both surfaces belong to one registration lifetime: disposing the example must not leave half. */
+  const dispose = (): void => {
+    closed = true;
+    for (const registered of disposers.splice(0, disposers.length)) {
+      try {
+        registered();
+      } catch {
+        // A disposer that throws must not strand the other one.
+      }
+    }
+  };
+
+  // Waiting is a normal, supported load order — but it is not silent: say so once, honestly, and
+  // register everything the moment the bridge arrives.
+  if (!isBridgeApi(bridgeHost()[BRIDGE_API_KEY])) {
     console.warn(
-      `[bash-card] could not open the bridge store for "${PLUGIN_ID}": ` +
-        `${error instanceof Error ? error.message : String(error)}`,
+      "[bash-card] gentle-shell-bridge has not published a compatible API yet, so this load " +
+        "registers nothing yet: its Cards toggle and BASH CARD sidebar section are queued in " +
+        'Symbol.for("gentle-shell-bridge/pending/v1") and are added as soon as the bridge loads. ' +
+        "No path and no environment variable is involved.",
     );
-    return NO_DISPOSER;
   }
-  state.store = store;
 
-  // Same provider id on every load, so a `/reload` replaces these rows instead of stacking them.
-  const disposeRows = bridge.registerRows({
-    id: "bash-card-example.rendering",
-    category: ROW_CATEGORY,
-    rows: () => bashRenderingRows(store),
+  attachBridge((api) => {
+    if (closed) return;
+
+    let store: BridgeStoreLike;
+    try {
+      store = api.createStore(PLUGIN_ID);
+    } catch (error) {
+      console.warn(
+        `[bash-card] could not open the bridge store for "${PLUGIN_ID}": ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
+    state.store = store;
+
+    // Both registrations use one stable id each, so a `/reload` — or a queued run followed by a
+    // live one — replaces instead of stacking.
+    disposers.push(
+      api.registerRows({
+        id: "bash-card-example.rendering",
+        category: ROW_CATEGORY,
+        rows: () => bashRenderingRows(store),
+      }),
+      api.registerSection(bashCardSection(store, rendererRegistered)),
+    );
   });
 
-  // The sidebar half. `registerSection` arrived with the sidebar surface (0.1.0), so an installed
-  // package may predate it: skip the section, say so ONCE, and keep the row side working.
-  let disposeSection = NO_DISPOSER;
-  const registerSection = bridge.registerSection;
-  if (typeof registerSection !== "function") {
-    console.warn(
-      "[bash-card] this gentle-shell-bridge has no registerSection (it predates 0.1.0), so this " +
-        "example adds no sidebar section. The Cards toggle still works; update the package to get " +
-        "the BASH CARD card.",
-    );
-  } else {
-    // Same stable id on every load, so `/reload` replaces the section instead of stacking one.
-    disposeSection = registerSection.call(bridge, bashCardSection(store, rendererRegistered));
-  }
-
-  // Both surfaces belong to one registration lifetime: disposing the example must not leave half of
-  // it behind. Nothing depends on this return value — the stable ids are what make a `/reload`
-  // replace rather than stack — it exists so a programmatic caller can tear both down together.
-  return () => {
-    disposeSection();
-    disposeRows();
-  };
+  // Nothing depends on this return value — the stable ids are what make a `/reload` replace rather
+  // than stack — it exists so a programmatic caller can tear both surfaces down together.
+  return dispose;
 }

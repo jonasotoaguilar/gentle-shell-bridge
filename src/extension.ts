@@ -1,23 +1,29 @@
 /**
  * The extension entry Pi loads (`pi.extensions` in package.json).
  *
- * Three responsibilities, no more:
- * 1. arm the row bridge on `session_start`, only when the context has a UI. Arming is already
+ * Four responsibilities, no more:
+ * 1. publish the runtime handshake. Importing `./api.ts` publishes the frozen API object at
+ *    `Symbol.for("gentle-shell-bridge/api/v1")` at module load, before any `session_start`, and
+ *    runs any initialiser a plugin queued before this package loaded. A plugin therefore needs no
+ *    path, no environment variable and no import.
+ * 2. arm the row bridge on `session_start`, only when the context has a UI. Arming is already
  *    idempotent (the capture target and the hook registry carry non-enumerable markers), so this
  *    module adds no second guard layer: a double load, a `/reload` or a rebind all resolve to
  *    "already armed".
- * 2. install the sidebar surface: the `Sections` rows provider (needs no `tui`) and a
+ * 3. install the sidebar surface: the `Sections` rows provider (needs no `tui`) and a
  *    `ui.setWidget` factory whose only job is to be handed the real `tui` (see `armSidebar`).
- * 3. register the `status` command and print the formatter output.
+ * 4. register the `status` command and print the formatter output.
  *
  * The API surface used here was confirmed against `docs/extensions.md`: `pi.on("session_start",
  * async (_event, ctx) => …)`, `pi.registerCommand(name, { description, handler })` with
  * `ctx.ui.notify(message, level)` inside the handler, and `ctx.ui.setWidget(key, (tui, theme) =>
  * Component)` — the only documented way an extension receives a `tui`.
  *
- * Nothing runs at import time: no arming, no registration, no global writes.
+ * At import time the only global write is the API publication above: no arming, no registration,
+ * no command.
  */
 
+import { drainBridgeQueue } from "./api.ts";
 import { armBridge } from "./arm.ts";
 import { isRecord } from "./rows.ts";
 import { installSectionRows } from "./sections-rows.ts";
@@ -132,6 +138,12 @@ export interface BridgeExtensionApi {
 
 export default function gentleShellBridge(pi: BridgeExtensionApi): void {
   pi.on("session_start", (_event, ctx) => {
+    // First: a plugin that loaded before this package queued its initialiser. Draining here is the
+    // second of the two drain points (the other is publication, at module load) and is cheap when
+    // the queue is empty. Each plugin registers by stable id, so a repeated drain replaces rather
+    // than stacking, and a throwing initialiser is isolated inside `drainBridgeQueue` — this handler
+    // gains no new failure mode.
+    drainBridgeQueue();
     // Without a UI there is no customize menu to reach, so there is nothing to arm.
     if (ctx.hasUI !== true) return;
     armBridge(ctx.ui);

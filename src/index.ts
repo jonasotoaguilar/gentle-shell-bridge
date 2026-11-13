@@ -7,7 +7,12 @@
  * internals — the capture patch, the hook registry, the arm lifecycle, the rail interception, the
  * section renderer, `status` and the bus snapshots — are reached through the extension entry, not
  * re-exported here. docs/contract.md's Limits section is explicit about which names are the contract.
+ *
+ * Importing this module also publishes the runtime handshake (`./api.ts`), the channel a plugin
+ * uses when it does not import the package at all.
  */
+export { VERSION, attachBridge, isBridgeApi } from "./api.ts";
+export type { BridgeApi, BridgeInit } from "./api.ts";
 export { registerRows, registerSection } from "./bus.ts";
 export { createStore, STORE_SCHEMA_VERSION } from "./store.ts";
 export type { Store, StoreProblem, StoreProblemKind } from "./store.ts";
@@ -22,5 +27,3 @@ export type {
   SectionContext,
   SidebarSection,
 } from "./types.ts";
-
-export const VERSION = "0.1.0";

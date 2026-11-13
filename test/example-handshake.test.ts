@@ -14,6 +14,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  BRIDGE_API_KEY,
   BRIDGE_PENDING_KEY,
   publishBridgeApi,
   resetBridgeApiForTests,
@@ -28,8 +29,11 @@ const pendingInits = (): unknown[] => {
   return Array.isArray(queue) ? queue : [];
 };
 
+type SessionHandler = (event: unknown, ctx: { hasUI?: boolean; ui?: unknown }) => void;
+
 interface FakePi {
   registerToolRenderer?: (resolver: unknown) => void;
+  on?: (event: string, handler: SessionHandler) => void;
 }
 
 type ExampleInit = (pi: FakePi) => () => void;
@@ -44,28 +48,57 @@ const loadExample = async (tag: string): Promise<ExampleInit> => {
   return loaded.default;
 };
 
-const recordingPi = (): { pi: FakePi; registrations: () => number } => {
+const recordingPi = (): {
+  pi: FakePi;
+  registrations: () => number;
+  sessionHandlers: SessionHandler[];
+} => {
   const state = { registrations: 0 };
+  const sessionHandlers: SessionHandler[] = [];
   const pi: FakePi = {
     registerToolRenderer: () => {
       state.registrations += 1;
     },
-  };
-  return { pi, registrations: () => state.registrations };
-};
-
-const captureWarnings = (): { messages: string[]; restore: () => void } => {
-  const messages: string[] = [];
-  const original = console.warn;
-  console.warn = (...args: unknown[]): void => {
-    messages.push(args.map((arg) => String(arg)).join(" "));
-  };
-  return {
-    messages,
-    restore: () => {
-      console.warn = original;
+    on(event, handler) {
+      assert.equal(event, "session_start");
+      sessionHandlers.push(handler);
     },
   };
+  return { pi, registrations: () => state.registrations, sessionHandlers };
+};
+
+/** Capture every console write the terminal would show: the example must produce none. */
+const captureConsole = (): { writes: string[]; restore: () => void } => {
+  const writes: string[] = [];
+  const original = { log: console.log, warn: console.warn, error: console.error };
+  const record =
+    (method: string) =>
+    (...args: unknown[]): void => {
+      writes.push(`${method}: ${args.map((arg) => String(arg)).join(" ")}`);
+    };
+  console.log = record("log");
+  console.warn = record("warn");
+  console.error = record("error");
+  return {
+    writes,
+    restore: () => {
+      console.log = original.log;
+      console.warn = original.warn;
+      console.error = original.error;
+    },
+  };
+};
+
+interface NotifySurface {
+  notify: (message: string, level?: "info" | "warning" | "error") => void;
+}
+
+const notifySurface = (): {
+  ui: NotifySurface;
+  calls: Array<[string, string | undefined]>;
+} => {
+  const calls: Array<[string, string | undefined]> = [];
+  return { ui: { notify: (message, level) => calls.push([message, level]) }, calls };
 };
 
 const inlineHelpers: InlineHelpers = {
@@ -114,27 +147,92 @@ const rowContext = sectionContext;
 const providerById = (id: string): ReturnType<typeof snapshotProviders>[number] | undefined =>
   snapshotProviders().find((registered) => registered.id === id);
 
-test("with no bridge loaded the example warns, registers nothing and does not throw", async () => {
-  const warnings = captureWarnings();
-  const { pi, registrations } = recordingPi();
+test("with no bridge loaded the example buffers its message for the TUI and does not throw", async () => {
+  const captured = captureConsole();
+  const { pi, registrations, sessionHandlers } = recordingPi();
   try {
     const init = await loadExample("no-bridge");
     assert.doesNotThrow(() => init(pi));
   } finally {
-    warnings.restore();
+    captured.restore();
   }
 
-  assert.equal(warnings.messages.length, 1, "one honest warning, not a stack trace");
-  assert.match(warnings.messages[0], /not published a compatible API yet/);
-  assert.match(warnings.messages[0], /queue/i);
+  assert.deepEqual(captured.writes, [], "nothing lands in the terminal");
+  assert.equal(sessionHandlers.length, 1, "a session_start handler delivers the message");
+
+  const { ui, calls } = notifySurface();
+  sessionHandlers[0]({}, { hasUI: true, ui });
+  sessionHandlers[0]({}, { hasUI: true, ui });
+  assert.equal(calls.length, 1, "one notice, delivered exactly once");
+  assert.equal(calls[0][1], "warning", "Pi renders it as a warning, in its own report");
+  assert.match(calls[0][0], /not published a compatible API yet/);
+  assert.match(calls[0][0], /queue/i);
   assert.deepEqual(pendingInits().length, 1, "the single init waits in the process-global queue");
   assert.equal(registrations(), 1, "the bash renderer is still claimed: that half needs no bridge");
   assert.deepEqual(snapshotProviders(), []);
   assert.deepEqual(snapshotSections(), []);
 });
 
+test("an old or foreign bridge is reported as such, and only through notify", async () => {
+  hostSlot()[BRIDGE_API_KEY] = { schema: "gentle-shell-bridge/api", version: 0 };
+  const captured = captureConsole();
+  const { pi, sessionHandlers } = recordingPi();
+  try {
+    const init = await loadExample("old-bridge");
+    init(pi);
+  } finally {
+    captured.restore();
+  }
+
+  assert.deepEqual(captured.writes, [], "nothing lands in the terminal");
+  assert.equal(pendingInits().length, 1, "an incompatible bridge is treated as absent: queued");
+
+  const { ui, calls } = notifySurface();
+  sessionHandlers[0]({}, { hasUI: true, ui });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0][0], /older or foreign bridge/);
+  assert.deepEqual(snapshotSections(), []);
+});
+
+test("the example's session handler does nothing without a UI, then delivers on the next one", async () => {
+  const { pi, sessionHandlers } = recordingPi();
+  const init = await loadExample("no-ui");
+  init(pi);
+
+  const { ui, calls } = notifySurface();
+  sessionHandlers[0]({}, { hasUI: false, ui });
+  sessionHandlers[0]({}, {});
+  assert.deepEqual(calls, [], "a session without a UI shows nothing");
+
+  sessionHandlers[0]({}, { hasUI: true, ui });
+  assert.equal(calls.length, 1, "the buffered message waits for a UI that can show it");
+});
+
+test("a Pi without registerToolRenderer reports it through notify, not the terminal", async () => {
+  publishBridgeApi();
+  const sessionHandlers: SessionHandler[] = [];
+  const pi: FakePi = {
+    on(_event, handler) {
+      sessionHandlers.push(handler);
+    },
+  };
+  const captured = captureConsole();
+  try {
+    const init = await loadExample("no-renderer");
+    init(pi);
+  } finally {
+    captured.restore();
+  }
+
+  assert.deepEqual(captured.writes, []);
+  const { ui, calls } = notifySurface();
+  sessionHandlers[0]({}, { hasUI: true, ui });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0][0], /no pi\.registerToolRenderer/);
+});
+
 test("publishing the API drains the queued example: rows, store and section appear", async () => {
-  const warnings = captureWarnings();
+  const captured = captureConsole();
   const { pi } = recordingPi();
   try {
     const init = await loadExample("queued");
@@ -142,8 +240,9 @@ test("publishing the API drains the queued example: rows, store and section appe
     assert.deepEqual(snapshotSections(), []);
     assert.equal(pendingInits().length, 1);
   } finally {
-    warnings.restore();
+    captured.restore();
   }
+  assert.deepEqual(captured.writes, [], "queueing is silent on the terminal");
 
   publishBridgeApi(); // the bridge loads after the plugin
 
@@ -176,16 +275,19 @@ test("publishing the API drains the queued example: rows, store and section appe
 
 test("with the API published first the init runs immediately and nothing is queued", async () => {
   publishBridgeApi();
-  const warnings = captureWarnings();
-  const { pi, registrations } = recordingPi();
+  const captured = captureConsole();
+  const { pi, registrations, sessionHandlers } = recordingPi();
   try {
     const init = await loadExample("bridge-first");
     init(pi);
   } finally {
-    warnings.restore();
+    captured.restore();
   }
 
-  assert.deepEqual(warnings.messages, [], "no waiting warning: the bridge was already there");
+  assert.deepEqual(captured.writes, [], "no waiting message: the bridge was already there");
+  const { ui, calls } = notifySurface();
+  sessionHandlers[0]({}, { hasUI: true, ui });
+  assert.deepEqual(calls, [], "and no notice to deliver");
   assert.deepEqual(pendingInits(), [], "nothing queued");
   assert.equal(registrations(), 1);
   assert.ok(providerById("bash-card-example.rendering") !== undefined);
@@ -194,15 +296,16 @@ test("with the API published first the init runs immediately and nothing is queu
 
 test("the disposer the example returns removes both its registrations", async () => {
   publishBridgeApi();
-  const warnings = captureWarnings();
+  const captured = captureConsole();
   const { pi } = recordingPi();
   let dispose = (): void => {};
   try {
     const init = await loadExample("dispose");
     dispose = init(pi);
   } finally {
-    warnings.restore();
+    captured.restore();
   }
+  assert.deepEqual(captured.writes, []);
 
   assert.ok(providerById("bash-card-example.rendering") !== undefined);
   assert.ok(snapshotSections().some((registered) => registered.id === "bash-card.status"));
@@ -233,4 +336,6 @@ test("the example's runtime path resolves no module of the bridge", () => {
   );
   assert.match(source, /Symbol\.for\("gentle-shell-bridge\/api\/v1"\)/u);
   assert.match(source, /Symbol\.for\("gentle-shell-bridge\/pending\/v1"\)/u);
+  assert.equal(/console\./u.test(source), false, "no console write survives in the example");
+  assert.match(source, /pi\.on\("session_start"/u, "notices are delivered on session_start");
 });

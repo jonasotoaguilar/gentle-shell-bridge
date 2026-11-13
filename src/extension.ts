@@ -9,7 +9,8 @@
  * 2. arm the row bridge on `session_start`, only when the context has a UI. Arming is already
  *    idempotent (the capture target and the hook registry carry non-enumerable markers), so this
  *    module adds no second guard layer: a double load, a `/reload` or a rebind all resolve to
- *    "already armed".
+ *    "already armed". The same event flushes the notices buffered before any context existed
+ *    through `ctx.ui.notify` — the in-TUI channel — exactly once per message.
  * 3. install the sidebar surface: the `Sections` rows provider (needs no `tui`) and a
  *    `ui.setWidget` factory whose only job is to be handed the real `tui` (see `armSidebar`).
  * 4. register the `status` command and print the formatter output.
@@ -25,6 +26,7 @@
 
 import { drainBridgeQueue } from "./api.ts";
 import { armBridge } from "./arm.ts";
+import { flushNotices } from "./notices.ts";
 import { isRecord } from "./rows.ts";
 import { installSectionRows } from "./sections-rows.ts";
 import { installSidebarBackend, noteSidebarUnavailable, type SidebarTuiLike } from "./sidebar.ts";
@@ -144,8 +146,13 @@ export default function gentleShellBridge(pi: BridgeExtensionApi): void {
     // than stacking, and a throwing initialiser is isolated inside `drainBridgeQueue` — this handler
     // gains no new failure mode.
     drainBridgeQueue();
-    // Without a UI there is no customize menu to reach, so there is nothing to arm.
+    // Without a UI there is no customize menu to reach, so there is nothing to arm. There is also
+    // no `notify` to show a buffered notice with: those stay pending for the next UI session.
     if (ctx.hasUI !== true) return;
+    // The in-TUI diagnostics channel. A notice produced at module load (an incompatible API slot,
+    // a queued initialiser that threw) has been waiting for this moment; delivered notices stay in
+    // the buffer, so `/bridge-status` keeps reporting them afterwards.
+    flushNotices(ctx.ui);
     armBridge(ctx.ui);
     // The `Sections` provider needs no `tui`, so it is installed even when the rail cannot be
     // reached: the user can still see and toggle a section. Re-installing is idempotent — the bus

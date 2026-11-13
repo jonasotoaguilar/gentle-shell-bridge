@@ -27,6 +27,10 @@
  * below). Either load order works — if the bridge is not loaded yet, this example queues its
  * registration and the bridge runs it when it arrives.
  *
+ * Diagnostics stay inside Pi: nothing here writes to stdout/stderr. A message produced at load
+ * time (no bridge yet, an incompatible one, no renderer slot) is buffered and delivered through
+ * `ctx.ui.notify` on `session_start`, which is the only channel Pi renders in its own report.
+ *
  * Stale rows: the choice is read when a bash row is BUILT, not per frame, so switching it applies
  * to the next bash call. Rows already on screen keep the rendering they were built with; `Esc` or
  * scrolling does not re-render history. Pi exposes no extension API that repaints already-drawn
@@ -172,9 +176,22 @@ interface BridgeApiLike {
   createStore(pluginId: string): BridgeStoreLike;
 }
 
+/** The part of Pi's `session_start` context this file reads. */
+interface SessionContextLike {
+  hasUI?: boolean;
+  ui?: unknown;
+}
+
+/** The one channel Pi gives an extension for text that is not a row: the in-TUI notification. */
+interface NoticeUiLike {
+  notify?: (message: string, level?: "info" | "warning" | "error") => void;
+}
+
 /** The part of `ExtensionAPI` this extension uses. */
 interface ExtensionApiLike {
   registerToolRenderer?(resolver: ToolRendererResolverLike): void;
+  /** `session_start` carries the UI context, so this is where a buffered notice is delivered. */
+  on?(event: "session_start", handler: (event: unknown, ctx: SessionContextLike) => void): void;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -617,6 +634,41 @@ function attachBridge(init: BridgeInitLike): void {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The in-TUI diagnostics channel
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Messages that must reach Pi's TUI but cannot yet: at module load no context exists. They are
+ * NEVER printed — Pi renders its own diagnostics inside the TUI, and text written to the terminal
+ * at startup lands outside the report the user reads.
+ */
+const pendingNotices: string[] = [];
+/** How many a session already showed; a delivered message is never delivered twice. */
+let deliveredNotices = 0;
+
+function recordNotice(message: string): void {
+  if (!pendingNotices.includes(message)) pendingNotices.push(message);
+}
+
+/**
+ * Deliver every pending notice through `ctx.ui.notify`. A context without a `notify` delivers
+ * nothing, and a `notify` that throws leaves the remaining messages pending for the next session.
+ */
+function flushNotices(ui: unknown): void {
+  const surface = typeof ui === "object" && ui !== null ? (ui as NoticeUiLike) : undefined;
+  const notify = surface?.notify;
+  if (typeof notify !== "function") return;
+  while (deliveredNotices < pendingNotices.length) {
+    try {
+      notify.call(surface, pendingNotices[deliveredNotices], "warning");
+    } catch {
+      return;
+    }
+    deliveredNotices += 1;
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
 // The toggle rows
 // ---------------------------------------------------------------------------------------------
 
@@ -719,7 +771,7 @@ function bashCardSection(store: BridgeStoreLike, rendererRegistered: boolean): S
 function registerBashRenderer(pi: ExtensionApiLike, readMode: () => BashRenderingMode): boolean {
   const register = pi.registerToolRenderer;
   if (typeof register !== "function") {
-    console.warn("[bash-card] this Pi has no pi.registerToolRenderer; bash keeps its native rendering.");
+    recordNotice("[bash-card] this Pi has no pi.registerToolRenderer; bash keeps its native rendering.");
     return false;
   }
 
@@ -771,14 +823,31 @@ export default function bashCardExample(pi: ExtensionApiLike): () => void {
     }
   };
 
-  // Waiting is a normal, supported load order — but it is not silent: say so once, honestly, and
-  // register everything the moment the bridge arrives.
-  if (!isBridgeApi(bridgeHost()[BRIDGE_API_KEY])) {
-    console.warn(
-      "[bash-card] gentle-shell-bridge has not published a compatible API yet, so this load " +
-        "registers nothing yet: its Cards toggle and BASH CARD sidebar section are queued in " +
-        'Symbol.for("gentle-shell-bridge/pending/v1") and are added as soon as the bridge loads. ' +
-        "No path and no environment variable is involved.",
+  // Pi renders diagnostics inside the TUI, so every message this example produces is delivered
+  // there — never on stdout/stderr — and the handler does nothing when the context has no UI.
+  const onSessionStart = (_event: unknown, ctx: SessionContextLike): void => {
+    if (closed || ctx.hasUI !== true) return;
+    flushNotices(ctx.ui);
+  };
+  if (typeof pi.on === "function") pi.on("session_start", onSessionStart);
+
+  // Waiting is a normal, supported load order — but it is not silent: say so honestly, and
+  // register everything the moment the bridge arrives. The message is buffered for `session_start`
+  // above; a slot that holds something else is an OLD or foreign bridge, which is a different
+  // fact and gets its own wording.
+  const published = bridgeHost()[BRIDGE_API_KEY];
+  if (!isBridgeApi(published)) {
+    recordNotice(
+      published === undefined
+        ? "[bash-card] gentle-shell-bridge has not published a compatible API yet, so this load " +
+            "registers nothing yet: its Cards toggle and BASH CARD sidebar section are queued in " +
+            'Symbol.for("gentle-shell-bridge/pending/v1") and are added as soon as the bridge loads. ' +
+            "No path and no environment variable is involved."
+        : "[bash-card] the object at Symbol.for(\"gentle-shell-bridge/api/v1\") is not a compatible " +
+            "gentle-shell-bridge API (an older or foreign bridge), so this load registers nothing " +
+            "yet: its Cards toggle and BASH CARD sidebar section are queued in " +
+            'Symbol.for("gentle-shell-bridge/pending/v1") and are added as soon as a compatible ' +
+            "bridge loads.",
     );
   }
 
@@ -789,7 +858,7 @@ export default function bashCardExample(pi: ExtensionApiLike): () => void {
     try {
       store = api.createStore(PLUGIN_ID);
     } catch (error) {
-      console.warn(
+      recordNotice(
         `[bash-card] could not open the bridge store for "${PLUGIN_ID}": ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );

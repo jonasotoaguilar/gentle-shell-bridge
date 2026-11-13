@@ -33,7 +33,8 @@
  *
  * Consumers gate on the schema string, `version === 1` and the three callable members
  * (`isBridgeApi`). A mismatch is not an error and never a fallback to a half-working object: the
- * caller registers through the queue instead, and one warning is emitted per process.
+ * caller registers through the queue instead, and one notice is recorded per process (the TUI
+ * shows it once and `/bridge-status` keeps reporting it).
  *
  * ## Why `attachBridge` is also documented inline
  *
@@ -43,6 +44,7 @@
  */
 
 import { registerRows, registerSection } from "./bus.ts";
+import { recordNotice } from "./notices.ts";
 import { createStore } from "./store.ts";
 
 /** The release that published the object; informational, never the compatibility check. */
@@ -60,7 +62,7 @@ export const BRIDGE_API_KEY: symbol = Symbol.for("gentle-shell-bridge/api/v1");
 /** The early-loader queue: `init(api)` callbacks left by plugins that loaded first. */
 export const BRIDGE_PENDING_KEY: symbol = Symbol.for("gentle-shell-bridge/pending/v1");
 
-/** Bookkeeping for "one warning per process", kept off module scope for the same reason as the bus. */
+/** Bookkeeping for "one skew notice per process", kept off module scope for the same reason as the bus. */
 const WARNED_KEY: symbol = Symbol.for("gentle-shell-bridge/api/v1.warned");
 
 /**
@@ -121,17 +123,19 @@ function warnedState(): WarnedState {
   return created;
 }
 
-/** One clear warning per process, no matter how many copies ask. */
+/** One clear notice per process, no matter how many copies ask. */
 function warnSkewOnce(): void {
   const state = warnedState();
   if (state.skew) return;
   state.skew = true;
-  console.warn(
+  recordNotice(
     `gentle-shell-bridge: the slot ${String(BRIDGE_API_KEY)} holds an object that is not the ` +
       `"${API_SCHEMA}" API version ${String(API_VERSION)} this process expects (a different major ` +
       "version, another library's payload, or a partial object). It is treated as ABSENT: plugins " +
       "register through the early-loader queue instead, and the slot is left in place — it is " +
-      "never overwritten and never reset. This warning is emitted once per process.",
+      "never overwritten and never reset. This notice is recorded once per process and appears " +
+      "in the TUI and in /bridge-status.",
+    "warning",
   );
 }
 
@@ -203,8 +207,8 @@ export function publishBridgeApi(): BridgeApi {
  * Cheap enough to call on every `session_start` (an empty array returns immediately) and idempotent
  * by construction: a plugin registers by stable id, so a repeated drain — or the same plugin queued
  * twice by two loads — replaces instead of stacking. A throwing initialiser is isolated: it is
- * reported through `console.warn` and the remaining ones still run, so a broken third-party plugin
- * can never take the session handler down.
+ * recorded on the in-TUI notice channel and the remaining ones still run, so a broken third-party
+ * plugin can never take the session handler down.
  */
 export function drainBridgeQueue(): void {
   const queue = pendingQueue();
@@ -218,9 +222,10 @@ export function drainBridgeQueue(): void {
     try {
       init(api);
     } catch (error) {
-      console.warn(
+      recordNotice(
         "gentle-shell-bridge: a queued plugin initialiser threw and was skipped; the rest of the " +
           `queue and the bridge itself keep going: ${error instanceof Error ? error.message : String(error)}`,
+        "warning",
       );
     }
   }
@@ -246,7 +251,7 @@ export function attachBridge(init: BridgeInit): void {
 }
 
 /**
- * Test-only seam: forget the published object, the queue and the once-per-process warning. Clearing
+ * Test-only seam: forget the published object, the queue and the once-per-process notice flag. Clearing
  * the published object is what lets a test model "the plugin loaded first"; the extension never
  * calls this. Deliberately not re-exported from `src/index.ts`.
  */

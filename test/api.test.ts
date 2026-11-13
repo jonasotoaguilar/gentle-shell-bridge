@@ -39,6 +39,7 @@ import gentleShellBridge, {
   type BridgeSessionHandler,
 } from "../src/extension.ts";
 import { resetHookStateForTests } from "../src/hook.ts";
+import { resetNoticesForTests, snapshotNotices } from "../src/notices.ts";
 import { resetRowBuildStateForTests } from "../src/rows.ts";
 import {
   disableSidebarBackend,
@@ -70,17 +71,24 @@ const section = (id: string, title = "MUSIC"): SidebarSection => ({
   lines: () => ["track  one"],
 });
 
-/** Warnings are the bridge's only out-of-band channel here, so tests read them. */
-const captureWarnings = (): { messages: string[]; restore: () => void } => {
-  const messages: string[] = [];
-  const original = console.warn;
-  console.warn = (...args: unknown[]): void => {
-    messages.push(args.map((arg) => String(arg)).join(" "));
-  };
+/** Every console write the terminal would show; the bridge must produce none. */
+const captureConsole = (): { writes: string[]; restore: () => void } => {
+  const writes: string[] = [];
+  const original = { log: console.log, warn: console.warn, error: console.error };
+  const record =
+    (method: string) =>
+    (...args: unknown[]): void => {
+      writes.push(`${method}: ${args.map((arg) => String(arg)).join(" ")}`);
+    };
+  console.log = record("log");
+  console.warn = record("warn");
+  console.error = record("error");
   return {
-    messages,
+    writes,
     restore: () => {
-      console.warn = original;
+      console.log = original.log;
+      console.warn = original.warn;
+      console.error = original.error;
     },
   };
 };
@@ -103,6 +111,7 @@ test.after(() => {
 test.beforeEach(() => {
   rmSync(join(configHome, "gentle-shell-bridge"), { recursive: true, force: true });
   resetBridgeApiForTests();
+  resetNoticesForTests();
   resetBusForTests();
   resetSectionsForTests();
   resetSidebar();
@@ -292,8 +301,8 @@ test("two drains leave one provider and one section, never a duplicate", () => {
 });
 
 test("a queued init that throws is isolated: the rest run and the drain never escapes", () => {
-  const warnings = captureWarnings();
   const ran: string[] = [];
+  const captured = captureConsole();
   try {
     attachBridge(() => {
       throw new Error("plugin bug");
@@ -303,12 +312,16 @@ test("a queued init that throws is isolated: the rest run and the drain never es
     });
     assert.doesNotThrow(() => publishBridgeApi());
   } finally {
-    warnings.restore();
+    captured.restore();
   }
 
   assert.deepEqual(ran, ["second"]);
-  assert.equal(warnings.messages.length, 1);
-  assert.match(warnings.messages[0], /initiali[sz]er|init/);
+  assert.deepEqual(captured.writes, [], "the failure is not written to the terminal");
+  const notices = snapshotNotices().entries;
+  assert.equal(notices.length, 1, "one notice, kept for /bridge-status and the TUI");
+  assert.equal(notices[0].level, "warning");
+  assert.match(notices[0].message, /initiali[sz]er|init/);
+  assert.equal(notices[0].emitted, false, "no UI has seen it yet");
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -323,36 +336,39 @@ const usableSurface = (): Record<string, unknown> => ({
   createStore: () => ({ get: () => undefined, set: () => {} }),
 });
 
-test("an object that fails the gate is absent: the caller queues, nothing throws, one warning", () => {
+test("an object that fails the gate is absent: the caller queues, nothing throws, one notice", () => {
   for (const incompatible of [
     { ...usableSurface(), schema: "someone-else/api" },
     { ...usableSurface(), version: 2 },
     { schema: API_SCHEMA, version: API_VERSION },
   ]) {
     resetBridgeApiForTests();
+    resetNoticesForTests();
     hostSlot()[BRIDGE_API_KEY] = incompatible;
-    const warnings = captureWarnings();
     const seen: unknown[] = [];
+    const captured = captureConsole();
     try {
       assert.doesNotThrow(() => {
         attachBridge((api) => seen.push(api));
         attachBridge((api) => seen.push(api));
       });
     } finally {
-      warnings.restore();
+      captured.restore();
     }
 
     assert.deepEqual(seen, [], "a mismatched object is never handed to a plugin");
     assert.equal(pendingInits().length, 2, "both initialisers are queued instead");
-    assert.equal(warnings.messages.length, 1, "and the skew is reported once, not per call");
-    assert.match(warnings.messages[0], /incompatible|unsupported|version/);
+    assert.deepEqual(captured.writes, [], "the skew is never written to the terminal");
+    const notices = snapshotNotices().entries;
+    assert.equal(notices.length, 1, "and it is recorded once, not per call");
+    assert.match(notices[0].message, /incompatible|unsupported|version|not the/u);
   }
 });
 
 test("an incompatible slot is never reset, and the bridge still drains with a working API", () => {
   const incompatible = { ...usableSurface(), version: 2 };
   hostSlot()[BRIDGE_API_KEY] = incompatible;
-  const warnings = captureWarnings();
+  const captured = captureConsole();
   let drainedWith: BridgeApi | undefined;
   try {
     attachBridge((api) => {
@@ -361,8 +377,10 @@ test("an incompatible slot is never reset, and the bridge still drains with a wo
     });
     publishBridgeApi();
   } finally {
-    warnings.restore();
+    captured.restore();
   }
+
+  assert.deepEqual(captured.writes, []);
 
   assert.equal(hostSlot()[BRIDGE_API_KEY], incompatible, "the slot is left exactly as it was");
   assert.equal(isBridgeApi(hostSlot()[BRIDGE_API_KEY]), false);

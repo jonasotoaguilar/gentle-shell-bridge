@@ -12,6 +12,7 @@
 import { snapshotProviders, snapshotSections } from "./bus.ts";
 import { getCaptureDiagnostics, type CaptureOutcome } from "./capture.ts";
 import { getHookDiagnostics } from "./hook.ts";
+import { snapshotNotices, type NoticeLevel } from "./notices.ts";
 import { getLastRowBuild, type RowBuildRecord } from "./rows.ts";
 import {
   getSidebarDiagnostics,
@@ -54,6 +55,13 @@ export interface StatusSectionEntry {
   order: number | "registration";
 }
 
+/** One buffered notice, as `/bridge-status` lists it: still pending, or already delivered. */
+export interface StatusNoticeEntry {
+  level: NoticeLevel;
+  message: string;
+  delivered: boolean;
+}
+
 /** Where the sidebar interception stands, so a missing section has an answer. */
 export type StatusSidebarState = "intercepted" | "no-sidebar-state" | "unarmed";
 
@@ -84,6 +92,13 @@ export interface StatusSnapshot {
   sidebarFailures?: SidebarFailure[];
   /** Absent when the sidebar backend was never installed (reported as "not armed"). */
   sidebar?: StatusSidebarEntry;
+  /**
+   * Every buffered bridge notice, delivered or still pending. Absent when there is none, so the
+   * report for a clean session keeps its historical output exactly.
+   */
+  notices?: StatusNoticeEntry[];
+  /** Messages the bounded buffer evicted before they could be shown. Absent when none were. */
+  noticesDropped?: number;
 }
 
 /**
@@ -143,6 +158,18 @@ export function collectStatus(): StatusSnapshot {
     // The rail backend's own failures are a separate class: a throwing host render, a throwing
     // contributor. Without them, a frame that lost every section would report nothing (B1).
     snapshot.sidebarFailures = sidebarDiagnostics.lastFailures;
+  }
+  // The notices the bridge had to report out of band (a foreign API object, a queued initialiser
+  // that threw). They are listed here so removing them from the terminal never made them
+  // invisible: after the one-time notify, this is where they stay.
+  const notices = snapshotNotices();
+  if (notices.entries.length > 0) {
+    snapshot.notices = notices.entries.map((entry) => ({
+      level: entry.level,
+      message: entry.message,
+      delivered: entry.emitted,
+    }));
+    if (notices.dropped > 0) snapshot.noticesDropped = notices.dropped;
   }
   const sidebarEntry = describeSidebar(sidebarDiagnostics);
   // The sidebar line is worth a line only when it explains something: a registered section that may
@@ -335,6 +362,17 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
   } else {
     const reason = snapshot.sidebar.reason === undefined ? "" : ` (${snapshot.sidebar.reason})`;
     lines.push(`sidebar: not armed${reason}`);
+  }
+
+  if (snapshot.notices !== undefined) {
+    lines.push(`notices: ${snapshot.notices.length}`);
+    for (const notice of snapshot.notices) {
+      const state = notice.delivered ? "delivered" : "pending";
+      lines.push(`  - ${notice.level} (${state}): ${notice.message}`);
+    }
+  }
+  if (snapshot.noticesDropped !== undefined) {
+    lines.push(`notices dropped: ${snapshot.noticesDropped}`);
   }
 
   return lines;

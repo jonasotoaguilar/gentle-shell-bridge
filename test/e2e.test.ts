@@ -18,6 +18,8 @@ import {
   type RowLabel,
   type RowPreview,
   type RowProvider,
+  type SectionContext,
+  type SidebarSection,
   type Store,
   type StoreProblem,
   type StoreProblemKind,
@@ -300,12 +302,21 @@ test("the public entry exports exactly the contract surface and no test seams", 
     "VERSION",
     "createStore",
     "registerRows",
+    "registerSection",
   ]);
   for (const seam of [
     "resetBusForTests",
     "resetCaptureStateForTests",
     "resetHookStateForTests",
     "resetStoreStateForTests",
+    "snapshotSections",
+    "resetSectionsForTests",
+    "snapshotProviders",
+    "installSectionRail",
+    "installSectionRows",
+    "setRailContributor",
+    "getSectionFailures",
+    "getSidebarDiagnostics",
   ]) {
     assert.equal(seam in publicApi, false, `${seam} must not be public`);
   }
@@ -327,6 +338,15 @@ test("the documented values and types are reachable from the public entry", () =
   const store: Store = createStore("api-surface");
   const kind: StoreProblemKind = "invalid-json";
   const problem: StoreProblem = { pluginId: "api", path: "/tmp/x", kind, message: "m" };
+  // The section surface is public too: a section is written by a plugin and registered with one call.
+  const section: SidebarSection = {
+    id: "api.section",
+    title: "API",
+    meta: (sectionCtx: SectionContext) => sectionCtx.configHome,
+    lines: (sectionCtx: SectionContext) => [sectionCtx.configHome],
+    defaultVisible: true,
+    order: 1,
+  };
 
   assert.equal(provider.rows(context).length, 0);
   assert.equal(choice.value, "v");
@@ -336,5 +356,7 @@ test("the documented values and types are reachable from the public entry", () =
   assert.equal(store.pluginId, "api-surface");
   assert.equal(problem.kind, "invalid-json");
   assert.equal(STORE_SCHEMA_VERSION, 1);
-  assert.equal(VERSION, "0.0.0");
+  assert.equal(section.title, "API");
+  assert.equal(section.lines(context).length, 1);
+  assert.equal(VERSION, "0.1.0");
 });

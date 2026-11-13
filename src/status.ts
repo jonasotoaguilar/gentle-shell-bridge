@@ -9,12 +9,18 @@
  * fixed (docs/contract.md §6).
  */
 
-import { snapshotProviders } from "./bus.ts";
+import { snapshotProviders, snapshotSections } from "./bus.ts";
 import { getCaptureDiagnostics, type CaptureOutcome } from "./capture.ts";
 import { getHookDiagnostics } from "./hook.ts";
 import { getLastRowBuild, type RowBuildRecord } from "./rows.ts";
+import {
+  getSidebarDiagnostics,
+  type SidebarDiagnostics,
+} from "./sidebar.ts";
+import { getSectionFailures, type SectionRenderFailure } from "./sidebar-render.ts";
 import { getStoreDiagnostics, type StoreProblem } from "./store.ts";
 import type { CustomizeRow, RowContext, RowProvider } from "./types.ts";
+import { getSectionVisibility, isSectionVisible } from "./visibility.ts";
 
 export type StatusBackend = "hook" | "capture" | "none";
 
@@ -36,6 +42,27 @@ export interface StatusFailure {
   rowsDropped: boolean;
 }
 
+/** One registered sidebar section, as `/bridge-status` lists it. */
+export interface StatusSectionEntry {
+  id: string;
+  title: string;
+  /** The persisted (or default) visibility right now. */
+  visible: boolean;
+  /** The render position's source: an explicit integer, or registration order when absent. */
+  order: number | "registration";
+}
+
+/** Where the sidebar interception stands, so a missing section has an answer. */
+export type StatusSidebarState = "intercepted" | "no-sidebar-state" | "unarmed";
+
+export interface StatusSidebarEntry {
+  state: StatusSidebarState;
+  /** Only for `no-sidebar-state`: why nothing could be intercepted. */
+  reason?: string;
+  /** Only when intercepted: whether the part we append to is in the host's map already. */
+  rail?: "wrapped" | "pending";
+}
+
 export interface StatusSnapshot {
   providers: StatusProviderEntry[];
   backend: StatusBackend;
@@ -44,6 +71,12 @@ export interface StatusSnapshot {
   storeProblems: StoreProblem[];
   /** Absent until a menu build has happened: duplicates cannot be computed without rows. */
   duplicates?: StatusDuplicate[];
+  /** Absent when no section is registered, so a row-only run keeps its historical output. */
+  sections?: StatusSectionEntry[];
+  /** Absent when the most recent sidebar frame had no section failure. */
+  sectionFailures?: SectionRenderFailure[];
+  /** Absent when the sidebar backend was never installed (reported as "not armed"). */
+  sidebar?: StatusSidebarEntry;
 }
 
 /**
@@ -74,7 +107,59 @@ export function collectStatus(): StatusSnapshot {
   if (duplicates !== undefined) snapshot.duplicates = duplicates;
   const lastCapture = backend === "hook" ? hook.lastCapture : capture.lastOutcome;
   if (lastCapture !== undefined) snapshot.lastCapture = lastCapture;
+
+  // The sidebar surface. Nothing here runs a section: the table reports registrations and the
+  // persisted visibility, and the failures are the ones the last frame already recorded — `lines()`
+  // and `meta()` are never called by a diagnostics report.
+  const sections = snapshotSections();
+  if (sections.length > 0) {
+    const visibility = getSectionVisibility();
+    snapshot.sections = sections.map((section) => ({
+      id: section.id,
+      title: section.title,
+      visible: isSectionVisible(visibility, section),
+      order:
+        typeof section.order === "number" && Number.isFinite(section.order)
+          ? section.order
+          : "registration",
+    }));
+  }
+  const sectionFailures = getSectionFailures();
+  if (sectionFailures.length > 0) snapshot.sectionFailures = sectionFailures;
+  const sidebarEntry = describeSidebar(getSidebarDiagnostics());
+  if (sidebarEntry !== undefined) snapshot.sidebar = sidebarEntry;
+
   return snapshot;
+}
+
+/**
+ * Map the backend's diagnostics onto the three states a user needs: intercepted, present-but-nothing
+ * to intercept, or previously installed and now off. Never-installed is `undefined` ("not armed").
+ */
+function describeSidebar(diagnostics: SidebarDiagnostics): StatusSidebarEntry | undefined {
+  if (diagnostics.interceptedMaps > 0) {
+    return {
+      state: "intercepted",
+      rail: diagnostics.wrappedRails > 0 ? "wrapped" : "pending",
+    };
+  }
+  if (
+    diagnostics.lastOutcome === "no-sidebar-state" ||
+    diagnostics.lastOutcome === "resolver-threw"
+  ) {
+    return {
+      state: "no-sidebar-state",
+      ...(diagnostics.lastReason === undefined ? {} : { reason: diagnostics.lastReason }),
+    };
+  }
+  if (diagnostics.lastOutcome === "no-widget-surface") {
+    return {
+      state: "unarmed",
+      ...(diagnostics.lastReason === undefined ? {} : { reason: diagnostics.lastReason }),
+    };
+  }
+  if (diagnostics.lastOutcome !== undefined) return { state: "unarmed" };
+  return undefined;
 }
 
 /**
@@ -183,6 +268,37 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
         `  - ${duplicate.category} / "${duplicate.setting}": ${duplicate.providerIds.join(", ")}`,
       );
     }
+  }
+
+  // The sidebar blocks are emitted only when they have something to say, so a run that registered
+  // no section keeps the historical output byte for byte.
+  if (snapshot.sections !== undefined) {
+    lines.push(`sections: ${snapshot.sections.length}`);
+    for (const section of snapshot.sections) {
+      const order =
+        section.order === "registration" ? "registration order" : `order ${section.order}`;
+      const visibility = section.visible ? "visible" : "hidden";
+      lines.push(`  - ${section.id} "${section.title}": ${visibility}, ${order}`);
+    }
+  }
+
+  if (snapshot.sectionFailures !== undefined) {
+    lines.push(`section failures: ${snapshot.sectionFailures.length}`);
+    for (const failure of snapshot.sectionFailures) {
+      lines.push(`  - ${failure.sectionId} (${failure.phase}): ${failure.message}`);
+    }
+  }
+
+  if (snapshot.sidebar === undefined) {
+    if (snapshot.sections !== undefined) lines.push("sidebar: not armed");
+  } else if (snapshot.sidebar.state === "intercepted") {
+    lines.push(`sidebar: intercepted (rail ${snapshot.sidebar.rail})`);
+  } else if (snapshot.sidebar.state === "no-sidebar-state") {
+    const reason = snapshot.sidebar.reason === undefined ? "" : ` (${snapshot.sidebar.reason})`;
+    lines.push(`sidebar: no-sidebar-state${reason}`);
+  } else {
+    const reason = snapshot.sidebar.reason === undefined ? "" : ` (${snapshot.sidebar.reason})`;
+    lines.push(`sidebar: not armed${reason}`);
   }
 
   return lines;

@@ -1,7 +1,8 @@
 # ADR 0001 — Stateless composition, with an optional per-plugin store
 
 - **Status:** accepted for the extraction; implemented in `src/store.ts` and exercised by the
-  test suite.
+  test suite. **Amended** by decision 4: a registered sidebar section's visibility is the one
+  piece of state the bridge itself owns.
 - **Context:** [contract.md](contract.md), [architecture.md](architecture.md)
 - **Deciders:** package author and gentle-shell maintainers.
 
@@ -52,6 +53,25 @@ zero boilerplate gets:
 `loon-tui.json`. The bridge never reads or writes a plugin's own file. `createStore` is a
 convenience for plugins that have no file yet, not a migration target for plugins that do.
 
+**4. One exception, and only one: a sidebar section's visibility is bridge-owned state.**
+`registerSection` makes the bridge create the show/hide toggle, so the value behind that toggle
+cannot belong to the plugin: there is no plugin row, no plugin-chosen setting name and no plugin
+store in the flow. The bridge persists it in its own namespaced file,
+`<gentle config home>/gentle-shell-bridge/bridge-sections.json`, as
+
+```json
+{ "schemaVersion": 1, "values": { "sections": { "loon.music": false } } }
+```
+
+one key (`sections`) mapping section id → boolean, defaults taken from the section's
+`defaultVisible`, non-boolean values ignored rather than coerced.
+
+Why not the host's `visual-customization.json`: gentle-shell validates that file against a closed
+`VISUAL_SECTION_KEYS` list (`lib/visual-customization-policy.ts:82`, `keysMatch` ~:112-130) and
+rejects unknown keys, so a third-party section key cannot live there. The user experience is the
+native one; the file deliberately is not, and that difference is documented in
+[contract.md](contract.md) §10 rather than hidden.
+
 ## Consequences
 
 ### The correctness rule
@@ -69,6 +89,30 @@ action: () => store.set("bannerSource", value), // persist; repaint follows
 
 The bridge cannot enforce this. It can only document the rule; a plugin that caches a value
 at registration produces a stale `●` and the diagnostics command will not detect it.
+
+### Bridge-owned section visibility
+
+This is the one place the bridge is not stateless, and the reason is structural: the bridge
+generates the toggle, so only the bridge can know which value it points at. The plugin still owns
+nothing — it never sees this file, never picks a key, and its section appears or disappears from
+the same user gesture as a native one.
+
+- The blast radius stays per surface: one corrupt `bridge-sections.json` disables section
+  visibility only. It reads as empty (defaults apply), is reported by `/bridge-status` as a store
+  problem, and is rewritten as a valid document by the next toggle — the same rules
+  `createStore` already follows for plugin files.
+- A plugin that also keeps its own state is unaffected: this file is keyed by section id and the
+  bridge never reads anything else from it.
+- The cost is honest: the bridge now owns one preference. It is a preference about the bridge's
+  own surface, which is why it belongs here and not in a plugin's namespace.
+
+### Reads, cost and limits of bridge-owned visibility
+
+- Visibility is read once per frame by the renderer and once per `current()` call by the rows, so a
+  toggle shows up on the sidebar's next frame (pinned by a test), at the cost of a small file read
+  per read. A cache would need to be invalidated by the toggle's own write.
+- There is no migration path from a future `visual-customization.json` section key; if the host ever
+  opens `VISUAL_SECTION_KEYS`, this file becomes redundant and can be migrated in one place.
 
 ### Other consequences
 

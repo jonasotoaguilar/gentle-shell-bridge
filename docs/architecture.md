@@ -234,13 +234,17 @@ diagnostics stop reporting `hook`.
 
 | Module | Owns |
 | --- | --- |
-| `src/index.ts` | the plugin-facing API: `registerRows`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, types |
-| `src/extension.ts` | the Pi entry from `pi.extensions`: `session_start` arming and the `/bridge-status` command |
+| `src/index.ts` | the plugin-facing API: `registerRows`, `registerSection`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, types |
+| `src/extension.ts` | the Pi entry from `pi.extensions`: `session_start` arming (rows + sidebar widget), the `Sections` provider, and the `/bridge-status` command |
 | `src/arm.ts` | backend selection and the arm result |
 | `src/capture.ts` | the single `Array.prototype.map` patch and the captured array |
 | `src/hook.ts` | the host-registry probe and the one fan-out provider |
-| `src/bus.ts` | the `globalThis` provider list and its ordered snapshot |
+| `src/bus.ts` | the `globalThis` provider list and its ordered snapshot, plus the section registry |
 | `src/rows.ts` | the one row builder both backends call, with per-provider isolation |
+| `src/sidebar.ts` | the rail interception: the state symbol, the patched `parts` map, the rail wrapper |
+| `src/sidebar-render.ts` | the section renderer: card rows and groups per frame, clipping, failures |
+| `src/sections-rows.ts` | the bridge's own `Sections` toggle rows |
+| `src/visibility.ts` | bridge-owned section visibility in the namespaced store |
 | `src/store.ts` | `createStore`, the namespaced path and the atomic write |
 | `src/status.ts` | the `/bridge-status` text |
 | `src/config.ts`, `src/types.ts` | config-home resolution; the row, provider and context types |
@@ -248,6 +252,63 @@ diagnostics stop reporting `hook`.
 Because both backends call `src/rows.ts`, a plugin sees the same `registerRows` semantics on
 either one. Because the arming markers live on the target objects and the state slots live on
 `globalThis`, a second copy of the package arms nothing new and reads the same diagnostics.
+
+## 12. The sidebar surface
+
+The second surface a plugin can publish to. Same shape as the rows: one process-global registry,
+one interception, one place that reports why nothing appeared.
+
+### Where the rail lives, verified
+
+- Rail state hangs on the **terminal** behind
+  `Symbol.for("gentle-pi.experimental-sidebar.state")`, not in module scope
+  (`lib/shell-sidebar.ts:6,78-80`), so separately loaded extensions share one rail.
+- `sidebarPart` writes the part into `state.parts` (`:88`) and deletes it on dispose (`:92-95`).
+- The layout paints a hard-coded key order — `["todo","jobs","agents","footer"]`
+  (`lib/shell-sidebar-layout.ts:344`) — so an unknown key never renders: appending to an
+existing part is the only way in, and the `footer` part is painted last.
+- A part's cards come from `cardGroups` (`:392-410`) fed into `sectionCardRows` (`:35-44`), which
+  is why a wrapped rail can look native: the host draws the frame, we supply rows and ranges.
+- The status sections (`CHANGES`, `STATS`, `INTEGRATIONS`) are built inline in a closure
+  (`lib/shell-bar.ts:247,251-316`): unreachable, so no interleaving is possible.
+- The host's own `footer` part is registered at `extensions/gentle-shell.ts:2681`; readers reach
+  another part's `spend` through `parts.get("agents").spend()` (`:2652`), which is why every field
+  of the wrapped part is forwarded untouched, `digest` included (the layout memo keys on it).
+
+### The interception
+
+`src/sidebar.ts` patches the **map instance's own** `set` and `get` instead of replacing the map or
+subclassing it: every holder keeps the map it already has, so a part registered after our arm is
+still captured, and a part registered before it is wrapped on install. Two markers keep it
+idempotent across arms, rebinds and package copies: the map's own property holds the exact `set`
+function installed, and the wrapper rail holds the exact rail it wraps. A foreign wrapper already
+on the part is wrapped around, never replaced; `disableSidebarBackend()` restores the host's part
+and leaves any retained wrapper as a pass-through (a generation guard).
+
+### The renderer
+
+`src/sidebar-render.ts` contributes the section rows and their card groups per frame. A hidden
+section is not built at all; a throwing `lines()`/`meta()` loses only its body and is recorded for
+`/bridge-status`. Rows are clipped to the width the host passes and the body is capped at 8 rows
+with a visible `… +N more` marker.
+
+### Acquiring a `tui` — and what is unconfirmed
+
+A rail state is reached through a `tui` (`sidebarState(tui)` reads `tui.terminal`). Pi exposes
+**no `tui` getter**: `ExtensionUIContext` in `dist/core/extensions/types.d.ts` mentions `TUI` only
+as a factory parameter. The only surfaces that hand an extension's factory the real TUI are
+`ctx.ui.setWidget(key, (tui, theme) => Component)` — `interactive-mode.js:1998`,
+`content(this.ui, theme)` — plus `setFooter` (`:2084`), `setHeader`, `custom` and
+`setEditorComponent`, and each installs a rendered component. gentle-shell itself gets its `tui`
+this way (`extensions/gentle-agents.ts:2165-2175`).
+
+So `src/extension.ts` installs a widget factory that keeps the `tui` it receives and returns a
+component whose `render()` is `[]`. A missing `setWidget`, or a factory the host has not run yet, is
+recorded as `no-widget-surface` and reported as `sidebar: not armed (reason)`.
+
+**UNCONFIRMED:** whether a widget component that renders zero rows leaves the editor area visually
+untouched has not been observed in a running Pi TUI. Nothing in the docs says either way; the
+empty component is the minimal guess, and it is listed here rather than claimed.
 
 ## Limits
 
@@ -266,9 +327,15 @@ either one. Because the arming markers live on the target objects and the state 
 - **No new categories.** The renderer's `category` is a closed union of existing categories
   (`lib/visual-customize-view.ts:105`) while the bridge's `CustomizeRow.category` is a
   `string`, so a category gentle-shell does not already render renders nothing.
-- **Tests exercise a fake host, not the TUI.** 115 tests run under `node --test`; the
-  end-to-end ones drive a fake host that models `gentle-shell.ts:3550-3562`. The technique
-  itself is verified in the real TUI only by the reference probe.
+- **Tests exercise a fake host, not the TUI.** The suite runs under `node --test`; the end-to-end
+  ones drive a fake host that models `gentle-shell.ts:3550-3562` and a fake sidebar that models
+  `lib/shell-sidebar.ts` + `lib/shell-sidebar-layout.ts`'s card frame. The capture technique itself
+  is verified in the real TUI only by the reference probe; the sidebar section surface has never
+  been seen in one.
+- **Sections cannot be interleaved.** They render after every native card, by construction (see
+  §12); a request to slot one between `CHANGES` and `STATS` is not supported.
+- **The sidebar widget's visual footprint is unconfirmed** (see §12): the `tui` is acquired through
+  a widget factory, and whether an empty component is invisible has not been observed.
 - **Async factories are reported, not supported.** `Promise.resolve(factory(...))` accepts a
   promise (`interactive-mode.ts:3136`), but the capture window closes with the synchronous
   call. A promise-returning factory is returned untouched and recorded as

@@ -18,10 +18,10 @@ registration instead of stacking rows.
 Registration does **not** open the menu. Rows are built when a menu is actually
 constructed.
 
-The package's public entry exports exactly `registerRows`, `createStore`,
-`STORE_SCHEMA_VERSION`, `VERSION` and the row/provider/store types. `snapshotProviders` is
-**internal**: it exists so the bridge's own backends can read one ordered list, and it is not
-part of this contract.
+The package's public entry exports exactly `registerRows`, `registerSection`, `createStore`,
+`STORE_SCHEMA_VERSION`, `VERSION` and the row/provider/section/store types. `snapshotProviders`,
+`snapshotSections` and every `…ForTests` seam are **internal**: they exist so the bridge's own
+backends and tests can read one ordered list, and they are not part of this contract.
 
 ## 2. Provider
 
@@ -155,10 +155,15 @@ One command, `/bridge-status`, reporting:
 | Last failures | most recent provider failures: `id`, message, and whether rows were dropped |
 | Store problems | store files this process could not use, with the plugin id and the reason |
 | Duplicate settings | every `category` + `setting` pair contributed by more than one provider in the rows of the last menu build; `no build yet` before the first build |
+| Sections | every registered section with its id, title, persisted visibility and where its position comes from (`order 3` or `registration order`); omitted when no section is registered |
+| Section failures | the most recent sidebar frame's failing sections with `id`, `phase` (`lines`/`meta`) and message |
+| Sidebar | `intercepted (rail wrapped)`, `intercepted (rail pending)`, `no-sidebar-state`, or `not armed` with the reason the wiring could not acquire a `tui` |
 
 A menu that opened without the bridge's rows must show up here — armed-but-uncaptured,
-shape mismatch, or provider failure. That is the contract's answer to "the plugin is
-installed but nothing appeared".
+shape mismatch, or provider failure. A registered section that never appears must show up
+too: the sections table proves the registration, and the sidebar line proves whether the rail
+was ever reached. Diagnostics never run a provider's `rows()` and never run a section's
+`lines()` or `meta()`: both are UI, and a report is not a frame.
 
 ## 9. Persistence
 
@@ -176,12 +181,119 @@ reads as empty and is reported by `/bridge-status`; the file is not repaired or 
 a later `set` writes a valid document that carries over existing `values` entries while
 dropping foreign top-level keys. Rationale and rejected alternatives: [state.md](state.md).
 
+## 10. Sidebar sections
+
+One call adds a card to gentle-shell's fullscreen sidebar **and** its show/hide toggle to
+`/gentle:customize` → `Sections`. The plugin writes content; it never writes a `setting`, a
+`value`, a `current()`, an `action()`, a `preview()`, never names the `Sections` category and
+never touches the rail.
+
+```ts
+import { registerSection } from "gentle-shell-bridge";
+
+const dispose: () => void = registerSection({
+  id: "loon.music",                 // unique and stable: ordering, replacement, the toggle
+  title: "MUSIC",                   // card heading, drawn like AGENTS / CHANGES / STATS
+  meta: () => "1 playing",          // optional right-aligned count; omitted when blank
+  lines: (ctx) => ["track  …"],     // body, evaluated per frame
+  defaultVisible: true,             // absent means true
+  order: 10,                        // optional integer
+});
+```
+
+- `id` — registering an existing id **replaces** the previous section in place; a second
+  card never appears. That is also the toggle's identity, so a replacement keeps the user's
+  shown/hidden choice.
+- `title` — the heading the host's own card frame draws. The bridge does not draw a box.
+- `meta(ctx)` — optional right-aligned text. A throw drops that section's body (see below).
+- `lines(ctx)` — the body. Evaluated **per frame**, so live state is honest with no redraw API.
+- `defaultVisible` — the fallback until the user toggles the section.
+- `order` — sections **with** an `order` render first, ascending; sections without one follow
+  in registration order. Ties keep registration order. The rule is computed from an explicit
+  sort key, never from map iteration.
+
+`ctx` carries the same shape as `RowContext`: the resolved gentle-shell config home and the
+host theme where one is available (the rail render call carries none, so a section sees
+`theme: undefined`).
+
+### Rendering
+
+A section is drawn by the host's own card code: the bridge contributes the part's rows and
+the card groups over them, and the layout calls `sectionCardRows` on them. A body row is
+clipped to the width the host passes and the body is capped at 8 rows, with a visible
+`… +N more` marker when the cap bites. The bridge never returns a row wider than the width.
+
+**Sections render after the native ones. Interleaving is impossible**: the host's status
+sections (`CHANGES`, `STATS`, `INTEGRATIONS`) are built in a closure the bridge cannot reach
+(`lib/shell-bar.ts:247,251-316`), and the rail paints a hard-coded key order
+(`lib/shell-sidebar-layout.ts:344`). The bridge therefore appends to the last painted part
+(`footer`), so a section always follows every native card.
+
+### Hidden means not built
+
+A hidden section is not rendered **and** its `lines()`/`meta()` are not called. Hiding is a
+user choice, not a request to compute something invisible.
+
+### Failure isolation
+
+A throwing `lines()` or `meta()`, or a return that is not the documented shape, drops that
+section's body, records `{ sectionId, phase, message }` for `/bridge-status`, and leaves every
+native card and every other section rendering. A non-array or a non-string row is a failure,
+never coerced.
+
+### The automatic `Sections` rows
+
+For every registered section the bridge emits **two consecutive rows** in category
+`Sections`, sharing one `choice.setting` (`Section: <id>`), with values `shown` and `hidden`:
+
+- the label is the section title, so a user knows which line controls what;
+- `current()` reads the persisted value live, so the `●` never lies;
+- `action()` persists **first** and returns; the host's own repaint re-reads `current()`;
+- `preview()` returns a literal depiction of the card in that state, never the host's
+  "Preview unavailable" default.
+
+Rows are built per menu build from the live registry: a section registered later appears
+without re-registering anything, and a disposed section's rows disappear with it.
+
+### Persistence: the same experience, a different file
+
+Visibility is **bridge-owned state**, not plugin state — the bridge added the toggle, so a
+plugin needs no store of its own. It is persisted through the existing `createStore` helper in
+one namespaced file:
+
+`<gentle config home>/gentle-shell-bridge/bridge-sections.json`
+
+```json
+{
+  "schemaVersion": 1,
+  "values": {
+    "sections": { "loon.music": false }
+  }
+}
+```
+
+`sections` maps a section id to `true` (shown) / `false` (hidden); a missing id falls back to
+`defaultVisible`. A value that is not a boolean is ignored rather than coerced.
+
+Why not `visual-customization.json`: the host validates that file against a closed
+`VISUAL_SECTION_KEYS` list (`lib/visual-customization-policy.ts:82`, `keysMatch` ~:112-130) and
+rejects unknown keys, so a third-party section key cannot live there. The user experience is
+identical to a native section toggle; the file deliberately is not. The blast radius is the
+same per-plugin decision recorded in [state.md](state.md).
+
 ## Limits
 
 - `registerRows` and `createStore` are the contract; anything a plugin does inside
   `action()` beyond calling inline helpers is the plugin's own business.
 - Rows can join existing categories only; `category` is typed to gentle-shell's closed
   union (`lib/visual-customize-view.ts:105`).
+- **Sections join the rail after the native cards, never between them.** The host's status
+  sections are unreachable (a closure), so "interleaved with `CHANGES`" is not offered; the
+  limit is documented rather than faked.
+- The sidebar surface has been proven against a fake host that models the real rail shape
+  (`test/fake-sidebar.ts`), not in a running TUI. In particular, whether the widget Pi hands
+  the `tui` through renders nothing visible is **unconfirmed** (see
+  [architecture.md](architecture.md) §12).
 - `current()` must read live state and `action()` must persist before returning. This is a
   correctness rule the bridge cannot enforce at runtime; a plugin that caches a stale value
   renders a lying `●`.

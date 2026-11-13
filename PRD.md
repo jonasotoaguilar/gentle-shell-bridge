@@ -52,13 +52,29 @@ behind the adapter.
 | R5 | Arm-time state is idempotent: repeated `session_start`, rebinds and double loads never double-wrap or double-inject. | Idempotency | Implemented; tested across two `session_start` events and a double entry load |
 | R6 | A throwing provider loses its rows, is reported, and never breaks the menu or other providers. | Failure isolation | Implemented; tested per provider, with the failure reported by `/bridge-status` |
 | R7 | A diagnostics command reports providers, active backend, last capture outcome and last failures. | `/bridge-status` | Implemented as `/bridge-status`; formatter and entry tested, including store problems and duplicate settings from the last menu build |
-| R8 | Composition is stateless; persistence is the plugin's, with an optional namespaced store helper. | `createStore`, [docs/state.md](docs/state.md) | Implemented; `createStore` tested against temporary directories |
+| R8 | Composition is stateless; persistence is the plugin's, with an optional namespaced store helper. | `createStore`, [docs/state.md](docs/state.md) | Implemented; `createStore` tested against temporary directories. One documented exception: a sidebar section's visibility is bridge-owned (see R12) |
+| R9 | `registerSection(section)` adds a card to gentle-shell's sidebar and returns a disposer that removes it, with no extra step from the plugin. | `registerSection`, section shape | Implemented; end-to-end over the public API against the fake rail, never in a real TUI |
+| R10 | Each registered section automatically contributes two consecutive rows to `Sections` (its title, `shown`/`hidden`), reading and persisting the same value the rail renders. | Automatic toggle rows | Implemented; the menu, the persistence file and the next rail frame are asserted together — against the fake host and fake rail |
+| R11 | A hidden section is neither rendered nor built (`lines()`/`meta()` not called); a throwing section loses only its own body and is reported. | S7 failure isolation | Implemented; pinned with call counters and `/bridge-status` section failures, against the fake host |
+| R12 | Section visibility persists in the bridge's own store, not the host's `visual-customization.json`, which rejects unknown keys. | `bridge-sections.json`, [docs/state.md](docs/state.md) | Implemented; the document shape is asserted byte-for-byte, and the reason for the separate file is recorded |
 
-All eight requirements are implemented and covered by the 115-test `node --test` suite. The
-end-to-end tests drive a fake host that models `gentle-shell.ts:3550-3562`; none of them has
-been re-run in the real TUI through the package, and R7's hook branch has never met a host
-that exposes a registry. The capture technique itself is proven in the real TUI by the
-reference probe, not by these tests.
+Twelve requirements are implemented and covered by the 188-test `node --test` suite. What is
+proven and what is not:
+
+- **Proven against a fake host.** The row side drives a fake menu host that models
+  `gentle-shell.ts:3550-3562`: injection, ordering, toggles, failure isolation and the
+  diagnostics lines.
+- **Proven against a fake rail.** The sidebar side drives a fake terminal that models
+  `lib/shell-sidebar.ts`'s state symbol and `parts` map plus the layout's card frame
+  (`lib/shell-sidebar-layout.ts:35-44,392-410`): section cards, ordering, the `Sections` rows,
+  the store file, hiding and failure isolation.
+- **Not proven in a running TUI.** Neither surface has been re-run inside a real Pi +
+  gentle-shell session through the package. In particular the sidebar's `tui` is acquired
+  through `ctx.ui.setWidget`, and whether a widget whose component renders no rows leaves the
+  editor area visually untouched is **unconfirmed**. R7's hook branch has never met a host
+  that exposes the registry it looks for.
+- The capture technique itself is proven in the real TUI by the reference probe, not by these
+  tests.
 
 ## Success criteria
 
@@ -93,4 +109,16 @@ reference probe, not by these tests.
   `bridge-status` collides with neither. It has not yet been typed into a real host.
 - **Compatibility drift.** The capture depends on one constructor line and one adapter
   shape; every gentle-shell upgrade is a potential silent break until an upstream hook
-  exists.
+  exists. The sidebar surface depends on the same class of internals: the state symbol, the
+  `parts` map and the hard-coded rail key order.
+- **The sidebar widget's visual footprint is unconfirmed.** Pi exposes no `tui` getter, so the
+  bridge acquires one through `ctx.ui.setWidget` and returns a component that paints nothing.
+  Whether that component leaves the editor area untouched has not been observed; if it does
+  not, the fix is the widget's rendering, not the contract.
+- **Sections cannot be interleaved with the native cards.** The host builds its status
+  sections inside a closure, so "after every native section" is the honest contract; a user
+  request to slot a section between `CHANGES` and `STATS` cannot be met without an upstream
+  change.
+- **Bridge-owned visibility is new state.** It is one namespaced file the bridge writes; a
+  future host that opens `VISUAL_SECTION_KEYS` would make it redundant and it should then be
+  migrated rather than duplicated.

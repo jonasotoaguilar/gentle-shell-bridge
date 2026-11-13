@@ -175,6 +175,13 @@ export type SidebarInstallOutcome =
   | "no-sidebar-state"
   | "resolver-threw";
 
+/**
+ * What the wiring last recorded: an install attempt's outcome, or a problem that prevented one (no
+ * `setWidget` surface, or a factory that has not run yet). `/bridge-status` reports the difference
+ * between "we could not reach a rail" and "we never had a way to try".
+ */
+export type SidebarRecordedOutcome = SidebarInstallOutcome | "no-widget-surface";
+
 /** What one install attempt did, so the caller and `/bridge-status` can report it. */
 export interface InstallSidebarResult {
   installed: boolean;
@@ -200,6 +207,10 @@ export interface SidebarDiagnostics {
   /** Rails currently wrapped (one per intercepted map that has the part). */
   wrappedRails: number;
   lastFailures: SidebarFailure[];
+  /** The most recent install attempt's outcome; absent until the backend is installed once. */
+  lastOutcome?: SidebarRecordedOutcome;
+  /** Only for `resolver-threw` and `no-widget-surface`: the reason, verbatim. */
+  lastReason?: string;
 }
 
 type Rail = SidebarRailLike & Record<string, unknown>;
@@ -241,6 +252,9 @@ interface SidebarBackendState {
   wrapped: WrappedRailRecord[];
   contributor?: RailContributor;
   lastFailures: SidebarFailure[];
+  /** Remembered so `/bridge-status` can answer "was the rail ever reached?" (T6). */
+  lastOutcome?: SidebarRecordedOutcome;
+  lastReason?: string;
 }
 
 function backendHost(): Record<symbol, SidebarBackendState | undefined> {
@@ -278,6 +292,8 @@ export function getSidebarDiagnostics(): SidebarDiagnostics {
     interceptedMaps: state.intercepted.length,
     wrappedRails: state.wrapped.length,
     lastFailures: [...state.lastFailures],
+    ...(state.lastOutcome === undefined ? {} : { lastOutcome: state.lastOutcome }),
+    ...(state.lastReason === undefined ? {} : { lastReason: state.lastReason }),
   };
 }
 
@@ -288,6 +304,8 @@ export function resetSidebarStateForTests(): void {
   state.wrapped.length = 0;
   state.contributor = undefined;
   state.lastFailures.length = 0;
+  delete state.lastOutcome;
+  delete state.lastReason;
   // Bump so a wrapper a previous test retained becomes a pass-through instead of contributing.
   state.generation += 1;
 }
@@ -298,11 +316,33 @@ export function setRailContributor(contributor: RailContributor | undefined): vo
 }
 
 /**
+ * Record that the wiring could not even attempt an install — Pi's UI has no `setWidget`, or the
+ * factory it accepted has not run yet. Reported by `/bridge-status` as unarmed WITH the reason, so
+ * a missing section is explainable instead of silent. Never throws: reporting must not break a
+ * session start.
+ */
+export function noteSidebarUnavailable(reason: string): void {
+  const state = sidebarState();
+  state.lastOutcome = "no-widget-surface";
+  state.lastReason = reason;
+}
+
+/**
  * Intercept the host's rail map so our contribution reaches the part the layout paints, whether the
  * host registers that part before or after this call. Safe to call repeatedly: a second arm, a
  * rebind or a second copy of the package reports `already-intercepted` and installs nothing new.
  */
 export function installSidebarBackend(resolveTui: SidebarTuiResolver): InstallSidebarResult {
+  const result = attemptInstall(resolveTui);
+  // Remembered for `/bridge-status`: "the rail was never reached" must be answerable (T6).
+  const state = sidebarState();
+  state.lastOutcome = result.outcome;
+  if (result.reason === undefined) delete state.lastReason;
+  else state.lastReason = result.reason;
+  return result;
+}
+
+function attemptInstall(resolveTui: SidebarTuiResolver): InstallSidebarResult {
   let resolved: SidebarTuiLike | undefined;
   try {
     resolved = resolveTui();
@@ -415,7 +455,9 @@ export function disableSidebarBackend(): number {
     }
   }
 
-  // A wrapper retained by foreign code becomes a pass-through through this bump.
+  // A wrapper retained by foreign code becomes a pass-through through this bump. The remembered
+  // outcome stays: "installed once, now off" is what lets `/bridge-status` answer "unarmed" rather
+  // than "never attempted".
   state.generation += 1;
   return restored;
 }

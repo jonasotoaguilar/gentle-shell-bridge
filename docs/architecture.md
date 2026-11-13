@@ -234,8 +234,9 @@ diagnostics stop reporting `hook`.
 
 | Module | Owns |
 | --- | --- |
-| `src/index.ts` | the plugin-facing API: `registerRows`, `registerSection`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, types |
-| `src/extension.ts` | the Pi entry from `pi.extensions`: `session_start` arming (rows + sidebar widget), the `Sections` provider, and the `/bridge-status` command |
+| `src/index.ts` | the plugin-facing API: `registerRows`, `registerSection`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, `attachBridge`, `isBridgeApi`, types; importing it also publishes the handshake through `./api.ts` |
+| `src/api.ts` | the runtime handshake: the two `Symbol.for` slots, the frozen published object, the shape gate, the early-loader queue and the drain |
+| `src/extension.ts` | the Pi entry from `pi.extensions`: queue drain and `session_start` arming (rows + sidebar widget), the `Sections` provider, and the `/bridge-status` command |
 | `src/arm.ts` | backend selection and the arm result |
 | `src/capture.ts` | the single `Array.prototype.map` patch and the captured array |
 | `src/hook.ts` | the host-registry probe and the one fan-out provider |
@@ -312,6 +313,75 @@ recorded as `no-widget-surface` and reported as `sidebar: not armed (reason)`.
 untouched has not been observed in a running Pi TUI. Nothing in the docs says either way; the
 empty component is the minimal guess, and it is listed here rather than claimed.
 
+## 13. Runtime discovery: a frozen object, not a path
+
+How a plugin that does not depend on this package reaches it. Everything above assumes the plugin
+already holds `registerRows` / `registerSection`; this section is how it gets them with nothing
+installed, configured or imported.
+
+### What Pi does and does not offer
+
+- **No service registry.** Pi's extension API (`docs/extensions.md`) exposes registration calls
+  (commands, tools, providers, MCP servers, handlers) but no lookup that returns another
+  extension's live object. There is nothing a plugin could call to ask "is gentle-shell-bridge
+  loaded?".
+- **`pi.events` is the only sanctioned cross-extension channel** (`docs/extensions.md:1965-1972`,
+  "Shared event bus for communication between extensions"), and it is a notification bus:
+  `emit`/`on` delivers values to listeners at emit time. It is not a registry the host reads
+  synchronously while it builds the menu. gentle-shell builds its rows inside the `ctx.ui.custom`
+  factory (§5) and reads the rail map at render time (§12), so a plugin reachable only through an
+  event handler cannot put rows into either. Events are not the seam.
+- **`globalThis` is the one object two separately loaded extensions already share** in one
+  process, and gentle-shell already relies on it: one stable `Symbol.for` key per piece of
+  process-global state (`lib/shell-card.ts:40-41`, `lib/card-content-policy.ts:78`,
+  `lib/shell-sidebar.ts:6`), because Pi loads every extension through its own jiti module
+  instance (§7).
+
+### The convention this follows
+
+- `pi-lens` mounts its IO bridge at a stable `Symbol.for` key with a version constant, first-wins
+  and frozen, and a breaking major takes a **new** symbol key instead of mutating the old slot
+  (`clients/io-bridge-contract.ts:25-32`, `clients/process-bridge.ts:48-81`).
+- gentle-shell names its shared payloads with a `schema` string and gates on the exact shape
+  before using them (`lib/card-content-policy.ts:11,40`, `lib/card-style-policy.ts:29`).
+
+The bridge combines the two. `Symbol.for("gentle-shell-bridge/api/v1")` holds a frozen object
+carrying the schema string, the major version and the three callable members, and the consumer
+checks all of them with `isBridgeApi` (`src/api.ts`). `v1` in the key is the major: `v2` is a new
+key and `v1` is never mutated.
+
+### First wins, and the early-loader queue
+
+`src/api.ts` publishes at module load — importing `./extension.ts` or `./index.ts` loads it — so
+the API exists before any `session_start`. A compatible object already in the slot is kept and
+returned untouched. An incompatible one is left exactly where it is (never overwritten, deleted
+or reset); the bridge drains with its own copy, which operates on the same process-global bus
+(§7), so a squatter cannot strand a queued plugin.
+
+A plugin that loads first cannot call a function that is not there yet, so it leaves `init(api)`
+in `Symbol.for("gentle-shell-bridge/pending/v1")`. The bridge drains that queue at two points:
+when it publishes, and on every `session_start` (`src/extension.ts:140-146`). Draining is
+idempotent because registration is by stable id, and a throwing initialiser is skipped with a
+warning instead of taking the session handler down.
+
+### Why a path, and why an environment variable, were rejected
+
+A path is not a contract between two independent projects: it names one checkout on one machine,
+reaches into another package's files, and breaks silently the day either repository moves. An
+environment variable is the same problem plus a per-user setup step, so the feature stops working
+until someone is told to set it — not "zero extra steps". Both were in the worked example
+(`bridgeCandidates()`, a dynamic `import()`, `GENTLE_SHELL_BRIDGE_MODULE`) and both are gone: the
+example now inlines the two symbols and the gate (`examples/bash-card.ts`) and works whichever
+side loads first.
+
+### Version skew
+
+An object that fails the gate — another library's payload, another major, a partial object — is
+**absent**, never an error and never half-used: the consumer queues on the pending path exactly
+as if the bridge were not loaded, the bridge emits one warning per process, and the slot is left
+for whoever wrote it. The queued path still runs the plugin when the bridge publishes or on the
+next `session_start`.
+
 ## Limits
 
 - **Internals, not an API.** Everything here depends on one constructor line, one adapter
@@ -342,3 +412,8 @@ empty component is the minimal guess, and it is listed here rather than claimed.
   promise (`interactive-mode.ts:3136`), but the capture window closes with the synchronous
   call. A promise-returning factory is returned untouched and recorded as
   `uncaptured (async-factory)`, so no rows are injected; this is a test case, not a fix.
+- **The runtime handshake is proven in-process.** The suite resets `globalThis`, simulates an
+  early loader and loads the real example more than once under `node --test`; two live Pi
+  extensions loading in either order inside one running session have not been observed, and
+  neither has a real second major version at the slot (the skew branch is driven by a fake
+  object).

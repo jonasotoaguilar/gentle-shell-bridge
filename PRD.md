@@ -58,7 +58,7 @@ behind the adapter.
 | R11 | A hidden section is neither rendered nor built (`lines()`/`meta()` not called); a throwing section loses only its own body and is reported. | S7 failure isolation | Implemented; pinned with call counters and `/bridge-status` section failures, against the fake host |
 | R12 | Section visibility persists in the bridge's own store, not the host's `visual-customization.json`, which rejects unknown keys. | `bridge-sections.json`, [docs/state.md](docs/state.md) | Implemented; the document shape is asserted byte-for-byte, and the reason for the separate file is recorded |
 
-Twelve requirements are implemented and covered by the 188-test `node --test` suite. What is
+Twelve requirements are implemented and covered by the 216-test `node --test` suite. What is
 proven and what is not:
 
 - **Proven against a fake host.** The row side drives a fake menu host that models

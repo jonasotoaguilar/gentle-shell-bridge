@@ -2,7 +2,8 @@
 
 - **Status:** accepted for the extraction; implemented in `src/store.ts` and exercised by the
   test suite. **Amended** by decision 4: a registered sidebar section's visibility is the one
-  piece of state the bridge itself owns.
+  piece of state the bridge itself owns. **Amended** by decision 5: plugins reach the bridge
+  through a published, versioned `globalThis` slot instead of a path or an environment variable.
 - **Context:** [contract.md](contract.md), [architecture.md](architecture.md)
 - **Deciders:** package author and gentle-shell maintainers.
 
@@ -70,7 +71,7 @@ Why not the host's `visual-customization.json`: gentle-shell validates that file
 `VISUAL_SECTION_KEYS` list (`lib/visual-customization-policy.ts:82`, `keysMatch` ~:112-130) and
 rejects unknown keys, so a third-party section key cannot live there. The user experience is the
 native one; the file deliberately is not, and that difference is documented in
-[contract.md](contract.md) §10 rather than hidden.
+[contract.md](contract.md) §11 rather than hidden.
 
 ## Consequences
 
@@ -155,6 +156,34 @@ is why the optional helper wins over pure minimalism.
 **C. Chosen: stateless composition plus optional namespaced store.** Keeps the blast radius
 per plugin (A's failure mode), keeps a fixable default for the write path (B's gap), and
 leaves existing plugin files untouched.
+
+**D. Rejected: the plugin imports the bridge by path, or the user sets
+`GENTLE_SHELL_BRIDGE_MODULE`.** The worked example used to resolve the package by trying a
+dynamic `import()` of candidate `src/index.ts` paths. Rejected: a path is not a contract between
+two independent projects — it names one checkout on one machine, reaches into another package's
+files, and breaks silently the day either repository moves. An environment variable moves the
+same path into every user's shell setup, so the feature does nothing until someone is told to set
+it, which contradicts "one call, zero extra steps". Neither channel carries a version gate, so
+either can hand a plugin an object it cannot use with no way to notice. Removed from the example
+in `f0f30fe`.
+
+**E. Chosen: publish a frozen, versioned object on `globalThis`, with an early-loader queue.**
+The bridge publishes `{ schema, version, VERSION, registerRows, registerSection, createStore,
+drain }` at `Symbol.for("gentle-shell-bridge/api/v1")` when its module loads — first-wins, never
+overwritten, never reset — and drains `Symbol.for("gentle-shell-bridge/pending/v1")` at publish
+time and on every `session_start`. A consumer gates on the schema string, `version === 1` and the
+three callable members; anything else is absent, the bridge warns once per process, and the queued
+path still works. `attachBridge(init)` and `isBridgeApi(value)` are the same handshake for a
+plugin that does import the package, and the exact form is quoted in
+[contract.md](contract.md) §9. It follows the `pi-lens` bridge convention (stable symbol,
+versioned, first-wins frozen, new major = new key) and gentle-shell's schema-string plus shape
+gate.
+
+The cost is real and accepted: every plugin repeats the same handful of lines — a symbol lookup,
+a shape gate and a queue push — and copies them into its own file, because the whole point is
+that it cannot import the bridge. That boilerplate lasts until Pi ships a real cross-extension
+registry; on that day the inline block in each plugin becomes one call and this decision is
+superseded, not extended.
 
 ## Open questions
 

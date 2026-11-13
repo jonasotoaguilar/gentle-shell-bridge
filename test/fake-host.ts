@@ -61,8 +61,15 @@ export interface FakeHost {
   invalidateCount: () => number;
   disposeCount: () => number;
   factoryCallCount: () => number;
-  /** Enter on the row whose rendered label matches, including the view's own repaint. */
+  /** Enter on the first visible row whose rendered label matches, including the view's repaint. */
   press: (label: string) => Promise<void>;
+  /** Enter on the first visible row matching, so a test can target a choice value, not a label. */
+  pressRow: (match: (row: FakeRow) => boolean) => Promise<void>;
+  /**
+   * The `●`/`○` lines the real renderer draws: consecutive rows sharing `choice.setting` become one
+   * line (`lib/visual-customize-view.ts:583-595`), so this reads `current()` at render time.
+   */
+  toggleLines: () => string[];
 }
 
 const inlineHelpers: InlineHelpers = {
@@ -123,10 +130,37 @@ export function createFakeHost(options: FakeHostOptions = {}): FakeHost {
     },
   });
 
-  const press = async (label: string): Promise<void> => {
-    const row = rows.filter(isVisible).find((candidate) => labelText(candidate.label) === label);
-    if (row === undefined) throw new Error(`fake host: no visible row labelled "${label}"`);
+  const pressRow = async (match: (row: FakeRow) => boolean): Promise<void> => {
+    const row = rows.filter(isVisible).find(match);
+    if (row === undefined) throw new Error("fake host: no visible row matched the predicate");
     await runAction(row);
+  };
+
+  const press = (label: string): Promise<void> =>
+    pressRow((candidate) => labelText(candidate.label) === label);
+
+  const toggleLines = (): string[] => {
+    const visible = rows.filter(isVisible);
+    const lines: string[] = [];
+    let index = 0;
+    while (index < visible.length) {
+      const setting = visible[index].choice?.setting;
+      if (setting === undefined) {
+        index += 1;
+        continue;
+      }
+      let end = index;
+      while (end + 1 < visible.length && visible[end + 1].choice?.setting === setting) end += 1;
+      const marks = visible
+        .slice(index, end + 1)
+        .map((row) => {
+          const mark = row.choice?.current() === true ? "●" : "○";
+          return `${mark} ${row.choice?.value ?? ""}`.trim();
+        });
+      lines.push(`${setting} ${marks.join(" ")}`);
+      index = end + 1;
+    }
+    return lines;
   };
 
   const factory: CustomFactory = (_ui, _theme, ..._rest) => {
@@ -171,5 +205,7 @@ export function createFakeHost(options: FakeHostOptions = {}): FakeHost {
     disposeCount: () => disposeCount,
     factoryCallCount: () => factoryCallCount,
     press,
+    pressRow,
+    toggleLines,
   };
 }

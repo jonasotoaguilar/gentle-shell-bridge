@@ -44,6 +44,46 @@ test("every declared extension path resolves to an existing file inside the pack
   }
 });
 
+/**
+ * The same containment rule the extension paths are held to: a package-root-relative path that
+ * exists, is a file, and cannot escape the package root.
+ */
+const assertResolvesInsidePackage = (entry: unknown, label: string): void => {
+  assert.equal(typeof entry, "string", `${label} must be a string: ${String(entry)}`);
+  assert.ok((entry as string).length > 0, `${label} must not be empty`);
+  assert.ok(!isAbsolute(entry as string), `${label} must be package-root relative: ${String(entry)}`);
+  const resolved = resolve(packageRoot, entry as string);
+  const relativeToRoot = relative(packageRoot, resolved);
+  assert.ok(
+    relativeToRoot.length > 0 && !relativeToRoot.startsWith("..") && !isAbsolute(relativeToRoot),
+    `${label} escapes the package root: ${String(entry)}`,
+  );
+  assert.ok(existsSync(resolved), `${label} does not exist: ${String(entry)} -> ${resolved}`);
+  assert.ok(statSync(resolved).isFile(), `${label} is not a file: ${String(entry)} -> ${resolved}`);
+};
+
+test("types points at an existing file inside the package", () => {
+  assertResolvesInsidePackage(manifest.types, "types");
+});
+
+test("exports maps the package root to existing files inside the package", () => {
+  const rootExports = manifest.exports?.["."];
+  assert.ok(rootExports !== undefined, 'exports must expose the package root as "."');
+
+  if (typeof rootExports === "string") {
+    assertResolvesInsidePackage(rootExports, 'exports["."]');
+    return;
+  }
+
+  assertResolvesInsidePackage(rootExports.types, 'exports["."].types');
+  assertResolvesInsidePackage(rootExports.default, 'exports["."].default');
+  assert.equal(
+    rootExports.types,
+    manifest.types,
+    "the root export's types target must be the same file as the types field",
+  );
+});
+
 test("test and typecheck scripts are declared", () => {
   assert.equal(manifest.scripts?.test, "node --test");
   assert.equal(manifest.scripts?.typecheck, "tsc --noEmit");

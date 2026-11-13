@@ -15,10 +15,14 @@
  *
  * Malformed files: a file that is not valid JSON, does not parse to an object, or carries an
  * unknown `schemaVersion` is reported through `status`, never repaired and never deleted. Reads
- * fall back to the caller's default. A later `set` writes a valid `schemaVersion: 1` document and
- * carries over the existing `values` entries when the file was parseable and `values` was an
- * object — so a plugin's data survives a downgrade or a partially written file — while any other
- * top-level key is dropped, because the bridge cannot know what a foreign or future key means.
+ * fall back to the caller's default.
+ *
+ * A later `set` writes a valid `schemaVersion: 1` document. Existing `values` are carried forward
+ * ONLY when the file was a usable `schemaVersion: 1` document, so a partially written file keeps
+ * its other keys. For an unknown `schemaVersion` the write stores only the keys the caller sets —
+ * re-labelling a future payload as schema 1 would be a lie about its format — and the discarded
+ * payload is recorded as a store problem so `/bridge-status` shows what happened. Foreign
+ * top-level keys are always dropped, because the bridge cannot know what they mean.
  */
 
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -118,10 +122,11 @@ export function createStore(pluginId: string): Store {
       if (read.problem !== undefined) {
         // An unusable file reads as empty. Its `values` are kept only so a later `set` can carry
         // them over — an unknown or future schema must never serve foreign data to the caller.
+        // A reported problem stays on record until a write resolves it, so a read of a usable
+        // file cannot silently erase what `/bridge-status` is supposed to show.
         recordProblem(read.problem);
         return fallback;
       }
-      clearProblem(pluginId);
       return Object.hasOwn(read.values, key) ? (read.values[key] as T) : fallback;
     },
     set(key: string, value: unknown): void {
@@ -129,7 +134,8 @@ export function createStore(pluginId: string): Store {
       // Serialise before touching the disk so an unserialisable value cannot truncate the file.
       const document = {
         schemaVersion: STORE_SCHEMA_VERSION,
-        values: { ...read.values, [key]: value },
+        // Only a usable schema-1 document contributes existing values to the write.
+        values: { ...(read.carriesValues ? read.values : {}), [key]: value },
       };
       const serialised = `${JSON.stringify(document, null, 2)}\n`;
 
@@ -148,7 +154,19 @@ export function createStore(pluginId: string): Store {
         }
         throw error;
       }
-      clearProblem(pluginId);
+      if (
+        !read.carriesValues &&
+        read.problem !== undefined &&
+        read.problem.kind === "unsupported-schema-version"
+      ) {
+        // The write dropped a payload the bridge could not interpret; keep that fact visible.
+        recordProblem({
+          ...read.problem,
+          message: `${read.problem.message}; its payload was discarded by this write, which stored only the keys set afterwards`,
+        });
+      } else {
+        clearProblem(pluginId);
+      }
     },
   };
 }
@@ -178,6 +196,8 @@ function resolveStorePath(pluginId: string): string {
 
 interface ReadResult {
   values: Record<string, unknown>;
+  /** Existing values may be carried into a write: only for a usable `schemaVersion: 1` document. */
+  carriesValues: boolean;
   problem?: StoreProblem;
 }
 
@@ -186,9 +206,10 @@ function readValues(pluginId: string, path: string): ReadResult {
   try {
     raw = readFileSync(path, "utf8");
   } catch (error) {
-    if (isNotFound(error)) return { values: {} };
+    if (isNotFound(error)) return { values: {}, carriesValues: false };
     return {
       values: {},
+      carriesValues: false,
       problem: {
         pluginId,
         path,
@@ -204,6 +225,7 @@ function readValues(pluginId: string, path: string): ReadResult {
   } catch (error) {
     return {
       values: {},
+      carriesValues: false,
       problem: {
         pluginId,
         path,
@@ -216,14 +238,17 @@ function readValues(pluginId: string, path: string): ReadResult {
   if (!isRecord(parsed)) {
     return {
       values: {},
+      carriesValues: false,
       problem: { pluginId, path, kind: "not-an-object", message: "document is not a JSON object" },
     };
   }
 
   if (parsed.schemaVersion !== STORE_SCHEMA_VERSION) {
     return {
-      // Keep whatever values the file has, so a later `set` does not drop a plugin's data.
-      values: isRecord(parsed.values) ? { ...parsed.values } : {},
+      // An unknown schema's payload is NOT carried forward: the bridge cannot know its meaning,
+      // so a write must not re-label it as schema 1. It is reported instead (see `set`).
+      values: {},
+      carriesValues: false,
       problem: {
         pluginId,
         path,
@@ -236,6 +261,7 @@ function readValues(pluginId: string, path: string): ReadResult {
   if (!isRecord(parsed.values)) {
     return {
       values: {},
+      carriesValues: false,
       problem: {
         pluginId,
         path,
@@ -245,7 +271,7 @@ function readValues(pluginId: string, path: string): ReadResult {
     };
   }
 
-  return { values: parsed.values };
+  return { values: parsed.values, carriesValues: true };
 }
 
 function isNotFound(error: unknown): boolean {

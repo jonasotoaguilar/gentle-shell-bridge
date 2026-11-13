@@ -9,7 +9,7 @@ each other when more than one wants to add a settings row.
 **Status: pre-release (`0.0.0`).** The package exists and runs. It is a manifest-backed Pi
 package (`pi.extensions` → `./src/extension.ts`) loaded from TypeScript sources through
 jiti, so there is no build step and no `dist/`; it registers a `bridge-status` command and
-carries a `node --test` suite of 112 tests, 10 of them end-to-end through the public API and
+carries a `node --test` suite of 115 tests, 10 of them end-to-end through the public API and
 the real extension entry. The capture technique was proven in the real TUI by a 76-line
 throwaway extension (`loon-customize-probe.ts`); the capture backend implements it, while
 the hook backend is implemented but **unverified** — no host has been observed emitting the
@@ -106,7 +106,7 @@ fan-out provider into a host registry.
 - **The capture is heuristic.** It recognises the row array by shape; a menu that builds
   its rows differently produces no capture. That case is reported by `/bridge-status` instead of
   passing silently.
-- **Tests cover a fake host, not the real TUI.** 112 tests run under `node --test`; 10 of
+- **Tests cover a fake host, not the real TUI.** 115 tests run under `node --test`; 10 of
   them are end-to-end through the public API and the extension entry, against a fake host
   that models `gentle-shell.ts:3550-3562`. The capture technique is verified in the real TUI
   only by the reference probe, and the hook backend has never run against a real host.

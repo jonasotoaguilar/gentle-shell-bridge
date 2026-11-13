@@ -11,7 +11,10 @@
  * ## Capture-selection rule (why a wrong target can never be silent)
  *
  * Each wrapped `custom` call owns one capture *session* and one candidate list, and the probe
- * records a mapped array into the innermost active session only. That makes attribution exact:
+ * records a mapped array into the innermost active session only. The probe is installed around the
+ * FACTORY INVOCATION, not around the host call, so a host that resolves its factory in a later
+ * microtask (`Promise.resolve().then(factory)`) is still covered; a factory that itself returns a
+ * promise stays the documented unsupported case. That makes attribution exact:
  *
  * - A nested `custom` call — from the host factory or from a provider's own `rows()` — gets its
  *   own session, so it can never steal the outer menu's capture, and its menu receives its own
@@ -25,7 +28,9 @@
  *
  * Arming is idempotent per target: the non-enumerable marker holds the exact wrapper function it
  * installed, and is read as an OWN property, so a rebind that installs a new `custom` on an
- * instance inheriting an already-wrapped prototype always rearms.
+ * instance inheriting an already-wrapped prototype always rearms. Every wrapper also carries the
+ * generation it was created in: `disableCaptureBackend()` bumps the generation, so a wrapper that
+ * foreign code kept a reference to becomes a plain pass-through instead of injecting later.
  *
  * Shared state lives on `globalThis` behind a `Symbol.for` key, like the bus: a second copy of
  * this package loaded by jiti's `moduleCache: false` must see the same arming, the same sessions
@@ -114,6 +119,8 @@ interface CaptureSession {
 interface CaptureState {
   armedTargets: number;
   nestingDepth: number;
+  /** Bumped by `disableCaptureBackend()`; a wrapper from an older generation is a pass-through. */
+  generation: number;
   /** Innermost last: a mapped array is recorded into the top session only. */
   sessions: CaptureSession[];
   /** The `Array.prototype.map` in force before the probe was installed, while it is installed. */
@@ -138,6 +145,7 @@ function captureState(): CaptureState {
   const created: CaptureState = {
     armedTargets: 0,
     nestingDepth: 0,
+    generation: 0,
     sessions: [],
     lastOutcome: undefined,
     lastFailures: [],
@@ -167,6 +175,8 @@ export function resetCaptureStateForTests(): void {
   const state = captureState();
   state.armedTargets = 0;
   state.nestingDepth = 0;
+  // Bump so wrappers left in foreign closures from an earlier test become pass-throughs.
+  state.generation += 1;
   state.sessions = [];
   state.savedMap = undefined;
   state.lastOutcome = undefined;
@@ -262,28 +272,17 @@ function wrapCustom(target: MutableTarget, shape: "instance" | "prototype"): Ins
   // never inspects the result, it only forwards it, so the return type is not a claim about its
   // shape.
 
+  const generation = captureState().generation;
   const wrapper = function (this: unknown, ...args: unknown[]): HostCustomResult {
+    const state = captureState();
     const factory = args[0];
     const rest = args.slice(1);
-    if (typeof factory !== "function") {
+    // A wrapper retained by foreign code after a disable must never capture or inject again; it
+    // behaves exactly like the host's own method.
+    if (state.generation !== generation || typeof factory !== "function") {
       return callHost.apply(this, args as [unknown, ...unknown[]]);
     }
-
-    const state = captureState();
-    const outermost = state.sessions.length === 0;
-    const session: CaptureSession = { candidates: [] };
-    state.sessions.push(session);
-    state.nestingDepth = state.sessions.length;
-    if (outermost) installProbe();
-    try {
-      return callHost.apply(this, [createCaptureFactory(factory as HostFactory, session), ...rest]);
-    } finally {
-      // Restored even when the factory or the host throws, so neither the session stack nor the
-      // patched `Array.prototype.map` can leak.
-      state.sessions.pop();
-      state.nestingDepth = state.sessions.length;
-      if (outermost) removeProbe();
-    }
+    return callHost.apply(this, [createCaptureFactory(factory as HostFactory), ...rest]);
   };
 
   target.custom = wrapper;
@@ -318,23 +317,39 @@ export function disableCaptureBackend(): number {
     }
   }
   state.armedTargets = 0;
+  state.generation += 1;
   return restored;
 }
 
-/** Wrap exactly one host factory call, attributing every mapped array to its own session. */
-function createCaptureFactory(factory: HostFactory, session: CaptureSession): HostFactory {
+/** Wrap exactly one factory invocation, attributing every mapped array to its own session. */
+function createCaptureFactory(factory: HostFactory): HostFactory {
   return (ui, theme, ...rest) => {
+    const state = captureState();
+    const outermost = state.sessions.length === 0;
+    const session: CaptureSession = { candidates: [] };
+    state.sessions.push(session);
+    state.nestingDepth = state.sessions.length;
+    // The probe wraps the FACTORY INVOCATION, so a host that calls the factory in a later
+    // microtask still runs under it. A factory that returns a promise is handled below.
+    if (outermost) installProbe();
+
     let component: HostCustomResult;
     try {
       component = factory(ui, theme, ...rest);
     } catch (error) {
       // Nothing was injected into this session: say so rather than leaving the previous outcome.
-      captureState().lastOutcome = {
+      state.lastOutcome = {
         kind: "uncaptured",
         injectedRows: 0,
         reason: "factory-threw",
       };
       throw error;
+    } finally {
+      // Restored even when the factory or the host throws, so neither the session stack nor the
+      // patched `Array.prototype.map` can leak.
+      state.sessions.pop();
+      state.nestingDepth = state.sessions.length;
+      if (outermost) removeProbe();
     }
     resolveSession(session, component, theme);
     return component;

@@ -19,7 +19,7 @@ import {
 } from "../src/hook.ts";
 import { resetRowBuildStateForTests } from "../src/rows.ts";
 import { collectStatus, formatStatus } from "../src/status.ts";
-import { createStore, resetStoreStateForTests } from "../src/store.ts";
+import { createStore, getStoreDiagnostics, resetStoreStateForTests } from "../src/store.ts";
 import type { CustomizeRow, RowProvider } from "../src/types.ts";
 import { createFakeHost } from "./fake-host.ts";
 
@@ -398,4 +398,86 @@ test("removing the host registry clears the hook state and status stops reportin
   const host = createFakeHost();
   assert.equal(armBridge(host.ui).backend, "capture");
   assert.equal(collectStatus().backend, "capture");
+});
+
+// F1 — a host that invokes the factory asynchronously must still be captured.
+test("a host that invokes the factory in a later microtask still captures", async () => {
+  registerRows(labelsProvider("p1", "Cards", ["Deferred row"]));
+  const menu = actionRows("deferred menu");
+  const ui = {
+    custom: (factory: (ui: unknown, theme: unknown) => unknown) =>
+      Promise.resolve().then(() => factory(undefined, {})),
+  };
+  installCaptureBackend(ui);
+
+  const result = await ui.custom(() => {
+    menu.map((row) => row.label);
+    return adapter();
+  });
+
+  assert.ok(result !== undefined);
+  assert.deepEqual(rowLabels(menu), [
+    "deferred menu 1",
+    "deferred menu 2",
+    "deferred menu 3",
+    "Deferred row",
+  ]);
+  assert.deepEqual(getCaptureDiagnostics().lastOutcome, { kind: "injected", injectedRows: 1 });
+});
+
+// F2 — a wrapper retained by foreign code must stop capturing once disabled.
+test("a wrapper retained by foreign code is a pass-through after disable", () => {
+  registerRows(labelsProvider("p1", "Cards", ["Must not appear"]));
+  const menu = actionRows("after disable");
+  const host = createFakeHost();
+  installCaptureBackend(host.ui);
+  const wrapperA = host.ui.custom;
+  assert.equal(typeof wrapperA, "function");
+
+  // Foreign code keeps a reference to wrapper A and wraps it in its own `custom`.
+  const foreign = (factory: (ui: unknown, theme: unknown) => unknown) => wrapperA!(factory);
+  host.ui.custom = foreign;
+  installCaptureBackend(host.ui); // wrapper B around `foreign`
+
+  disableCaptureBackend();
+  disableCaptureBackend();
+
+  host.ui.custom(() => {
+    menu.map((row) => row.label);
+    return adapter();
+  });
+
+  assert.equal(host.ui.custom, foreign, "the foreign wrapper is preserved, not clobbered");
+  assert.deepEqual(rowLabels(menu), ["after disable 1", "after disable 2", "after disable 3"]);
+  assert.equal(getCaptureDiagnostics().armedTargets, 0);
+});
+
+// F3 — a future schema's payload must not be re-labelled as schema 1.
+test("an unknown-schema payload is not carried into a written schema-1 document", () => {
+  configHome = mkdtempSync(join(tmpdir(), "gsb-regression-"));
+  previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+  process.env.GENTLE_PI_CONFIG_HOME = configHome;
+  const bridgeDir = join(configHome, "gentle-shell-bridge");
+  mkdirSync(bridgeDir, { recursive: true });
+  const path = join(bridgeDir, "future.json");
+  writeFileSync(path, JSON.stringify({ schemaVersion: 99, values: { mode: "foreign" } }), "utf8");
+  const store = createStore("future");
+
+  store.set("other", true);
+
+  const document = JSON.parse(readFileSync(path, "utf8"));
+  assert.equal(document.schemaVersion, 1);
+  assert.deepEqual(document.values, { other: true }, "only what the caller set is written");
+  assert.equal(store.get("mode", "default"), "default", "the foreign payload is not resurrected");
+  assert.equal(store.get("other", false), true);
+
+  const problems = getStoreDiagnostics();
+  assert.equal(problems.length, 1);
+  assert.equal(problems[0].kind, "unsupported-schema-version");
+  assert.match(problems[0].message, /discarded/i);
+
+  // The file is now a usable schema-1 document, so later writes preserve its values.
+  store.set("third", 1);
+  const after = JSON.parse(readFileSync(path, "utf8"));
+  assert.deepEqual(after.values, { other: true, third: 1 });
 });

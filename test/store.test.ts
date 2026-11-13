@@ -124,7 +124,7 @@ test("an unknown schemaVersion reads the default and is reported", () => {
   assert.equal(getStoreDiagnostics()[0]?.kind, "unsupported-schema-version");
 });
 
-test("a later set keeps values from a malformed-but-parseable file and drops foreign top-level keys", () => {
+test("a later set after an unknown schemaVersion writes only the caller's keys and reports the discarded payload", () => {
   mkdirSync(bridgeDir(), { recursive: true });
   writeFileSync(
     storePath("loon"),
@@ -137,12 +137,19 @@ test("a later set keeps values from a malformed-but-parseable file and drops for
 
   const document = JSON.parse(readFileSync(storePath("loon"), "utf8"));
   assert.equal(document.schemaVersion, 1);
-  assert.deepEqual(document.values, { keep: "me", added: 1 });
+  assert.deepEqual(
+    document.values,
+    { added: 1 },
+    "a future schema's payload is never re-labelled as schema 1",
+  );
   assert.equal(
     "extraTopLevel" in document,
     false,
     "keys the bridge does not understand are not carried into the valid document",
   );
+  const problem = getStoreDiagnostics()[0];
+  assert.equal(problem?.kind, "unsupported-schema-version");
+  assert.match(problem?.message ?? "", /discarded/);
 });
 
 test("writes are atomic: the temp file is gone and the target parses completely", () => {

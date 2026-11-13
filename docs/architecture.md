@@ -132,6 +132,16 @@ exact wrapper installed and is read as an own property, so a rebind that gives a
 instance a new `custom` always rearms even when it inherits an already-wrapped
 prototype.
 
+Two boundaries around that rule:
+
+- The probe is installed around the **factory invocation**, not around the host call, so a
+  host that resolves its factory in a later microtask (`Promise.resolve().then(factory)`)
+  is still captured. A factory that itself returns a promise remains the documented
+  unsupported case, `uncaptured (async-factory)`.
+- Every wrapper carries the generation it was armed in. `disableCaptureBackend()` bumps the
+  generation, so a wrapper that foreign code kept a reference to becomes a pass-through
+  instead of injecting into a menu after the backend was switched off.
+
 ## 6. Why one bridge beats N wrappers
 
 Two independent map-swapping wrappers chain badly. Whichever installs its patch last sees
@@ -256,7 +266,7 @@ either one. Because the arming markers live on the target objects and the state 
 - **No new categories.** The renderer's `category` is a closed union of existing categories
   (`lib/visual-customize-view.ts:105`) while the bridge's `CustomizeRow.category` is a
   `string`, so a category gentle-shell does not already render renders nothing.
-- **Tests exercise a fake host, not the TUI.** 112 tests run under `node --test`; the
+- **Tests exercise a fake host, not the TUI.** 115 tests run under `node --test`; the
   end-to-end ones drive a fake host that models `gentle-shell.ts:3550-3562`. The technique
   itself is verified in the real TUI only by the reference probe.
 - **Async factories are reported, not supported.** `Promise.resolve(factory(...))` accepts a

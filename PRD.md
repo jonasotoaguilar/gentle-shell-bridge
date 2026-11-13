@@ -54,7 +54,7 @@ behind the adapter.
 | R7 | A diagnostics command reports providers, active backend, last capture outcome and last failures. | `/bridge-status` | Implemented as `/bridge-status`; formatter and entry tested, including store problems and duplicate settings from the last menu build |
 | R8 | Composition is stateless; persistence is the plugin's, with an optional namespaced store helper. | `createStore`, [docs/state.md](docs/state.md) | Implemented; `createStore` tested against temporary directories |
 
-All eight requirements are implemented and covered by the 112-test `node --test` suite. The
+All eight requirements are implemented and covered by the 115-test `node --test` suite. The
 end-to-end tests drive a fake host that models `gentle-shell.ts:3550-3562`; none of them has
 been re-run in the real TUI through the package, and R7's hook branch has never met a host
 that exposes a registry. The capture technique itself is proven in the real TUI by the

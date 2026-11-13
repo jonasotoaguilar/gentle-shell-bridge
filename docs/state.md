@@ -79,10 +79,14 @@ at registration produces a stale `●` and the diagnostics command will not dete
   The alternative was N plugins contending on one file owned by the bridge.
 - A malformed store file is reported through `/bridge-status` and reads fall back to the
   plugin's defaults; the bridge does not repair or delete the file, and a later `set` writes
-  a valid document. For a parseable-but-unusable file (unknown `schemaVersion`, `values` not
-  an object) that write carries over the existing `values` entries — so a plugin's data
-  survives a downgrade — and drops foreign top-level keys, because the bridge cannot know
-  what another schema means by them.
+  a valid document. Existing `values` are carried into that write **only** when the file was
+  a usable `schemaVersion: 1` document (so a partially written file keeps its other keys).
+  For an unknown `schemaVersion` the write stores only the keys the caller set and records
+  the discarded payload as a store problem: the bridge cannot know what a future schema's
+  payload means, so re-labelling it as schema 1 would be a lie about its format, and
+  silently destroying it while pretending it is valid would be worse than reporting it.
+  Foreign top-level keys are always dropped. A reported problem stays on record until a
+  write resolves it, so reading the repaired file cannot erase it from `/bridge-status`.
 - A plugin that keeps its own file gets no migration help from the bridge — this is the
   documented cost of the opt-in helper.
 - The bridge acquires disk-write code it must test, and it does test it (round-trip,

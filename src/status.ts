@@ -12,7 +12,7 @@
 import { snapshotProviders } from "./bus.ts";
 import { getCaptureDiagnostics, type CaptureOutcome } from "./capture.ts";
 import { getHookDiagnostics } from "./hook.ts";
-import { createRowContext } from "./rows.ts";
+import { getLastRowBuild, type RowBuildRecord } from "./rows.ts";
 import { getStoreDiagnostics, type StoreProblem } from "./store.ts";
 import type { CustomizeRow, RowContext, RowProvider } from "./types.ts";
 
@@ -42,7 +42,8 @@ export interface StatusSnapshot {
   lastCapture?: CaptureOutcome;
   failures: StatusFailure[];
   storeProblems: StoreProblem[];
-  duplicates: StatusDuplicate[];
+  /** Absent until a menu build has happened: duplicates cannot be computed without rows. */
+  duplicates?: StatusDuplicate[];
 }
 
 /**
@@ -57,18 +58,22 @@ export function collectStatus(): StatusSnapshot {
   const backend: StatusBackend =
     hook.installed ? "hook" : capture.armedTargets > 0 ? "capture" : "none";
 
+  // Diagnostics never run providers: duplicate detection comes from the rows the LAST menu build
+  // actually received, and is unknown until such a build exists.
   const snapshot: StatusSnapshot = {
     providers: providers.map((provider) => ({ id: provider.id, category: provider.category })),
     backend,
-    // Report the failures of the backend that is actually in use.
+    // Report the failures and the capture outcome of the backend that is actually in use.
     failures:
       backend === "hook"
         ? hook.lastFailures.map(toStatusFailure)
         : capture.lastFailures.map(toStatusFailure),
     storeProblems: getStoreDiagnostics(),
-    duplicates: findDuplicateSettings(providers, createRowContext(undefined)),
   };
-  if (capture.lastOutcome !== undefined) snapshot.lastCapture = capture.lastOutcome;
+  const duplicates = findDuplicatesInBuilds(getLastRowBuild());
+  if (duplicates !== undefined) snapshot.duplicates = duplicates;
+  const lastCapture = backend === "hook" ? hook.lastCapture : capture.lastOutcome;
+  if (lastCapture !== undefined) snapshot.lastCapture = lastCapture;
   return snapshot;
 }
 
@@ -80,28 +85,44 @@ export function collectStatus(): StatusSnapshot {
  * provider that throws is skipped — its failure is already its own diagnostics entry.
  */
 export function findDuplicateSettings(providers: RowProvider[], ctx: RowContext): StatusDuplicate[] {
-  const groups = new Map<string, StatusDuplicate>();
-  const order: string[] = [];
-
+  const builds: RowBuildRecord[] = [];
   for (const provider of providers) {
-    let rows: CustomizeRow[];
     try {
-      rows = provider.rows(ctx);
+      builds.push({ providerId: provider.id, category: provider.category, rows: provider.rows(ctx) });
     } catch {
       continue;
     }
-    for (const row of rows) {
+  }
+  return findDuplicatesInBuilds(builds) ?? [];
+}
+
+/**
+ * The same grouping over rows a build already produced, with no provider invocation. `undefined`
+ * means no build has happened yet, which is reported as unknown rather than as "no duplicates".
+ */
+export function findDuplicatesInBuilds(
+  builds: RowBuildRecord[] | undefined,
+): StatusDuplicate[] | undefined {
+  if (builds === undefined) return undefined;
+
+  const groups = new Map<string, StatusDuplicate>();
+  const order: string[] = [];
+
+  for (const build of builds) {
+    for (const row of build.rows) {
       const setting = row.choice?.setting;
       if (setting === undefined) continue;
-      const category = row.category ?? provider.category;
+      const category = row.category ?? build.category;
       const key = `${category}\u0000${setting}`;
       const existing = groups.get(key);
       if (existing === undefined) {
-        groups.set(key, { category, setting, providerIds: [provider.id] });
+        groups.set(key, { category, setting, providerIds: [build.providerId] });
         order.push(key);
         continue;
       }
-      if (!existing.providerIds.includes(provider.id)) existing.providerIds.push(provider.id);
+      if (!existing.providerIds.includes(build.providerId)) {
+        existing.providerIds.push(build.providerId);
+      }
     }
   }
 
@@ -151,7 +172,9 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
     }
   }
 
-  if (snapshot.duplicates.length === 0) {
+  if (snapshot.duplicates === undefined) {
+    lines.push("duplicate settings: no build yet");
+  } else if (snapshot.duplicates.length === 0) {
     lines.push("duplicate settings: none");
   } else {
     lines.push(`duplicate settings: ${snapshot.duplicates.length}`);

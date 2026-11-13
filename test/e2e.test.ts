@@ -33,6 +33,7 @@ import gentleShellBridge, {
 import { resetBusForTests } from "../src/bus.ts";
 import { resetCaptureStateForTests } from "../src/capture.ts";
 import { resetHookStateForTests } from "../src/hook.ts";
+import { resetRowBuildStateForTests } from "../src/rows.ts";
 import { resetStoreStateForTests } from "../src/store.ts";
 import { createFakeHost, type FakeHost } from "./fake-host.ts";
 
@@ -60,6 +61,7 @@ test.after(() => {
 test.beforeEach(() => {
   resetBusForTests();
   resetCaptureStateForTests();
+  resetRowBuildStateForTests();
   resetHookStateForTests();
   resetStoreStateForTests();
   delete hookSlot()[HOOK_KEY];

@@ -112,6 +112,26 @@ callable `action`. The threshold comes from the probe's verified run against the
 the cost is explicit: a menu with fewer than three host rows would not be captured, and the
 `/bridge-status` command reports `uncaptured (no-capture)` rather than passing silently.
 
+### Capture-selection rule
+
+Each wrapped `custom` call owns one capture *session* with its own candidate list, and
+the probe records a mapped array into the innermost active session only. That fixes
+the target without guessing:
+
+- A nested `custom` call — from the host factory or from a provider's own `rows()` —
+  gets its own session, so it can never steal the outer menu's capture, and the nested
+  menu receives its own injection.
+- A nested session whose factory throws never resolves, so nothing is injected into
+  it; the outer session continues and resolves its own array.
+- When one session captures **more than one** row-like array (an incidental
+  row-shaped array before the menu, for example), the bridge does not guess: the
+  outcome is `uncaptured (ambiguous)` and nothing is injected.
+
+Arming is idempotent per target *and per function*: the non-enumerable marker holds the
+exact wrapper installed and is read as an own property, so a rebind that gives an
+instance a new `custom` always rearms even when it inherits an already-wrapped
+prototype.
+
 ## 6. Why one bridge beats N wrappers
 
 Two independent map-swapping wrappers chain badly. Whichever installs its patch last sees
@@ -194,8 +214,13 @@ providers. Silent success is not a valid state.
 Arming happens once per `ctx.ui` object, from `session_start` in `src/extension.ts`. The
 order is fixed: if `globalThis[Symbol.for("gentle-pi.customize-row-providers")]` exists and
 is usable — a plain array, or an object with a callable `register` — the bridge pushes one
-fan-out provider and patches nothing at all. A present-but-unusable registry is reported as
-`fallback-capture` and the capture backend is used instead, never silently ignored.
+fan-out provider and patches nothing at all. A present-but-unusable registry — or one that
+does not accept the provider, because `push` did nothing, `register` returned `false`, or
+either threw — is reported as `fallback-capture` and the capture backend is used instead,
+never silently ignored. Dedupe does not mutate the host registry: identity in a
+`WeakSet` in the process-global state is authoritative, so a frozen registry still gets
+exactly one provider across arms and package copies. When the host removes the slot,
+diagnostics stop reporting `hook`.
 
 | Module | Owns |
 | --- | --- |
@@ -231,7 +256,7 @@ either one. Because the arming markers live on the target objects and the state 
 - **No new categories.** The renderer's `category` is a closed union of existing categories
   (`lib/visual-customize-view.ts:105`) while the bridge's `CustomizeRow.category` is a
   `string`, so a category gentle-shell does not already render renders nothing.
-- **Tests exercise a fake host, not the TUI.** 96 tests run under `node --test`; the
+- **Tests exercise a fake host, not the TUI.** 112 tests run under `node --test`; the
   end-to-end ones drive a fake host that models `gentle-shell.ts:3550-3562`. The technique
   itself is verified in the real TUI only by the reference probe.
 - **Async factories are reported, not supported.** `Promise.resolve(factory(...))` accepts a

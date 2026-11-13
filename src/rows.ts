@@ -23,6 +23,50 @@ export interface RowBuildResult {
   failures: RowBuildFailure[];
 }
 
+/** One provider's contribution to the most recent fan-out, kept for duplicate diagnostics. */
+export interface RowBuildRecord {
+  providerId: string;
+  category: string;
+  rows: CustomizeRow[];
+}
+
+const ROWS_STATE = Symbol.for("gentle-shell-bridge.rows.state.v1");
+
+interface RowsState {
+  /** Rows produced by the last menu build, per provider; `undefined` before any build. */
+  lastBuild?: RowBuildRecord[];
+}
+
+function rowsHost(): Record<symbol, unknown> {
+  // SAFETY: `globalThis` accepts symbol keys and only `rowsState()` writes this slot; a foreign
+  // value is rejected there before use.
+  return globalThis as unknown as Record<symbol, unknown>;
+}
+
+function rowsState(): RowsState {
+  const host = rowsHost();
+  const existing = host[ROWS_STATE];
+  if (isRowsState(existing)) return existing;
+  const created: RowsState = {};
+  host[ROWS_STATE] = created;
+  return created;
+}
+
+function isRowsState(value: unknown): value is RowsState {
+  return isRecord(value) && (value.lastBuild === undefined || Array.isArray(value.lastBuild));
+}
+
+/** The rows the last menu build actually received, or `undefined` when there has been no build. */
+export function getLastRowBuild(): RowBuildRecord[] | undefined {
+  const last = rowsState().lastBuild;
+  return last === undefined ? undefined : last.map((record) => ({ ...record, rows: [...record.rows] }));
+}
+
+/** Test-only seam; deliberately not re-exported from `src/index.ts`. */
+export function resetRowBuildStateForTests(): void {
+  delete rowsState().lastBuild;
+}
+
 /**
  * Context for the capture backend, where the theme arrives as the host factory's second argument
  * and the config home is resolved from the process (`./config.ts`).
@@ -56,6 +100,7 @@ export function buildRows(ctx: RowContext): RowBuildResult {
   const providers = snapshotProviders();
   const rows: CustomizeRow[] = [];
   const failures: RowBuildFailure[] = [];
+  const buildRecords: RowBuildRecord[] = [];
 
   for (const provider of providers) {
     const staged: CustomizeRow[] = [];
@@ -71,9 +116,11 @@ export function buildRows(ctx: RowContext): RowBuildResult {
       });
       continue;
     }
+    buildRecords.push({ providerId: provider.id, category: provider.category, rows: staged });
     rows.push(...staged);
   }
 
+  rowsState().lastBuild = buildRecords;
   return { rows, failures };
 }
 

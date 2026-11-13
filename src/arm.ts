@@ -17,7 +17,7 @@
  * package entry that will call it) has no side effect on the host.
  */
 
-import { installCaptureBackend } from "./capture.ts";
+import { disableCaptureBackend, installCaptureBackend } from "./capture.ts";
 import { installHookBackend } from "./hook.ts";
 
 /** Which interception is active after arming. */
@@ -50,11 +50,15 @@ export interface ArmResult {
 export function armBridge(ui: unknown): ArmResult {
   const hook = installHookBackend();
   if (hook.installed) {
+    // An earlier arm may have wrapped a UI object that is still live. Disable the previous path
+    // before the hook becomes active, so one menu cannot receive two copies of the rows.
+    disableCaptureBackend();
     return { outcome: "hooked", backend: "hook" };
   }
 
-  // A present-but-unusable registry gets the proven backend rather than silence.
-  const fallback: ArmReason | undefined = hook.outcome === "unusable-hook" ? "hook-unusable" : undefined;
+  // Any present-but-unusable registry, or any failed installation into one, gets the proven
+  // backend rather than silence. Only "no registry at all" is a clean capture arm.
+  const fallback: ArmReason | undefined = hook.outcome === "no-hook" ? undefined : "hook-unusable";
   const capture = installCaptureBackend(ui);
 
   if (capture.armed) {

@@ -125,7 +125,8 @@ determined by insertion order:
 Recommended policy: **namespace the `setting`** with the plugin's name, e.g.
 `"Loon → Banner source"`. Namespacing makes collisions impossible by construction and
 keeps each line's meaning intact. The bridge warns on duplicate `category` + `setting`
-pairs and reports them through `/bridge-status`; it does not rename rows, because a row's
+pairs and reports them through `/bridge-status`, comparing the rows of the last menu build
+(`no build yet` before the first build); it does not rename rows, because a row's
 setting name is its identity in the renderer.
 
 ## 7. Failure isolation
@@ -153,7 +154,7 @@ One command, `/bridge-status`, reporting:
 | Last capture | outcome of the most recent menu build, with the number of rows injected |
 | Last failures | most recent provider failures: `id`, message, and whether rows were dropped |
 | Store problems | store files this process could not use, with the plugin id and the reason |
-| Duplicate settings | every `category` + `setting` pair contributed by more than one provider |
+| Duplicate settings | every `category` + `setting` pair contributed by more than one provider in the rows of the last menu build; `no build yet` before the first build |
 
 A menu that opened without the bridge's rows must show up here — armed-but-uncaptured,
 shape mismatch, or provider failure. That is the contract's answer to "the plugin is

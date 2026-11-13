@@ -8,6 +8,7 @@ import {
   resetCaptureStateForTests,
 } from "../src/capture.ts";
 import { resetHookStateForTests, installHookBackend } from "../src/hook.ts";
+import { resetRowBuildStateForTests } from "../src/rows.ts";
 import { createRowContext } from "../src/rows.ts";
 import {
   collectStatus,
@@ -24,6 +25,7 @@ const hookSlot = (): Record<symbol, unknown> => globalThis as unknown as Record<
 test.beforeEach(() => {
   resetBusForTests();
   resetCaptureStateForTests();
+  resetRowBuildStateForTests();
   resetHookStateForTests();
   resetStoreStateForTests();
 });
@@ -55,8 +57,8 @@ test("an empty state formats every field as none", () => {
     backend: "none",
     failures: [],
     storeProblems: [],
-    duplicates: [],
   });
+  assert.equal(snapshot.duplicates, undefined, "no build has happened, so duplicates are unknown");
   assert.deepEqual(formatStatus(snapshot), [
     "gentle-shell-bridge status",
     "providers: none",
@@ -64,7 +66,7 @@ test("an empty state formats every field as none", () => {
     "last capture: none",
     "last failures: none",
     "store problems: none",
-    "duplicate settings: none",
+    "duplicate settings: no build yet",
   ]);
 });
 

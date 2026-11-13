@@ -13,6 +13,7 @@ import gentleShellBridge, {
   type BridgeSessionHandler,
 } from "../src/extension.ts";
 import { resetHookStateForTests } from "../src/hook.ts";
+import { resetRowBuildStateForTests } from "../src/rows.ts";
 import { resetStoreStateForTests } from "../src/store.ts";
 import { createFakeHost } from "./fake-host.ts";
 
@@ -22,6 +23,7 @@ const hookSlot = (): Record<symbol, unknown> => globalThis as unknown as Record<
 test.beforeEach(() => {
   resetBusForTests();
   resetCaptureStateForTests();
+  resetRowBuildStateForTests();
   resetHookStateForTests();
   resetStoreStateForTests();
 });
@@ -138,7 +140,7 @@ test("the status command prints the formatter output", () => {
   assert.match(printed[0], /^gentle-shell-bridge status$/m);
   assert.match(printed[0], /^providers: 1$/m);
   assert.match(printed[0], /loon\.banner-source \(Banner\)/);
-  assert.match(printed[0], /^duplicate settings: none$/m);
+  assert.match(printed[0], /^duplicate settings: no build yet$/m);
 });
 
 test("the status command does not throw when the command context has no ui", () => {

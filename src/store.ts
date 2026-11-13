@@ -115,8 +115,13 @@ export function createStore(pluginId: string): Store {
     path,
     get<T>(key: string, fallback: T): T {
       const read = readValues(pluginId, path);
-      if (read.problem === undefined) clearProblem(pluginId);
-      else recordProblem(read.problem);
+      if (read.problem !== undefined) {
+        // An unusable file reads as empty. Its `values` are kept only so a later `set` can carry
+        // them over — an unknown or future schema must never serve foreign data to the caller.
+        recordProblem(read.problem);
+        return fallback;
+      }
+      clearProblem(pluginId);
       return Object.hasOwn(read.values, key) ? (read.values[key] as T) : fallback;
     },
     set(key: string, value: unknown): void {

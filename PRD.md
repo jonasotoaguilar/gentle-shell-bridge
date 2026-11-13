@@ -51,10 +51,10 @@ behind the adapter.
 | R4 | A toggle is expressed as consecutive rows sharing `choice.setting`, and works with the renderer's own `●`/`○` and arrow/Enter handling. | Toggle recipe | Implemented; the end-to-end suite shows the `●` moving after `action()` on a fake host |
 | R5 | Arm-time state is idempotent: repeated `session_start`, rebinds and double loads never double-wrap or double-inject. | Idempotency | Implemented; tested across two `session_start` events and a double entry load |
 | R6 | A throwing provider loses its rows, is reported, and never breaks the menu or other providers. | Failure isolation | Implemented; tested per provider, with the failure reported by `/bridge-status` |
-| R7 | A diagnostics command reports providers, active backend, last capture outcome and last failures. | `/bridge-status` | Implemented as `/bridge-status`; formatter and entry tested, including store problems and duplicate settings |
+| R7 | A diagnostics command reports providers, active backend, last capture outcome and last failures. | `/bridge-status` | Implemented as `/bridge-status`; formatter and entry tested, including store problems and duplicate settings from the last menu build |
 | R8 | Composition is stateless; persistence is the plugin's, with an optional namespaced store helper. | `createStore`, [docs/state.md](docs/state.md) | Implemented; `createStore` tested against temporary directories |
 
-All eight requirements are implemented and covered by the 96-test `node --test` suite. The
+All eight requirements are implemented and covered by the 112-test `node --test` suite. The
 end-to-end tests drive a fake host that models `gentle-shell.ts:3550-3562`; none of them has
 been re-run in the real TUI through the package, and R7's hook branch has never met a host
 that exposes a registry. The capture technique itself is proven in the real TUI by the

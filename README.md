@@ -21,6 +21,15 @@ read from the cited host source; what is not proven is listed under **Limits**.
 - [docs/contract.md](docs/contract.md) — `registerRows`, provider and row shapes, diagnostics
 - [docs/state.md](docs/state.md) — ADR: stateless composition plus optional per-plugin store
 
+## Worked consumer
+
+[`examples/bash-card.ts`](examples/bash-card.ts) is a standalone Pi extension that uses both
+surfaces the package sits between: its own bash card through `pi.registerToolRenderer`, and a
+`Cards` toggle through `registerRows` + `createStore`. Copy it into `~/.pi/agent/extensions/`
+and `/reload` to load it; the toggle defaults to `default`, so installing it changes no
+rendering until the row is switched. It reaches the package with a dynamic `import()` of its
+`src/index.ts`, because a bare specifier does not resolve from Pi's extensions directory.
+
 ## Install
 
 The package has no release yet (`version` is `0.0.0`); load it from source as a Pi

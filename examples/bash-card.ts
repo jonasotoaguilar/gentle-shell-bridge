@@ -15,6 +15,12 @@
  * repository) and `/reload`. The toggle defaults to `default`, so installing the example changes
  * no rendering until the user asks for it.
  *
+ * Stale rows: the choice is read when a bash row is BUILT, not per frame, so switching it applies
+ * to the next bash call. Rows already on screen keep the rendering they were built with; `Esc` or
+ * scrolling does not re-render history. Pi exposes no extension API that repaints already-drawn
+ * tool rows — `tui.requestRender()` is injected into a component created through `ctx.ui.custom`,
+ * not into a customize-row `action()` — so the example documents this instead of inventing one.
+ *
  * Nothing here imports `@earendil-works/pi-coding-agent` or `@earendil-works/pi-tui`: this
  * repository depends on neither, so every host shape this file touches is declared structurally
  * below, the way `src/extension.ts` declares the extension API it uses. The renderer returns plain
@@ -120,6 +126,8 @@ interface CustomizeRowLike {
   category?: string;
   label?: string | (() => string);
   choice?: RowChoiceLike;
+  /** Read-only depiction of the highlighted choice, drawn under the row. */
+  preview?: () => { title: string; sample: string };
   visible?: () => boolean;
   action?: () => void | Promise<void>;
 }
@@ -571,6 +579,30 @@ function bashRenderingRows(store: BridgeStoreLike): CustomizeRowLike[] {
   return [renderingRow(store, MODE_DEFAULT), renderingRow(store, MODE_TOOL)];
 }
 
+/**
+ * One short line per mode. The renderer prints it as `Preview · <title>` above the sample
+ * (`lib/visual-customize-view.ts:745`).
+ */
+const PREVIEW_TITLE: Record<BashRenderingMode, string> = {
+  [MODE_DEFAULT]: "Host's own bash rendering",
+  [MODE_TOOL]: "Example-drawn bash card",
+};
+
+/**
+ * A literal depiction of what a bash card looks like in that mode — the card, not prose about it.
+ * The renderer splits `sample` on newlines and paints each line under the headline
+ * (`lib/visual-customize-view.ts:747-750`), so lines stay well under 40 columns and there are only
+ * a handful of them.
+ */
+const PREVIEW_SAMPLE: Record<BashRenderingMode, string> = {
+  [MODE_DEFAULT]: ["$ ls -1", "README.md", "package.json"].join("\n"),
+  [MODE_TOOL]: ["bash $ ls -1", "README.md", "package.json"].join("\n"),
+};
+
+function previewFor(value: BashRenderingMode): { title: string; sample: string } {
+  return { title: PREVIEW_TITLE[value], sample: PREVIEW_SAMPLE[value] };
+}
+
 function renderingRow(store: BridgeStoreLike, value: BashRenderingMode): CustomizeRowLike {
   return {
     category: ROW_CATEGORY,
@@ -581,9 +613,14 @@ function renderingRow(store: BridgeStoreLike, value: BashRenderingMode): Customi
       // Live read at render time, so the bullet matches the file before the user touches it.
       current: () => readStoredMode(store) === value,
     },
+    // Carried by the bridge untouched; the renderer draws it below the focused choice instead of
+    // "Preview unavailable".
+    preview: () => previewFor(value),
     // Persist first, repaint second: the view repaints after `action` returns and that repaint
     // re-evaluates `current()`, which reads this same value (`docs/state.md`, "The correctness
-    // rule"). Painting before the write would make the bullet lie for one frame.
+    // rule"). Painting before the write would make the bullet lie for one frame. The repaint is
+    // the menu itself: bash rows already drawn keep their old rendering, and the new mode applies
+    // to the next bash call.
     action: () => {
       store.set(SETTING_KEY, value);
     },

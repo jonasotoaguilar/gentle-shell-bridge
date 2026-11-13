@@ -30,6 +30,14 @@ and `/reload` to load it; the toggle defaults to `default`, so installing it cha
 rendering until the row is switched. It reaches the package with a dynamic `import()` of its
 `src/index.ts`, because a bare specifier does not resolve from Pi's extensions directory.
 
+Both rows carry `preview()`, so `/gentle:customize` draws a literal sample of the card each
+mode produces instead of "Preview unavailable".
+
+The choice applies to the **next bash call**: the resolver runs when a bash row is built, not per
+frame, so rows already on screen keep the rendering they were built with. Scrolling or `Esc` does
+not re-render history, and Pi has no extension API that repaints already-drawn tool rows —
+`tui.requestRender()` exists only inside a component created through `ctx.ui.custom`.
+
 ## Install
 
 The package has no release yet (`version` is `0.0.0`); load it from source as a Pi

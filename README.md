@@ -134,9 +134,11 @@ music             ● shown  ○ hidden     ← this plugin's section
 
 `id` stays internal: it is the replacement, disposer and stored-visibility key, and it never
 appears in a row. With no `rowLabel`, the bridge derives one from `title` — lowercase words joined
-by spaces, dots and punctuation dropped (`"BASH CARD"` → `"bash card"`). Two sections whose labels
-would read the same are told apart deterministically (`music`, `music 2`, …) and `/bridge-status`
-says which one moved; the raw id is never the suffix.
+by spaces, dots and punctuation dropped, at most three words (`"BASH CARD"` → `"bash card"`,
+`"MUSIC PLAYER NOW PLAYING"` → `"music player now"`). Two sections whose labels would read the same
+are told apart deterministically (`music`, `music 2`, …) and `/bridge-status` says which one moved;
+the raw id is never the suffix. An explicit `rowLabel` obeys the same row-name shape described under
+"Row names" below — a name that breaks it is rejected and reported, never rewritten.
 
 What the bridge does with those fields, and what it will not do: the card is drawn by the
 host's own frame code, the body is clipped to the rail width and capped at 8 rows (with a
@@ -298,8 +300,8 @@ const read = () => store.get("bannerSource", "activity");
 
 const toggle = (value: string) => ({
   category: "Banner" as const,
-  label: () => "Loon: banner source",
-  choice: { setting: "Loon → Banner source", value, current: () => read() === value },
+  label: () => "Loon banner source",
+  choice: { setting: "Loon banner source", value, current: () => read() === value },
   action: () => store.set("bannerSource", value), // persist first; the menu re-renders
 });
 
@@ -311,6 +313,28 @@ const dispose = registerRows({
 
 // dispose() removes every row this provider contributed; other providers are untouched.
 ```
+
+### Row names
+
+`choice.setting` (the line's name) and `label` (the row's text) are read by a human, so both obey one
+shape: **one to three plain words**, title case like the host's own `Card style` / `Card content`,
+and **none of** `→ ← ↑ ↓ : . | / \ [ ] ( ) { }`. No trailing qualifier — the category says where the
+row lives and the values say what the choices are:
+
+```text
+Bash rendering                  OK    a row name, in the host's own vocabulary
+Bash card → Bash rendering      BAD   an arrow and a repeated qualifier: reads as a breadcrumb
+Bash card: rendering            BAD   a colon
+Section: bash-card.status       BAD   a prefix plus a dotted internal id
+```
+
+The bridge enforces this rather than trusting authors, and it never rewrites a name it refused:
+
+- a provider row whose line name or label breaks the shape is dropped from the menu build, so it
+  reaches neither the host's rows nor the rows `/bridge-status` compares;
+- a section or a card style whose `rowLabel` breaks it is not registered at all;
+- the offending string and the rule it broke are recorded verbatim and listed by `/bridge-status`
+  under `row name rejections`.
 
 ## Supported row kinds
 
@@ -335,10 +359,12 @@ read live state. Full details, conflict policy and failure isolation:
 The bridge registers one command, `/bridge-status`. It reports the registered providers (id
 and category, in subscription order), the active backend (`hook` or `capture`), the last
 capture outcome with the injected row count, the last provider failures, store problems and
-duplicate `category` + `setting` pairs across providers — so a missing row is an answer, not
-a silent no-op. Duplicates are computed from the rows the last menu build actually
-received, so before any build the report says `duplicate settings: no build yet` instead of
-claiming there are none. Diagnostics never run a provider's `rows()`.
+duplicate `category` + `setting` pairs across providers, and any row name the shape rule rejected —
+the surface, the registration id, the offending string verbatim and the rule it broke, under
+`row name rejections` — so a missing row is an answer, not a silent no-op. Duplicates are computed
+from the rows the last menu build actually received, so before any build the report says
+`duplicate settings: no build yet` instead of claiming there are none. Diagnostics never run a
+provider's `rows()`.
 
 It also answers the sidebar question: a `sections` table (id, title, the `row` label the menu
 reads plus a collision note when two labels wanted the same text, persisted visibility and where

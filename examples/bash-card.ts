@@ -87,12 +87,22 @@ const MODE_TOOL = "tool";
 type BashRenderingMode = typeof MODE_DEFAULT | typeof MODE_TOOL;
 
 /**
- * Row text. A toggle's bullets show the raw `value`s, and the setting name is namespaced with the
- * plugin name, which makes a collision with another provider's row impossible by construction
- * (`docs/contract.md` §4 and §6).
+ * Row text: a row NAME, in the same vocabulary the host uses for its own rows (`Card style`,
+ * `Card content`, `stats`).
+ *
+ * One to three plain words, no arrow, no colon, no dot, no pipe, no slash, no bracket, no trailing
+ * qualifier — the bridge REJECTS a name that breaks that shape before it is stored, records the
+ * offending string with the rule it broke, and lists it in `/bridge-status` (N7, N8). The name this
+ * file used to send, `Bash card → Bash rendering`, read as a breadcrumb in the menu: the category
+ * already says `Cards`, and the two bullets below already say `default` and `tool`, so
+ * `Bash rendering` is the whole name.
+ *
+ * The line's name and its row label are the SAME string, which is what makes the host draw one line
+ * (`docs/contract.md` §4 and §6). A collision with another provider's line is avoided by picking a
+ * distinct plain-word name, not by namespacing the setting with punctuation.
  */
-const ROW_LABEL = "Bash card: rendering";
-const SETTING_NAME = "Bash card → Bash rendering";
+const ROW_LABEL = "Bash rendering";
+const SETTING_NAME = "Bash rendering";
 /** A category the host already renders; the bridge cannot create new ones (`docs/contract.md`, Limits). */
 const ROW_CATEGORY = "Cards";
 

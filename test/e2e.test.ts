@@ -129,13 +129,13 @@ const armAndBuild = (host: FakeHost): Entry => {
 };
 
 test("two providers reach one menu build through registerRows, in subscription order", () => {
-  registerRows(labels("first", "Cards", ["First: a"]));
-  registerRows(labels("second", "Banner", ["Second: b"]));
+  registerRows(labels("first", "Cards", ["First a"]));
+  registerRows(labels("second", "Banner", ["Second b"]));
   const host = createFakeHost();
 
   armAndBuild(host);
 
-  assert.deepEqual(host.rendered().slice(4), ["First: a", "Second: b"]);
+  assert.deepEqual(host.rendered().slice(4), ["First a", "Second b"]);
   assert.deepEqual(
     host.liveRows().slice(4).map((row) => row.category),
     ["Cards", "Banner"],
@@ -143,7 +143,7 @@ test("two providers reach one menu build through registerRows, in subscription o
 });
 
 test("a throwing provider loses only its rows, the menu still renders, and status records it", () => {
-  registerRows(labels("before", "Cards", ["Before: ok"]));
+  registerRows(labels("before", "Cards", ["Before ok"]));
   registerRows({
     id: "boom",
     category: "Banner",
@@ -151,12 +151,12 @@ test("a throwing provider loses only its rows, the menu still renders, and statu
       throw new Error("e2e provider exploded");
     },
   });
-  registerRows(labels("after", "Layout", ["After: ok"]));
+  registerRows(labels("after", "Layout", ["After ok"]));
   const host = createFakeHost();
 
   const entry = armAndBuild(host);
 
-  assert.deepEqual(host.rendered().slice(4), ["Before: ok", "After: ok"]);
+  assert.deepEqual(host.rendered().slice(4), ["Before ok", "After ok"]);
   const status = printStatus(entry);
   assert.match(status, /^last failures: 1$/m);
   assert.match(status, /boom: e2e provider exploded \(rows dropped\)/);
@@ -270,9 +270,9 @@ test("S8 end to end: action persists first and the repaint shows the new bullet"
   const store = createStore("e2e-toggle");
   const toggle = (value: string): CustomizeRow => ({
     category: "Banner",
-    label: () => "Loon: banner source",
+    label: () => "Loon banner source",
     choice: {
-      setting: "Loon → Banner source",
+      setting: "Loon banner source",
       value,
       current: () => store.get("bannerSource", "activity") === value,
     },
@@ -289,7 +289,7 @@ test("S8 end to end: action persists first and the repaint shows the new bullet"
   armThroughEntry(host.ui);
   host.buildMenu();
 
-  assert.deepEqual(host.toggleLines(), ["Loon → Banner source ● activity ○ output"]);
+  assert.deepEqual(host.toggleLines(), ["Loon banner source ● activity ○ output"]);
 
   await host.pressRow((row) => row.choice?.value === "output");
 
@@ -297,7 +297,7 @@ test("S8 end to end: action persists first and the repaint shows the new bullet"
   assert.deepEqual(
     host.toggleLines(),
     // Row order is fixed by the menu; only the rendered bullet moves onto the new value.
-    ["Loon → Banner source ○ activity ● output"],
+    ["Loon banner source ○ activity ● output"],
     "the same menu repaints onto the new value, with no second build",
   );
   assert.equal(host.factoryCallCount(), 1, "no second menu build was needed");

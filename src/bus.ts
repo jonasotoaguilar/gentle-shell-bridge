@@ -24,6 +24,8 @@
  */
 
 import { HOST_CARD_STYLE_VALUES, RESERVED_CARD_STYLE_IDS } from "./card-style-line.ts";
+import { cardStyleRowLabelText, sectionRowLabelText } from "./row-labels.ts";
+import { rejectRowName, clearRowNameRejections } from "./row-names.ts";
 import type {
   CardStyleRegistration,
   RowProvider,
@@ -200,6 +202,14 @@ function assertRowLabel(kind: string, id: string, rowLabel: unknown): void {
 export function registerSection(section: SidebarSection): () => void {
   assertSectionId(section.id);
   assertRowLabel("section", section.id, section.rowLabel);
+  // The label is what a user reads, so it obeys the row-name shape before anything is stored (N8):
+  // `Music: now playing` is rejected here, reported by `/bridge-status`, and never rewritten. A
+  // DERIVED label cannot fail this check — derivation applies the same shape (`./row-labels.ts`).
+  if (rejectRowName("section", section.id, "row label", sectionRowLabelText(section))) {
+    return () => {};
+  }
+  // The name in force now conforms, so a record left by the name it replaced is no longer true.
+  clearRowNameRejections("section", section.id);
   const state = bus();
   const entry: SectionEntry = { section };
   const index = state.sections.findIndex((candidate) => candidate.section.id === section.id);
@@ -345,6 +355,12 @@ export function registerCardStyle(style: CardStyleRegistration): () => void {
   assertCardStyleLabel(style.id, style.label);
   assertCardStyleLabelIsDistinct(style);
   assertRowLabel("card style", style.id, style.rowLabel);
+  // Same rule, same place in the sequence: a row label that breaks the row-name shape is rejected
+  // before the style is stored, and `/bridge-status` reports the string and the rule (N8).
+  if (rejectRowName("card style", style.id, "row label", cardStyleRowLabelText(style))) {
+    return () => {};
+  }
+  clearRowNameRejections("card style", style.id);
   assertCardFrame(style.id, style.frame);
 
   const state = bus();

@@ -158,13 +158,13 @@ const sectionLine = (label: string): CustomizeRow[] => [
   {
     category: "Cards",
     label,
-    choice: { setting: "Loon → Banner source", value: "on", current: () => true },
+    choice: { setting: "Loon banner source", value: "on", current: () => true },
     action: () => {},
   },
   {
     category: "Cards",
     label,
-    choice: { setting: "Loon → Banner source", value: "off", current: () => false },
+    choice: { setting: "Loon banner source", value: "off", current: () => false },
     action: () => {},
   },
 ];
@@ -285,7 +285,7 @@ test("the row side still behaves in the same process, alongside the sections", (
   const provider: RowProvider = {
     id: "loon.banner-source",
     category: "Cards",
-    rows: () => sectionLine("Loon: banner source"),
+    rows: () => sectionLine("Loon banner source"),
   };
   registerRows(provider);
   registerSection(musicSection());
@@ -305,7 +305,7 @@ test("the row side still behaves in the same process, alongside the sections", (
     "the bridge's own rows follow",
   );
   const lines = host.toggleLines();
-  assert.ok(lines.some((line) => line.startsWith("Loon → Banner source")));
+  assert.ok(lines.some((line) => line.startsWith("Loon banner source")));
   assert.ok(lines.some((line) => line.startsWith("music ")));
 });
 

@@ -340,8 +340,8 @@ test("a plugin that registers from session_start renders its section and its Sec
     rows: () => [
       {
         category: "Cards",
-        label: "Loon: banner source",
-        choice: { setting: "Loon → Banner source", value: "on", current: () => true },
+        label: "Loon banner source",
+        choice: { setting: "Loon banner source", value: "on", current: () => true },
         action: () => {},
       },
     ],
@@ -359,7 +359,7 @@ test("a plugin that registers from session_start renders its section and its Sec
   assert.ok(toggle !== undefined, "and its toggle reached Sections");
   assert.ok(toggle.includes("● shown") && toggle.includes("○ hidden"));
   assert.ok(
-    host.toggleLines().some((line) => line.startsWith("Loon → Banner source")),
+    host.toggleLines().some((line) => line.startsWith("Loon banner source")),
     "the provider's rows reached the menu too",
   );
 });

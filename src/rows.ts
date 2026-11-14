@@ -9,6 +9,7 @@
 
 import { snapshotProviders } from "./bus.ts";
 import { getConfigHome } from "./config.ts";
+import { clearRowNameRejections, rejectRowName } from "./row-names.ts";
 import type { CustomizeRow, RowContext } from "./types.ts";
 
 /** A provider that threw while its rows were built; all of that provider's rows were dropped. */
@@ -89,12 +90,52 @@ export function contextFromHost(value: unknown): RowContext {
 }
 
 /**
+ * The row's visible text, when it can be read without running a plugin's throw into the build.
+ * A label function is evaluated exactly as the host would evaluate it when it renders, so a name
+ * cannot pass the build and break the menu; a throw leaves the row unvalidated (the host's own
+ * failure behaviour, unchanged).
+ */
+function rowLabelText(row: CustomizeRow): string | undefined {
+  const label = row.label;
+  if (label === undefined) return undefined;
+  if (typeof label === "string") return label;
+  try {
+    const shown: unknown = label();
+    return typeof shown === "string" ? shown : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Apply the row-name shape to one provider row (N7, N8): its line name (`choice.setting`) and its
+ * visible label. Returns `false` when the row must not reach the host — the caller drops it, so the
+ * rejected name exists nowhere instead of being sanitized into something the author never wrote.
+ */
+function acceptsRowName(providerId: string, row: CustomizeRow): boolean {
+  const setting = row.choice?.setting;
+  if (setting !== undefined && rejectRowName("rows", providerId, "line name", setting)) {
+    return false;
+  }
+  const label = rowLabelText(row);
+  if (label !== undefined && rejectRowName("rows", providerId, "row label", label)) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Fan out to the providers in subscription order, isolating failures: a provider that throws
  * while building its rows loses exactly those rows, and every other provider still applies.
  *
  * Rows from one provider are staged first, so a mid-build throw drops all of them rather than
  * half. A row without a category is shallow-cloned with its provider's category; a row the
  * provider returned is never mutated.
+ *
+ * A row whose line name or label breaks the row-name shape is dropped as it is staged (N8): it is
+ * absent from the array the host receives AND from the build record `/bridge-status` reads, so it is
+ * not part of the effective set. The rejection is recorded verbatim for the report; the bridge never
+ * rewrites a name it was given.
  */
 export function buildRows(ctx: RowContext): RowBuildResult {
   const providers = snapshotProviders();
@@ -104,8 +145,12 @@ export function buildRows(ctx: RowContext): RowBuildResult {
 
   for (const provider of providers) {
     const staged: CustomizeRow[] = [];
+    // This build is the new evidence for this provider, so a rejection a previous build recorded
+    // does not outlive the name it described.
+    clearRowNameRejections("rows", provider.id);
     try {
       for (const row of provider.rows(ctx)) {
+        if (!acceptsRowName(provider.id, row)) continue;
         staged.push(row.category === undefined ? { ...row, category: provider.category } : row);
       }
     } catch (error) {

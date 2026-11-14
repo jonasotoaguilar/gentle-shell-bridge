@@ -36,6 +36,7 @@ import {
 import { getSectionFailures, type SectionRenderFailure } from "./sidebar-render.ts";
 import { SECTION_ROWS_PROVIDER_ID } from "./sections-rows.ts";
 import { sectionRowLabels } from "./row-labels.ts";
+import { getRowNameRejections, type RowNameRejection } from "./row-names.ts";
 import { getStoreDiagnostics, type StoreProblem } from "./store.ts";
 import type { CustomizeRow, RowContext, RowProvider } from "./types.ts";
 import { getSectionVisibility, isSectionVisible } from "./visibility.ts";
@@ -73,6 +74,9 @@ export interface StatusSectionEntry {
   /** Present when two sections wanted the same label: the label this one had to move away from. */
   rowLabelCollision?: string;
 }
+
+/** One rejected row name, as `/bridge-status` lists it: the string verbatim and the rule it broke. */
+export type StatusRowNameRejection = RowNameRejection;
 
 /** One buffered notice, as `/bridge-status` lists it: still pending, or already delivered. */
 export interface StatusNoticeEntry {
@@ -161,6 +165,12 @@ export interface StatusSnapshot {
    */
   cardStyles?: StatusCardStyles;
   /**
+   * Plugin row names the bridge rejected for breaking the row-name shape (N8): the offending
+   * string, verbatim, and the rule it broke. Absent when nothing was rejected, so a clean session
+   * keeps its historical output exactly.
+   */
+  rowNames?: StatusRowNameRejection[];
+  /**
    * Every registered transcript transform in pipeline order, with the last frame's outcome. Absent
    * when none is registered, so a session that never used the pipeline keeps its historical output
    * byte for byte.
@@ -202,6 +212,10 @@ export function collectStatus(): StatusSnapshot {
   };
   const duplicates = findDuplicatesInBuilds(getLastRowBuild());
   if (duplicates !== undefined) snapshot.duplicates = duplicates;
+  // The row-name rejections (N8). Nothing here runs a provider: the records are the ones the last
+  // registration or build already made, so the report matches what the menu shows.
+  const rowNames = getRowNameRejections();
+  if (rowNames.length > 0) snapshot.rowNames = rowNames;
   const lastCapture = backend === "hook" ? hook.lastCapture : capture.lastOutcome;
   if (lastCapture !== undefined) snapshot.lastCapture = lastCapture;
 
@@ -498,6 +512,18 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
     for (const duplicate of snapshot.duplicates) {
       lines.push(
         `  - ${duplicate.category} / "${duplicate.setting}": ${duplicate.providerIds.join(", ")}`,
+      );
+    }
+  }
+
+  if (snapshot.rowNames !== undefined) {
+    lines.push(`row name rejections: ${snapshot.rowNames.length}`);
+    for (const rejection of snapshot.rowNames) {
+      // The offending string is printed EXACTLY as the author wrote it: the report is how they find
+      // it, and the bridge never rewrites a name it refused (N8).
+      lines.push(
+        `  - ${rejection.surface} ${JSON.stringify(rejection.id)} ${rejection.field} ` +
+          `${JSON.stringify(rejection.value)}: ${rejection.reason} (rejected, never rewritten)`,
       );
     }
   }

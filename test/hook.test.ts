@@ -71,8 +71,8 @@ test("an array registry receives exactly one fan-out provider", () => {
 test("the pushed provider builds rows from the shared snapshot, in subscription order", () => {
   const registry: PushedProvider[] = [];
   setHook(registry);
-  registerRows(labelsProvider("first", "Cards", ["First: a"]));
-  registerRows(labelsProvider("second", "Banner", ["Second: b"]));
+  registerRows(labelsProvider("first", "Cards", ["First a"]));
+  registerRows(labelsProvider("second", "Banner", ["Second b"]));
   installHookBackend();
 
   const rows = registry[0].rows({ theme: "host-theme", configHome: "/host/home" });
@@ -80,8 +80,8 @@ test("the pushed provider builds rows from the shared snapshot, in subscription 
   assert.deepEqual(
     rows.map((row) => [row.category, row.label]),
     [
-      ["Cards", "First: a"],
-      ["Banner", "Second: b"],
+      ["Cards", "First a"],
+      ["Banner", "Second b"],
     ],
   );
 });
@@ -89,7 +89,7 @@ test("the pushed provider builds rows from the shared snapshot, in subscription 
 test("the pushed provider isolates a throwing provider and records the failure", () => {
   const registry: PushedProvider[] = [];
   setHook(registry);
-  registerRows(labelsProvider("before", "Cards", ["Before: ok"]));
+  registerRows(labelsProvider("before", "Cards", ["Before ok"]));
   registerRows({
     id: "boom",
     category: "Banner",
@@ -97,14 +97,14 @@ test("the pushed provider isolates a throwing provider and records the failure",
       throw new Error("hook provider exploded");
     },
   });
-  registerRows(labelsProvider("after", "Layout", ["After: ok"]));
+  registerRows(labelsProvider("after", "Layout", ["After ok"]));
   installHookBackend();
 
   const rows = registry[0].rows({});
 
   assert.deepEqual(
     rows.map((row) => row.label),
-    ["Before: ok", "After: ok"],
+    ["Before ok", "After ok"],
   );
   assert.deepEqual(getHookDiagnostics().lastFailures, [
     { providerId: "boom", message: "hook provider exploded", rowsDropped: true },

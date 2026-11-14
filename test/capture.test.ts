@@ -25,7 +25,7 @@ const labelsProvider = (id: string, category: string, labels: string[]): RowProv
 
 test("installs on the instance and injects provider rows after the host's own rows", () => {
   const host = createFakeHost();
-  registerRows(labelsProvider("p1", "Cards", ["Provider: one", "Provider: two"]));
+  registerRows(labelsProvider("p1", "Cards", ["Provider one", "Provider two"]));
 
   const result = installCaptureBackend(host.ui);
 
@@ -40,8 +40,8 @@ test("installs on the instance and injects provider rows after the host's own ro
     "Card output: builtin",
     "Banner: builtin",
     "Layout: builtin",
-    "Provider: one",
-    "Provider: two",
+    "Provider one",
+    "Provider two",
   ]);
   assert.equal(host.invalidateCount(), 1, "invalidate is called once after injecting");
   assert.ok(component !== undefined, "the adapter is returned unchanged");
@@ -58,7 +58,7 @@ test("installs on the instance and injects provider rows after the host's own ro
 
 test("installs on the prototype when the instance has no own custom", () => {
   const host = createFakeHost({ customShape: "prototype" });
-  registerRows(labelsProvider("p1", "Cards", ["Proto: one"]));
+  registerRows(labelsProvider("p1", "Cards", ["Proto one"]));
 
   const result = installCaptureBackend(host.ui);
 
@@ -72,13 +72,13 @@ test("installs on the prototype when the instance has no own custom", () => {
 
   host.buildMenu();
 
-  assert.deepEqual(host.rendered().slice(-1), ["Proto: one"]);
+  assert.deepEqual(host.rendered().slice(-1), ["Proto one"]);
 });
 
 test("two providers coexist in one menu, in subscription order", () => {
   const host = createFakeHost();
-  registerRows(labelsProvider("first", "Cards", ["First: a"]));
-  registerRows(labelsProvider("second", "Banner", ["Second: b"]));
+  registerRows(labelsProvider("first", "Cards", ["First a"]));
+  registerRows(labelsProvider("second", "Banner", ["Second b"]));
   installCaptureBackend(host.ui);
 
   host.buildMenu();
@@ -87,15 +87,15 @@ test("two providers coexist in one menu, in subscription order", () => {
   assert.deepEqual(
     rows.slice(4).map((row) => [row.category, row.label]),
     [
-      ["Cards", "First: a"],
-      ["Banner", "Second: b"],
+      ["Cards", "First a"],
+      ["Banner", "Second b"],
     ],
   );
 });
 
 test("a throwing provider loses only its own rows and is recorded", () => {
   const host = createFakeHost();
-  registerRows(labelsProvider("before", "Cards", ["Before: ok"]));
+  registerRows(labelsProvider("before", "Cards", ["Before ok"]));
   registerRows({
     id: "boom",
     category: "Banner",
@@ -103,12 +103,12 @@ test("a throwing provider loses only its own rows and is recorded", () => {
       throw new Error("provider exploded");
     },
   });
-  registerRows(labelsProvider("after", "Layout", ["After: ok"]));
+  registerRows(labelsProvider("after", "Layout", ["After ok"]));
   installCaptureBackend(host.ui);
 
   host.buildMenu();
 
-  assert.deepEqual(host.rendered().slice(4), ["Before: ok", "After: ok"]);
+  assert.deepEqual(host.rendered().slice(4), ["Before ok", "After ok"]);
   assert.deepEqual(getCaptureDiagnostics().lastFailures, [
     { providerId: "boom", message: "provider exploded", rowsDropped: true },
   ]);
@@ -341,14 +341,14 @@ test("providers registering during a build do not disturb the fan-out", () => {
     category: "Cards",
     rows: () => {
       registerRows(labelsProvider("late", "Banner", ["Late: registered during build"]));
-      return [{ label: "Early: ok", action: () => {} }];
+      return [{ label: "Early ok", action: () => {} }];
     },
   });
   installCaptureBackend(host.ui);
 
   host.buildMenu();
 
-  assert.deepEqual(host.rendered().slice(4), ["Early: ok"]);
+  assert.deepEqual(host.rendered().slice(4), ["Early ok"]);
   assert.deepEqual(getCaptureDiagnostics().lastOutcome, {
     kind: "injected",
     injectedRows: 1,

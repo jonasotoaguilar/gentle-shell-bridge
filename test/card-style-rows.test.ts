@@ -415,7 +415,7 @@ test("without a host line the bridge contributes its own line: native plus every
 
   assert.equal(cardStyleRowMode(), "separate");
   assert.deepEqual(settingLines(host.toggleLines(), CARD_STYLE_FALLBACK_SETTING), [
-    "Bridge → card style ● native ○ cute",
+    "Bridge card style ● native ○ cute",
   ]);
   assert.deepEqual(settingLines(host.toggleLines(), HOST_CARD_STYLE_SETTING), []);
 });
@@ -445,7 +445,7 @@ test("in fallback mode native is the default and pressing it persists 'native'",
   registerCardStyle(style("loon.cute", { label: "cute" }));
   host.buildMenu();
   assert.deepEqual(settingLines(host.toggleLines(), CARD_STYLE_FALLBACK_SETTING), [
-    "Bridge → card style ● native ○ cute",
+    "Bridge card style ● native ○ cute",
   ]);
 
   await host.pressRow(

@@ -248,11 +248,12 @@ diagnostics stop reporting `hook`.
 | `src/capture.ts` | the single `Array.prototype.map` patch and the captured array |
 | `src/hook.ts` | the host-registry probe and the one fan-out provider |
 | `src/bus.ts` | the `globalThis` provider list and its ordered snapshot, plus the section, card-style and transform registries |
-| `src/rows.ts` | the one row builder both backends call, with per-provider isolation |
+| `src/rows.ts` | the one row builder both backends call, with per-provider isolation and the row-name shape check |
+| `src/row-names.ts` | the enforced row-name shape (one to three plain words, no structural marks) and the rejection records `/bridge-status` lists |
 | `src/sidebar.ts` | the rail interception: the state symbol, the patched `parts` map, the rail wrapper |
 | `src/sidebar-render.ts` | the section renderer: card rows and groups per frame, clipping, failures |
 | `src/sections-rows.ts` | the bridge's own `Sections` toggle rows |
-| `src/row-labels.ts` | the visible label for those rows: `rowLabel` or a derived one, plus the deterministic collision assignment (never an id) |
+| `src/row-labels.ts` | the visible label for those rows: `rowLabel` or a derived one (clamped to the shape), plus the deterministic collision assignment (never an id) |
 | `src/visibility.ts` | bridge-owned section visibility in the namespaced store |
 | `src/store.ts` | `createStore`, the namespaced path and the atomic write |
 | `src/status.ts` | the `/bridge-status` text |
@@ -308,13 +309,24 @@ width — the bridge does not parse or strip escape sequences.
 
 `src/sections-rows.ts` builds the toggle from the live registry on every menu build, and
 `src/row-labels.ts` decides what it reads: the author's `rowLabel`, else the title made readable
-(lowercase words, dots and punctuation dropped). The label is BOTH the row's `label` and the line's
-`choice.setting`, because the host prints the setting as the line's name
+(lowercase words, dots and punctuation dropped, clamped to three words). The label is BOTH the row's
+`label` and the line's `choice.setting`, because the host prints the setting as the line's name
 (`lib/visual-customize-view.ts:583-595`); the section id never reaches either. Equal labels are
 resolved in render order with the lowest free ordinal suffix, and `collectStatus()` uses the SAME
 function, so the menu and `/bridge-status` cannot disagree about which section reads `music 2`.
 Status output keeps the ids on purpose: it is read by the plugin author diagnosing a registration,
 not by the user picking a toggle.
+
+The LABEL TEXT has one shape (`src/row-names.ts`), because a row named `Bash card → Bash rendering`
+was the third defect of its class: one to three plain words, no arrow, colon, dot, pipe, slash or
+bracket. It is enforced at both boundaries that can create a row name, and never by rewriting the
+author's text: a section or card style whose `rowLabel` breaks the shape is not stored at all, and a
+provider row whose line name or label breaks it is dropped as `buildRows` stages it — absent from the
+host's array and from the build record `collectStatus()` reads, so it is not part of the effective
+set. The rejected string is recorded verbatim with the rule it broke and `/bridge-status` prints both
+under `row name rejections`. Derivation from `title`/`label` applies the same shape (marks become
+word breaks with the rest of the punctuation; the result is clamped), so a derived name can never be
+rejected.
 
 ### Acquiring a `tui` — and what is unconfirmed
 

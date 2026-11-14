@@ -9,11 +9,15 @@
  * The rule, in one place so both surfaces cannot drift:
  *
  * - `rowLabel`, when the author gives one, is used verbatim — the author knows what a user reads.
+ *   The one thing it must satisfy is the shape every row name satisfies (one to three plain words,
+ *   no structural marks): a name that breaks it is rejected at registration and reported, never
+ *   rewritten (`./row-names.ts`, N7–N9).
  * - otherwise the bridge derives one from the visible text the author already wrote (`title` for a
  *   section, `label` for a card style): lowercase words joined by single spaces, dots and the rest
- *   of the punctuation dropped, no prefix. `"BASH CARD"` → `"bash card"`, `"usageCost"` →
- *   `"usage cost"`, `"bash-card.status"` → `"bash card status"`.
- * - two sections whose labels would read the same are told apart deterministically, and never by
+ *   of the punctuation dropped, no prefix, clamped to the same word limit. `"BASH CARD"` →
+ *   `"bash card"`, `"usageCost"` → `"usage cost"`, `"bash-card.status"` → `"bash card status"`,
+ *   `"MUSIC PLAYER NOW PLAYING"` → `"music player now"`. A derived name therefore always passes the
+ *   shape check the bridge applies to an explicit one. * - two sections whose labels would read the same are told apart deterministically, and never by
  *   appending the raw id: the first keeps `music`, the next gets `music 2`, `music 3`, …
  *   `/bridge-status` reports the same assignment (see `sectionRowLabels`) instead of recomputing it.
  *
@@ -23,6 +27,7 @@
  * This module is internal: `src/index.ts` does not re-export it.
  */
 
+import { MAX_ROW_NAME_WORDS } from "./row-names.ts";
 import type { CardStyleRegistration, SidebarSection } from "./types.ts";
 
 /** Possessives lose the apostrophe instead of splitting one word in two: `Loon's` → `loons`. */
@@ -56,10 +61,26 @@ export const SECTION_LABEL_FALLBACK = "section";
 /** The card-style counterpart, used for a label that carries no words. */
 export const CARD_STYLE_LABEL_FALLBACK = "card style";
 
+/**
+ * Apply the row-name shape to derived text (N8): the same one-to-three-plain-words limit the bridge
+ * enforces on an author's name. Marks are already gone — `NON_WORD` turned every one of them into a
+ * word break — so clamping is what keeps a long title from deriving a name the bridge would reject.
+ *
+ * Clamping is the ONLY transformation the bridge performs, and it is confined to text it derives
+ * itself: an author's own `rowLabel` is never rewritten, it is rejected (`./row-names.ts`).
+ */
+function clampWords(text: string): string {
+  return text
+    .split(" ")
+    .filter((word) => word !== "")
+    .slice(0, MAX_ROW_NAME_WORDS)
+    .join(" ");
+}
+
 /** The label a section's row reads: the author's `rowLabel`, else the title made readable. */
 export function sectionRowLabelText(section: Pick<SidebarSection, "title" | "rowLabel">): string {
   if (section.rowLabel !== undefined) return section.rowLabel;
-  const derived = deriveRowLabel(section.title);
+  const derived = clampWords(deriveRowLabel(section.title));
   return derived === "" ? SECTION_LABEL_FALLBACK : derived;
 }
 
@@ -68,7 +89,7 @@ export function cardStyleRowLabelText(
   style: Pick<CardStyleRegistration, "label" | "rowLabel">,
 ): string {
   if (style.rowLabel !== undefined) return style.rowLabel;
-  const derived = deriveRowLabel(style.label);
+  const derived = clampWords(deriveRowLabel(style.label));
   return derived === "" ? CARD_STYLE_LABEL_FALLBACK : derived;
 }
 
@@ -86,7 +107,7 @@ export interface SectionRowLabel {
 /**
  * Assign every section its row label, in the order the sections render: an explicit `rowLabel` or
  * the derived title, then the lowest free ordinal suffix (`music 2`, `music 3`, …) when another
- * section already took the label.
+ * section already took the label — clamped, like the base, to the row-name word limit.
  *
  * Deterministic by construction: the input order is the render order (`snapshotSections`), the
  * suffix is the lowest free integer, and nothing depends on map iteration or on time. A
@@ -97,6 +118,19 @@ export interface SectionRowLabel {
  * different line names. A derived label is always lowercase, so a clash between two derived labels
  * is always caught.
  */
+/**
+ * The label an equal base takes when another registration already reads it: the base plus the
+ * lowest free ordinal. The result still honours the row-name word limit, so a three-word base yields
+ * `music player 2` (the ordinal replaces its last word) instead of a four-word name the bridge would
+ * have refused from an author. Deterministic: the input order is the render order and the ordinal is
+ * the lowest free integer.
+ */
+function disambiguate(base: string, suffix: number): string {
+  const words = base.split(" ");
+  const kept = words.length >= MAX_ROW_NAME_WORDS ? words.slice(0, MAX_ROW_NAME_WORDS - 1) : words;
+  return `${kept.join(" ")} ${suffix}`;
+}
+
 export function sectionRowLabels(
   sections: readonly SidebarSection[],
 ): SectionRowLabel[] {
@@ -105,7 +139,7 @@ export function sectionRowLabels(
     const base = sectionRowLabelText(section);
     let label = base;
     let suffix = 2;
-    while (taken.has(label)) label = `${base} ${suffix++}`;
+    while (taken.has(label)) label = disambiguate(base, suffix++);
     taken.add(label);
     return label === base ? { section, label, base } : { section, label, base, collision: base };
   });

@@ -83,8 +83,8 @@ with different `value`s:
 ```ts
 const toggle = (value: string) => ({
   category: "Layout" as const,
-  label: () => "Loon: banner source",
-  choice: { setting: "Loon → Banner source", value, current: () => read() === value },
+  label: () => "Loon banner source",
+  choice: { setting: "Loon banner source", value, current: () => read() === value },
   action: () => store.set("bannerSource", value),
 });
 
@@ -103,6 +103,34 @@ Other row kinds follow from the same shape:
 - **Preview row** — `preview()` supplies the read-only headline and sample.
 - **Inline editor row** — `action` opens `inline.input()`, asks with `inline.confirm()`, or
   captures a key with `inline.capture()`.
+
+### Row names
+
+`choice.setting` (the line's name) and `label` (the row's text) are what a human reads, so both obey
+ONE shape: **one to three plain words**, title case like the host's own rows (`Card style`,
+`Card content`), and **none of** `→ ← ↑ ↓ : . | / \ [ ] ( ) { }`. No trailing qualifier — the
+category already says where the row lives, and the values already say what the choices are:
+
+```text
+Bash rendering                  OK    a row name: the host's own vocabulary
+Bash card → Bash rendering      BAD   arrow and a repeated qualifier: reads as a breadcrumb
+Bash card: rendering            BAD   colon
+Section: bash-card.status       BAD   prefix plus a dotted id
+```
+
+The bridge enforces the shape instead of trusting authors; it is never a silent rewrite:
+
+- a provider row whose line name or label breaks it is **dropped from the menu build** — absent
+  from the rows the host receives AND from the rows `/bridge-status` compares for duplicates, so it
+  is not part of the effective set;
+- a section or a card style whose `rowLabel` breaks it is **not registered at all**;
+- the offending string is recorded verbatim with the rule it broke, and `/bridge-status` lists it
+  under `row name rejections`. The menu never shows a sanitized version of a name the bridge refused,
+  so the exact string in the report is the one to fix.
+
+Derived names (a section `title`, a card style `label`) cannot violate the shape: derivation drops
+every non-word character — marks included — and clamps the result to the same word limit. The
+clamp is the only transformation the bridge performs, and only on text it derives itself.
 
 ## 5. Ordering and idempotency
 
@@ -125,12 +153,12 @@ determined by insertion order:
 - **Not consecutive** → two separate lines in a category, each with its own bullets, which
   reads as a duplicate to the user.
 
-Recommended policy: **namespace the `setting`** with the plugin's name, e.g.
-`"Loon → Banner source"`. Namespacing makes collisions impossible by construction and
-keeps each line's meaning intact. The bridge warns on duplicate `category` + `setting`
-pairs and reports them through `/bridge-status`, comparing the rows of the last menu build
-(`no build yet` before the first build); it does not rename rows, because a row's
-setting name is its identity in the renderer.
+Recommended policy: **pick a distinct plain-word name**, e.g. `"Loon banner source"` rather than
+`"Banner source"`. Namespacing with punctuation (`"Loon → Banner source"`) is not an option: the
+row-name shape forbids arrows and colons, and the bridge rejects such a name before it is stored
+(see §4, "Row names"). The bridge warns on duplicate `category` + `setting` pairs and reports them
+through `/bridge-status`, comparing the rows of the last menu build (`no build yet` before the first
+build); it does not rename rows, because a row's setting name is its identity in the renderer.
 
 ## 7. Failure isolation
 
@@ -162,6 +190,7 @@ One command, `/bridge-status`, reporting:
 | Section failures | the most recent sidebar frame's failing sections with `id`, `phase` (`lines`/`meta`) and message |
 | Sidebar | `intercepted (rail wrapped)`, `intercepted (rail pending)`, `no-sidebar-state`, or `not armed` with the reason the wiring could not acquire a `tui` |
 | Transforms | every registered transcript transform in pipeline order (`order 3` or `registration order`) with the last frame's outcome: `applied`, `skipped`, `failed` with the message, or `not run`; omitted when no transform is registered |
+| Row name rejections | every line name and row label the bridge refused (`rows`, `section` or `card style`), with the surface, the registration `id`, the field (`line name`/`row label`), the offending string VERBATIM and the rule it broke; omitted when nothing was rejected |
 
 A menu that opened without the bridge's rows must show up here — armed-but-uncaptured,
 shape mismatch, or provider failure. A registered section that never appears must show up
@@ -302,9 +331,9 @@ const read = () => store.get("bannerSource", "activity");
 
 const toggle = (value: string) => ({
   category: "Cards" as const,
-  label: () => "Loon: banner source",
+  label: () => "Loon banner source",
   choice: {
-    setting: "Loon → Banner source",
+    setting: "Loon banner source",
     value,
     current: () => read() === value, // live: read at render time, so the ● never lies
   },
@@ -432,9 +461,12 @@ const dispose: () => void = registerSection({
 - `title` — the heading the host's own card frame draws. The bridge does not draw a box.
 - `rowLabel` — optional: what the `Sections` row reads, e.g. `music`. When absent the bridge
   derives one from `title`: lowercase words joined by spaces, dots and punctuation dropped, no
-  prefix (`"BASH CARD"` → `"bash card"`, `"usageCost"` → `"usage cost"`). Two sections whose
-  labels would read the same are told apart deterministically (`music`, `music 2`, …) and
-  `/bridge-status` says which one moved. An empty `rowLabel` is rejected before anything is stored.
+  prefix, clamped to three words (`"BASH CARD"` → `"bash card"`, `"usageCost"` → `"usage cost"`,
+  `"MUSIC PLAYER NOW PLAYING"` → `"music player now"`). Two sections whose labels would read the
+  same are told apart deterministically (`music`, `music 2`, …) and `/bridge-status` says which one
+  moved. A `rowLabel` that breaks the row-name shape (one to three plain words, no arrow, colon,
+  dot, pipe, slash or bracket — see §4) is rejected: the section is not registered, and the
+  offending string is reported under `row name rejections`. Nothing is rewritten.
 - `meta(ctx)` — optional right-aligned text. A throw drops that section's body (see below).
 - `lines(ctx)` — the body. Evaluated **per frame**, so live state is honest with no redraw API.
 - `defaultVisible` — the fallback until the user toggles the section.
@@ -490,7 +522,9 @@ sharing one label as their `choice.setting` (the host prints the setting as the 
 values `shown` and `hidden`:
 
 - the label is the author's `rowLabel`, or `title` made readable (lowercase, words joined, no dots,
-  no prefix); the same string is the row `label` and the line's `setting`;
+  no prefix, clamped to three words); the same string is the row `label` and the line's `setting`.
+  An author's `rowLabel` must satisfy the row-name shape (§4): one that does not is rejected, the
+  section is never registered, and the string and the rule appear under `row name rejections`;
 - `current()` reads the persisted value live, so the `●` never lies;
 - `action()` persists **first** and returns; the host's own repaint re-reads `current()`;
 - `preview()` returns a literal depiction of the card in that state, never the host's
@@ -600,7 +634,7 @@ session trapped inside a bridge style. The host's values are native rendering.
 ### Fallback mode
 
 If the host's line cannot be located (a renamed setting, a menu without `Cards`, no capture at
-all), the bridge contributes its own line instead — `Bridge → card style`, with `native` plus every
+all), the bridge contributes its own line instead — `Bridge card style`, with `native` plus every
 registered style. `native` means "the bridge leaves the conversation alone". `/bridge-status`
 reports which mode is in force; the values are never dropped to fit a narrow terminal, and the
 bridge does not control that width.
@@ -629,8 +663,10 @@ conversation broken.
   line's values (another registered style's label or the host's own). Two values reading the same
   cannot be told apart.
 - `rowLabel`: optional; the text this style's row reads, used verbatim. Absent, it is derived from
-  `label` (lowercase words, no dots, no prefix); an empty one is rejected. The `id` is never a row
-  label.
+  `label` (lowercase words, no dots, no prefix, at most three words). The same row-name shape as
+  every other row applies (§4): one that breaks it is rejected — the style is not registered, and
+  the string and the rule are reported under `row name rejections`. An empty one is rejected too.
+  The `id` is never a row label.
 - `frame.top`, `frame.line`, `frame.bottom`: functions. Any failure throws **before** anything is
   stored, like the row and section id rules.
 - Registering an existing `id` replaces that style in place; `dispose()` removes exactly the one

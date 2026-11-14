@@ -9,7 +9,7 @@
  *   originals, untouched: their `current()` still reads the host's config file and their `action()`
  *   still writes it. Only the registered values are the bridge's.
  * - **`separate`** — the host's line could not be located (renamed setting, a narrower host, no
- *   capture at all). The bridge then contributes its own line, `Bridge → card style`, with `native`
+ *   capture at all). The bridge then contributes its own line, `Bridge card style`, with `native`
  *   plus every registered style. `native` means "the bridge leaves the conversation alone". The
  *   mode is recorded so `/bridge-status` can say which line the user is actually seeing.
  *
@@ -57,10 +57,16 @@ export const CARD_STYLE_ROWS_PROVIDER_ID = "bridge.card-styles";
  * `Card style`: a second row sharing that setting, appended somewhere else in the array, would not
  * join the host's line and would make `/bridge-status` report a duplicate.
  */
-export const CARD_STYLE_FALLBACK_SETTING = "Bridge → card style";
+export const CARD_STYLE_FALLBACK_SETTING = "Bridge card style";
 
-/** The fallback line's own label; it names the line, and no value repeats it. */
-export const CARD_STYLE_ROW_LABEL = "Bridge: card style";
+/**
+ * The fallback line's own label; it names the line, and no value repeats it.
+ *
+ * Same vocabulary as every other row name (N7): one to three plain words, no arrow, colon, dot,
+ * pipe, slash or bracket. The bridge enforces that shape on plugins (`./row-names.ts`), so its own
+ * line reads the same way — `Bridge card style`, not `Bridge → card style` or `Bridge: card style`.
+ */
+export const CARD_STYLE_ROW_LABEL = "Bridge card style";
 
 /** Which line the user sees: the host's, extended, or the bridge's own. */
 export type CardStyleRowMode = "extended" | "separate";
@@ -278,7 +284,7 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
  * The fallback provider. Its rows are rebuilt per menu build, never cached.
  *
  * With no style registered it contributes NOTHING: a session that never installed a style plugin
- * must not gain a `Bridge → card style` line with a single `native` value on it. The provider is
+ * must not gain a `Bridge card style` line with a single `native` value on it. The provider is
  * still registered (arming precedes the plugins' own `session_start` handlers), so the first style
  * to register appears on the next menu build with no re-registration.
  */

@@ -234,9 +234,9 @@ diagnostics stop reporting `hook`.
 
 | Module | Owns |
 | --- | --- |
-| `src/index.ts` | the plugin-facing API: `registerRows`, `registerSection`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, `attachBridge`, `isBridgeApi`, types; importing it also publishes the handshake through `./api.ts` |
-| `src/api.ts` | the runtime handshake: the two `Symbol.for` slots, the frozen published object, the shape gate, the early-loader queue and the drain |
-| `src/extension.ts` | the Pi entry from `pi.extensions`: queue drain and `session_start` arming (rows + sidebar widget), the `Sections` provider, and the `/bridge-status` command |
+| `src/index.ts` | the plugin-facing API: `registerRows`, `registerSection`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, `bridgeApi`, `isBridgeApi`, types; importing it also publishes the handshake through `./api.ts` |
+| `src/api.ts` | the runtime handshake: the one `Symbol.for` slot, the frozen published object, the shape gate, `bridgeApi()` and publication |
+| `src/extension.ts` | the Pi entry from `pi.extensions`: `session_start` arming (rows + sidebar widget), the `Sections` provider, and the `/bridge-status` command |
 | `src/arm.ts` | backend selection and the arm result |
 | `src/capture.ts` | the single `Array.prototype.map` patch and the captured array |
 | `src/hook.ts` | the host-registry probe and the one fan-out provider |
@@ -350,19 +350,19 @@ carrying the schema string, the major version and the three callable members, an
 checks all of them with `isBridgeApi` (`src/api.ts`). `v1` in the key is the major: `v2` is a new
 key and `v1` is never mutated.
 
-### First wins, and the early-loader queue
+### First wins, and consumption at `session_start`
 
 `src/api.ts` publishes at module load — importing `./extension.ts` or `./index.ts` loads it — so
 the API exists before any `session_start`. A compatible object already in the slot is kept and
 returned untouched. An incompatible one is left exactly where it is (never overwritten, deleted
-or reset); the bridge drains with its own copy, which operates on the same process-global bus
-(§7), so a squatter cannot strand a queued plugin.
+or reset); this copy's own object still works for registration and operates on the same
+process-global bus (§7).
 
-A plugin that loads first cannot call a function that is not there yet, so it leaves `init(api)`
-in `Symbol.for("gentle-shell-bridge/pending/v1")`. The bridge drains that queue at two points:
-when it publishes, and on every `session_start` (`src/extension.ts:140-146`). Draining is
-idempotent because registration is by stable id, and a throwing initialiser is skipped with a
-warning instead of taking the session handler down.
+A plugin registers from its own `session_start` handler. Pi completes every extension module's
+async initialization before firing that event (`docs/extensions.md:213`), so the handler either
+finds the object or learns the bridge is not installed. The symbol's presence is the complete
+answer: there is no deferred path and no second publication point. `bridgeApi()` returns the
+object or `undefined`, and registration is idempotent because it is by stable id.
 
 ### Why a path, and why an environment variable, were rejected
 
@@ -371,16 +371,16 @@ reaches into another package's files, and breaks silently the day either reposit
 environment variable is the same problem plus a per-user setup step, so the feature stops working
 until someone is told to set it — not "zero extra steps". Both were in the worked example
 (`bridgeCandidates()`, a dynamic `import()`, `GENTLE_SHELL_BRIDGE_MODULE`) and both are gone: the
-example now inlines the two symbols and the gate (`examples/bash-card.ts`) and works whichever
-side loads first.
+example now inlines the symbol and the gate (`examples/bash-card.ts`) and registers from
+`session_start`.
 
 ### Version skew
 
 An object that fails the gate — another library's payload, another major, a partial object — is
-**absent**, never an error and never half-used: the consumer queues on the pending path exactly
-as if the bridge were not loaded, the bridge emits one warning per process, and the slot is left
-for whoever wrote it. The queued path still runs the plugin when the bridge publishes or on the
-next `session_start`.
+**absent**, never an error and never half-used: `bridgeApi()` returns `undefined`, the plugin
+decides what to do, the bridge emits one warning per process, and the slot is left for whoever
+wrote it. A newer plugin against an older bridge therefore sees "absent" instead of being
+deferred silently; that compatibility cliff is intentional.
 
 ## Limits
 

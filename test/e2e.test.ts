@@ -300,7 +300,7 @@ test("the public entry exports exactly the contract surface and no test seams", 
   assert.deepEqual(Object.keys(publicApi).sort(), [
     "STORE_SCHEMA_VERSION",
     "VERSION",
-    "attachBridge",
+    "bridgeApi",
     "createStore",
     "isBridgeApi",
     "registerRows",
@@ -321,9 +321,7 @@ test("the public entry exports exactly the contract surface and no test seams", 
     "getSidebarDiagnostics",
     "resetBridgeApiForTests",
     "publishBridgeApi",
-    "drainBridgeQueue",
     "BRIDGE_API_KEY",
-    "BRIDGE_PENDING_KEY",
   ]) {
     assert.equal(seam in publicApi, false, `${seam} must not be public`);
   }

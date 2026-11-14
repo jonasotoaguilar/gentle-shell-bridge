@@ -1,11 +1,11 @@
 /**
- * The runtime handshake (S1, S5 "zero extra steps"): the published API object, its shape gate, the
- * early-loader queue and the drain the entry runs on `session_start`.
+ * The runtime handshake (S1, S5 "zero extra steps"): the published API object, its shape gate and
+ * the `bridgeApi()` helper a plugin calls from its own `session_start` handler.
  *
  * A plugin and the bridge are two independent projects. Pi gives them one sanctioned channel that
- * needs no path: `globalThis`. These tests pin that channel only — the symbols, the frozen object,
- * the queue and the gating rules — because a path or an environment variable is exactly what the
- * rejected design offered and what this design replaces.
+ * needs no path: `globalThis`. These tests pin that channel only — the symbol, the frozen object,
+ * the gate and the absent-means-absent rule — because a path or an environment variable is exactly
+ * what the rejected design offered and what this design replaces.
  */
 
 import assert from "node:assert/strict";
@@ -18,14 +18,11 @@ import {
   API_SCHEMA,
   API_VERSION,
   BRIDGE_API_KEY,
-  BRIDGE_PENDING_KEY,
   VERSION,
-  attachBridge,
-  drainBridgeQueue,
+  bridgeApi,
   isBridgeApi,
   publishBridgeApi,
   resetBridgeApiForTests,
-  type BridgeApi,
 } from "../src/api.ts";
 import {
   resetBusForTests,
@@ -58,10 +55,6 @@ import {
 } from "./fake-sidebar.ts";
 
 const hostSlot = (): Record<symbol, unknown> => globalThis as unknown as Record<symbol, unknown>;
-const pendingInits = (): unknown[] => {
-  const queue = hostSlot()[BRIDGE_PENDING_KEY];
-  return Array.isArray(queue) ? queue : [];
-};
 
 const provider = (id: string): RowProvider => ({ id, category: "Cards", rows: () => [] });
 const section = (id: string, title = "MUSIC"): SidebarSection => ({
@@ -71,24 +64,26 @@ const section = (id: string, title = "MUSIC"): SidebarSection => ({
   lines: () => ["track  one"],
 });
 
-/** Every console write the terminal would show; the bridge must produce none. */
+/** Every terminal write the process would show; the bridge must produce none. */
 const captureConsole = (): { writes: string[]; restore: () => void } => {
   const writes: string[] = [];
-  const original = { log: console.log, warn: console.warn, error: console.error };
+  const sink = (globalThis as unknown as { console: { log: unknown; warn: unknown; error: unknown } })
+    .console;
+  const original = { log: sink.log, warn: sink.warn, error: sink.error };
   const record =
     (method: string) =>
     (...args: unknown[]): void => {
       writes.push(`${method}: ${args.map((arg) => String(arg)).join(" ")}`);
     };
-  console.log = record("log");
-  console.warn = record("warn");
-  console.error = record("error");
+  sink.log = record("log");
+  sink.warn = record("warn");
+  sink.error = record("error");
   return {
     writes,
     restore: () => {
-      console.log = original.log;
-      console.warn = original.warn;
-      console.error = original.error;
+      sink.log = original.log;
+      sink.warn = original.warn;
+      sink.error = original.error;
     },
   };
 };
@@ -142,7 +137,6 @@ test("publishing stores one frozen, versioned API object at the stable symbol", 
   assert.deepEqual(Object.keys(api).sort(), [
     "VERSION",
     "createStore",
-    "drain",
     "registerRows",
     "registerSection",
     "schema",
@@ -182,7 +176,7 @@ test("the shape gate accepts only the v1 surface it advertises", () => {
 
   assert.equal(isBridgeApi(valid), true);
 
-  // Every mismatch is "absent", so the caller falls back to the queue instead of an error path.
+  // Every mismatch is "absent", so the caller sees `undefined` instead of an error path.
   for (const rejected of [
     undefined,
     null,
@@ -231,102 +225,46 @@ test("two loaded copies of the module publish one object and both work through i
 });
 
 // ---------------------------------------------------------------------------------------------
-// The early-loader queue
+// bridgeApi(): the object or undefined, never a wait
 // ---------------------------------------------------------------------------------------------
 
-test("attachBridge runs the init now when an API is already published", () => {
+test("bridgeApi returns undefined when nothing is published, and the object once it is", () => {
+  assert.equal(bridgeApi(), undefined, "no publication is absent, full stop");
+
   const api = publishBridgeApi();
-  const seen: BridgeApi[] = [];
-
-  attachBridge((given) => seen.push(given));
-
-  assert.deepEqual(seen, [api], "the init ran synchronously, with the published object");
-  assert.deepEqual(pendingInits(), [], "and nothing was queued");
+  assert.equal(bridgeApi(), api, "and the published object is handed back immediately");
 });
 
-test("attachBridge queues when the bridge is absent, and the publish drains it", () => {
-  let ran = 0;
-  attachBridge((api) => {
-    ran += 1;
-    api.registerRows(provider("loon.banner-source"));
-  });
+test("an object that fails the gate is absent: bridgeApi returns undefined, one notice, no throw", () => {
+  for (const incompatible of [
+    { ...usableSurface(), schema: "someone-else/api" },
+    { ...usableSurface(), version: 2 },
+    { schema: API_SCHEMA, version: API_VERSION },
+  ]) {
+    resetBridgeApiForTests();
+    resetNoticesForTests();
+    hostSlot()[BRIDGE_API_KEY] = incompatible;
+    const captured = captureConsole();
+    let seen: unknown;
+    try {
+      assert.doesNotThrow(() => {
+        seen = bridgeApi();
+      });
+    } finally {
+      captured.restore();
+    }
 
-  assert.equal(ran, 0, "nothing runs before the bridge exists");
-  assert.equal(pendingInits().length, 1);
-  assert.deepEqual(snapshotProviders(), []);
-
-  publishBridgeApi();
-
-  assert.equal(ran, 1, "publishing drains the queue");
-  assert.deepEqual(pendingInits(), [], "and empties it");
-  assert.deepEqual(snapshotProviders().map((registered) => registered.id), [
-    "loon.banner-source",
-  ]);
-});
-
-test("two drains leave one provider and one section, never a duplicate", () => {
-  // Two copies of one plugin (a double load) queue two initialisers that register the same ids.
-  const queueBoth = (): void => {
-    attachBridge((api) => {
-      api.registerRows(provider("bash-card-example.rendering"));
-      api.registerSection(section("bash-card.status", "BASH CARD"));
-    });
-    attachBridge((api) => {
-      api.registerRows(provider("bash-card-example.rendering"));
-      api.registerSection(section("bash-card.status", "BASH CARD"));
-    });
-  };
-
-  queueBoth();
-  publishBridgeApi(); // drain one: publish time
-
-  assert.deepEqual(snapshotProviders().map((registered) => registered.id), [
-    "bash-card-example.rendering",
-  ]);
-  assert.deepEqual(snapshotSections().map((registered) => registered.id), ["bash-card.status"]);
-
-  drainBridgeQueue(); // drain two: session_start
-  drainBridgeQueue(); // drain three: a second session_start
-
-  assert.deepEqual(snapshotProviders().map((registered) => registered.id), [
-    "bash-card-example.rendering",
-  ]);
-  assert.deepEqual(snapshotSections().map((registered) => registered.id), ["bash-card.status"]);
-
-  // A plugin that arrives after the first drain, with the same stable ids, is a replacement too.
-  queueBoth();
-  drainBridgeQueue();
-  assert.equal(snapshotProviders().length, 1);
-  assert.equal(snapshotSections().length, 1);
-});
-
-test("a queued init that throws is isolated: the rest run and the drain never escapes", () => {
-  const ran: string[] = [];
-  const captured = captureConsole();
-  try {
-    attachBridge(() => {
-      throw new Error("plugin bug");
-    });
-    attachBridge(() => {
-      ran.push("second");
-    });
-    assert.doesNotThrow(() => publishBridgeApi());
-  } finally {
-    captured.restore();
+    assert.equal(seen, undefined, "a mismatched object is never handed to a plugin");
+    assert.equal(hostSlot()[BRIDGE_API_KEY], incompatible, "the slot is left exactly as it was");
+    assert.deepEqual(captured.writes, [], "the skew is never written to the terminal");
+    const notices = snapshotNotices().entries;
+    assert.equal(notices.length, 1, "and it is recorded once, not per call");
+    assert.match(notices[0].message, /incompatible|unsupported|version|not the/u);
+    assert.match(notices[0].message, /absent|ABSENT/u);
+    assert.match(notices[0].message, /left/u);
+    assert.doesNotMatch(notices[0].message, /queue/u, "the notice never mentions a removed queue");
   }
-
-  assert.deepEqual(ran, ["second"]);
-  assert.deepEqual(captured.writes, [], "the failure is not written to the terminal");
-  const notices = snapshotNotices().entries;
-  assert.equal(notices.length, 1, "one notice, kept for /bridge-status and the TUI");
-  assert.equal(notices[0].level, "warning");
-  assert.match(notices[0].message, /initiali[sz]er|init/);
-  assert.equal(notices[0].emitted, false, "no UI has seen it yet");
 });
-
-// ---------------------------------------------------------------------------------------------
-// Version skew: an incompatible object is absent, never an error and never reset
-// ---------------------------------------------------------------------------------------------
 
 const usableSurface = (): Record<string, unknown> => ({
   schema: API_SCHEMA,
@@ -336,61 +274,29 @@ const usableSurface = (): Record<string, unknown> => ({
   createStore: () => ({ get: () => undefined, set: () => {} }),
 });
 
-test("an object that fails the gate is absent: the caller queues, nothing throws, one notice", () => {
-  for (const incompatible of [
-    { ...usableSurface(), schema: "someone-else/api" },
-    { ...usableSurface(), version: 2 },
-    { schema: API_SCHEMA, version: API_VERSION },
-  ]) {
-    resetBridgeApiForTests();
-    resetNoticesForTests();
-    hostSlot()[BRIDGE_API_KEY] = incompatible;
-    const seen: unknown[] = [];
-    const captured = captureConsole();
-    try {
-      assert.doesNotThrow(() => {
-        attachBridge((api) => seen.push(api));
-        attachBridge((api) => seen.push(api));
-      });
-    } finally {
-      captured.restore();
-    }
-
-    assert.deepEqual(seen, [], "a mismatched object is never handed to a plugin");
-    assert.equal(pendingInits().length, 2, "both initialisers are queued instead");
-    assert.deepEqual(captured.writes, [], "the skew is never written to the terminal");
-    const notices = snapshotNotices().entries;
-    assert.equal(notices.length, 1, "and it is recorded once, not per call");
-    assert.match(notices[0].message, /incompatible|unsupported|version|not the/u);
-  }
-});
-
-test("an incompatible slot is never reset, and the bridge still drains with a working API", () => {
+test("an incompatible slot is never reset, and publishing still yields a working API", () => {
   const incompatible = { ...usableSurface(), version: 2 };
   hostSlot()[BRIDGE_API_KEY] = incompatible;
   const captured = captureConsole();
-  let drainedWith: BridgeApi | undefined;
+  let published: ReturnType<typeof publishBridgeApi> | undefined;
   try {
-    attachBridge((api) => {
-      drainedWith = api;
-      api.registerSection(section("loon.music"));
-    });
-    publishBridgeApi();
+    published = publishBridgeApi();
   } finally {
     captured.restore();
   }
 
   assert.deepEqual(captured.writes, []);
-
   assert.equal(hostSlot()[BRIDGE_API_KEY], incompatible, "the slot is left exactly as it was");
   assert.equal(isBridgeApi(hostSlot()[BRIDGE_API_KEY]), false);
-  assert.ok(drainedWith !== undefined, "the queued initialiser still ran");
-  assert.equal(isBridgeApi(drainedWith), true, "with a working API, so the plugin is not stranded");
+  assert.equal(bridgeApi(), undefined, "and consumers still see it as absent");
+  assert.ok(published !== undefined, "this copy still has an object to register through");
+  assert.equal(isBridgeApi(published), true);
+  published.registerSection(section("loon.music"));
   assert.deepEqual(snapshotSections().map((registered) => registered.id), ["loon.music"]);
 });
 
 // ---------------------------------------------------------------------------------------------
-// Through the entry: the plugin that loaded first still reaches both surfaces
+// Through the entry: a plugin registers from its own session_start handler
 // ---------------------------------------------------------------------------------------------
 
 type UiWithWidget = FakeUiTarget & {
@@ -417,46 +323,46 @@ const armThroughEntry = (host: FakeHost): void => {
   handlers[0]({}, { hasUI: true, ui: host.ui });
 };
 
-test("a plugin that loaded before the bridge renders its section and its Sections toggle", () => {  const host = createFakeHost();
+test("a plugin that registers from session_start renders its section and its Sections toggle", () => {
+  const host = createFakeHost();
   installWidgetSurface(host);
   registerNativeFooter(); // the host's own rail
 
-  // The plugin loads first: no bridge yet, so its init is queued and registers nothing.
-  attachBridge((api) => {
-    api.registerRows({
-      id: "loon.banner-source",
-      category: "Cards",
-      rows: () => [
-        {
-          category: "Cards",
-          label: "Loon: banner source",
-          choice: { setting: "Loon → Banner source", value: "on", current: () => true },
-          action: () => {},
-        },
-      ],
-    });
-    api.registerSection(section("loon.music"));
-  });
-  assert.deepEqual(snapshotSections(), [], "nothing is registered before the bridge loads");
+  publishBridgeApi(); // the bridge loaded, as it always does before any session_start
 
-  publishBridgeApi(); // the bridge loads, publishes and drains
+  const api = bridgeApi();
+  assert.ok(api !== undefined, "the API is present in the handler: no waiting, no queue");
+  api.registerRows({
+    id: "loon.banner-source",
+    category: "Cards",
+    rows: () => [
+      {
+        category: "Cards",
+        label: "Loon: banner source",
+        choice: { setting: "Loon → Banner source", value: "on", current: () => true },
+        action: () => {},
+      },
+    ],
+  });
+  api.registerSection(section("loon.music"));
+  assert.deepEqual(snapshotProviders().map((registered) => registered.id), ["loon.banner-source"]);
+  assert.deepEqual(snapshotSections().map((registered) => registered.id), ["loon.music"]);
 
   armThroughEntry(host); // session_start
   host.buildMenu();
 
-  assert.deepEqual(cardTitles(), ["FOOTER", "MUSIC"], "the queued section reached the rail");
+  assert.deepEqual(cardTitles(), ["FOOTER", "MUSIC"], "the registered section reached the rail");
   assert.deepEqual(cardBody("MUSIC"), ["track  one"]);
   const toggle = host.toggleLines().find((line) => line.startsWith("Section: loon.music"));
   assert.ok(toggle !== undefined, "and its toggle reached Sections");
   assert.ok(toggle.includes("● shown") && toggle.includes("○ hidden"));
   assert.ok(
     host.toggleLines().some((line) => line.startsWith("Loon → Banner source")),
-    "the queued provider's rows reached the menu too",
+    "the provider's rows reached the menu too",
   );
 });
 
-test("PRESERVE: a session_start without a UI still arms nothing, and now also drains", () => {
-  attachBridge((api) => api.registerRows(provider("queued.rows")));
+test("PRESERVE: a session_start without a UI still arms nothing", () => {
   const handlers: BridgeSessionHandler[] = [];
   const pi: BridgeExtensionApi = {
     on(_event, handler) {
@@ -465,6 +371,8 @@ test("PRESERVE: a session_start without a UI still arms nothing, and now also dr
     registerCommand() {},
   };
   gentleShellBridge(pi);
+  publishBridgeApi();
+  bridgeApi()?.registerRows(provider("queued.rows"));
 
   handlers[0]({}, { hasUI: false });
 
@@ -472,6 +380,6 @@ test("PRESERVE: a session_start without a UI still arms nothing, and now also dr
   assert.deepEqual(
     snapshotProviders().map((registered) => registered.id),
     ["queued.rows"],
-    "the queue is drained even when there is no menu to reach, so a later build sees the rows",
+    "registration from a plugin handler is independent of the bridge arming",
   );
 });

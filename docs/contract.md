@@ -19,9 +19,9 @@ Registration does **not** open the menu. Rows are built when a menu is actually
 constructed.
 
 The package's public entry exports exactly `registerRows`, `registerSection`, `createStore`,
-`STORE_SCHEMA_VERSION`, `VERSION`, the runtime helpers `attachBridge` and `isBridgeApi` (§9), and
+`STORE_SCHEMA_VERSION`, `VERSION`, the runtime helpers `bridgeApi` and `isBridgeApi` (§9), and
 the row/provider/section/store/API types. `snapshotProviders`, `snapshotSections`,
-`publishBridgeApi`, `drainBridgeQueue` and every `…ForTests` seam are **internal**: they exist so
+`publishBridgeApi` and every `…ForTests` seam are **internal**: they exist so
 the bridge's own backends and tests can drive one process, and they are not part of this
 contract.
 
@@ -167,19 +167,19 @@ too: the sections table proves the registration, and the sidebar line proves whe
 was ever reached. Diagnostics never run a provider's `rows()` and never run a section's
 `lines()` or `meta()`: both are UI, and a report is not a frame.
 
-## 9. Runtime handshake — no path, no environment variable, no import
+## 9. Reaching the bridge — register from `session_start`
 
-A plugin and the bridge are two independent projects, so neither a path nor an environment
-variable is the contract between them: a path names one checkout on one machine and breaks the
-day either project moves. They meet on `globalThis`, the channel every separately loaded
-extension already shares, behind two stable symbols:
+**The rule: register from a `session_start` handler. Then the symbol's presence is the complete
+answer.** Pi loads every extension module and waits for its async initialization before it fires
+`session_start` (`docs/extensions.md:213`), and it fires that event for `startup`, `reload`,
+`new`, `resume` and `fork` (`:393`). On a switch or a new session Pi reloads and rebinds the
+extensions, and only then emits `session_start` (`:512`). The bridge publishes its object as its
+module loads, so by the time your handler runs the object either exists or the bridge is
+genuinely not installed. That is exact: there is no third state and nothing to wait for.
 
-| Key | Holds |
-| --- | --- |
-| `Symbol.for("gentle-shell-bridge/api/v1")` | the frozen API object |
-| `Symbol.for("gentle-shell-bridge/pending/v1")` | an array of `init(api)` callbacks |
+### What is published
 
-`src/api.ts` publishes, at module load, exactly:
+`Symbol.for("gentle-shell-bridge/api/v1")` holds exactly:
 
 ```ts
 Object.freeze({
@@ -189,70 +189,147 @@ Object.freeze({
   registerRows,
   registerSection,
   createStore,
-  drain,                             // the bridge's own queue entry; never part of the gate
 });
 ```
 
-A plugin imports nothing and needs no path, no environment variable and no configuration. The
-worked example inlines the two symbols and the gate (`examples/bash-card.ts`) and loads in either
-order.
+Publication is **first wins**: a compatible object already in the slot is kept and never replaced,
+and the slot is never reset. A consumer gates on the schema string, `version === 1` and the three
+callable members. Anything else — another library's payload, another major, a partial object — is
+**absent**, never an error: the object is not used, the slot is left exactly as it is (never
+overwritten, deleted or reset), and one notice per process names the mismatch. `v1` in the key is
+the major: a breaking change is a new `v2` key, never a mutation of this one.
 
-### The gate
+### Two ways to read it
 
-A consumer treats the slot's value as an API only when the schema string is
-`"gentle-shell-bridge/api"`, `version === 1`, and `registerRows`, `registerSection` and
-`createStore` are all functions. `isBridgeApi(value)` is that check, exported from the package
-root for a plugin that does import it. Anything else — another library's payload, another major,
-a partial object — is **absent**, never an error: the caller queues instead (see **The queue**
-below), the bridge warns once per process, and the slot is left exactly as it was.
-
-`drain` is in the published shape but deliberately outside the gate: only the bridge drains the
-queue, and a consumer never needs it to register anything.
-
-### First wins, never reset
-
-Publication happens at module load, before any `session_start`, so importing the package through
-`./extension.ts` or `./index.ts` is enough to make the API available. If the slot already holds a
-compatible object it is kept and returned untouched. If it holds anything else, that value is
-left in place — never overwritten, deleted or reset — and the bridge uses its own object for
-draining, so a squatter cannot strand a queued plugin: every copy's functions operate on the same
-process-global bus (architecture.md §7).
-
-### The queue
-
-A plugin that loads before the bridge cannot call a function that is not there yet, so it leaves
-an `init(api)` callback in the pending slot. The bridge drains that queue at **two points**: when
-it publishes (module load), and on every `session_start` — the first thing that handler does.
-Draining is idempotent — a plugin registers by stable id, so a repeated drain, or the same plugin
-queued twice by two loads, replaces instead of stacking — and a throwing initialiser is skipped
-with a `console.warn`, with the rest of the queue and the session handler still running.
-
-### The plugin form
-
-With the gate above as `isBridgeApi` (`const isApi = …` if inlined), the whole handshake is three
-lines:
+Read the symbol directly — no import, the form the worked example uses:
 
 ```ts
-const api = (globalThis as any)[Symbol.for("gentle-shell-bridge/api/v1")];
-if (isApi(api)) init(api);
-else ((globalThis as any)[Symbol.for("gentle-shell-bridge/pending/v1")] ??= []).push(init);
+const KEY = Symbol.for("gentle-shell-bridge/api/v1");
+const isApi = (value: any): boolean =>
+  typeof value === "object" && value !== null &&
+  value.schema === "gentle-shell-bridge/api" && value.version === 1 &&
+  typeof value.registerRows === "function" &&
+  typeof value.registerSection === "function" &&
+  typeof value.createStore === "function";
+
+pi.on("session_start", (_event, ctx) => {
+  const api = (globalThis as any)[KEY];
+  if (!isApi(api)) {
+    ctx.ui?.notify("my-plugin: no compatible gentle-shell-bridge is installed", "warning");
+    return;
+  }
+  // api.registerRows(...) / api.registerSection(...) / api.createStore(...)
+});
 ```
 
-A plugin that only queues is one line and still works in both load orders, at a cost that must be
-stated: registration waits for a drain, so it happens when the bridge loads later or on the next
-`session_start` — never immediately, even when the bridge is already published.
+Or import the package and call `bridgeApi()`, which applies the same gate and returns the object or
+`undefined`:
 
 ```ts
-((globalThis as any)[Symbol.for("gentle-shell-bridge/pending/v1")] ??= []).push(init);
+import { bridgeApi } from "gentle-shell-bridge";
+
+pi.on("session_start", () => {
+  const api = bridgeApi();
+  if (api === undefined) return; // not installed (or a version without this surface)
+  // api.registerRows(...) / api.registerSection(...) / api.createStore(...)
+});
 ```
 
-### Version skew
+`undefined` means absent, full stop. `bridgeApi()` never waits, defers or retries.
 
-An object at the slot that fails the gate is treated as absent on every path: `attachBridge`
-queues the initialiser exactly as if the bridge were not loaded, `publishBridgeApi` keeps the
-foreign value in place, and the queued path still runs the plugin when the bridge publishes or on
-the next `session_start`. One warning per process names the mismatch; nothing is retried against
-the foreign object and nothing is reset.
+### Surface 1: rows for a customize category
+
+One provider contributes rows to a category the host already renders. A toggle is two
+**consecutive** rows sharing one `choice.setting`:
+
+```ts
+const store = api.createStore("loon");
+const read = () => store.get("bannerSource", "activity");
+
+const toggle = (value: string) => ({
+  category: "Cards" as const,
+  label: () => "Loon: banner source",
+  choice: {
+    setting: "Loon → Banner source",
+    value,
+    current: () => read() === value, // live: read at render time, so the ● never lies
+  },
+  preview: () => ({ title: value, sample: "literal depiction of this choice" }),
+  action: () => store.set("bannerSource", value), // persist FIRST; the host repaints after
+});
+
+const dispose = api.registerRows({
+  id: "loon.banner-source",
+  category: "Cards",
+  rows: () => [toggle("activity"), toggle("output")], // consecutive rows → one line
+});
+```
+
+Nothing may sit between the two values or the renderer draws two lines. `current()` is evaluated
+when the menu is built, `action()` runs before the host's own repaint, and `preview()` replaces the
+host's "Preview unavailable" default. `dispose()` removes exactly this provider's rows.
+
+### Surface 2: a sidebar section
+
+One call adds the card to gentle-shell's fullscreen sidebar **and** its show/hide toggle to
+`/gentle:customize` → `Sections`. The plugin writes content only; it never names a `setting`, a
+value, the `Sections` category or the rail:
+
+```ts
+const dispose = api.registerSection({
+  id: "loon.music",             // unique and stable: ordering, replacement, the toggle
+  title: "MUSIC",               // card heading, drawn by the host's own frame
+  meta: () => "1 playing",      // optional right-aligned text
+  lines: () => ["track  Blue in Green", "album  Kind of Blue"], // per frame, live
+  defaultVisible: true,         // absent means true
+  order: 10,                    // optional integer
+});
+```
+
+The bridge generates the `Sections` rows for it: two consecutive rows sharing `Section: <id>`,
+values `shown` / `hidden`, with the section title as the label, a live `current()` and a persist-
+first `action()`. A hidden section is not rendered and its `lines()`/`meta()` are not called. A
+throw loses only that section's body and is reported by `/bridge-status`. `dispose()` removes the
+card and the toggle together, leaving every other section untouched.
+
+### Surface 3: the optional namespaced store
+
+`createStore(pluginId)` is optional. A plugin may keep its own file instead; the bridge never reads
+or writes that file.
+
+```ts
+const store = api.createStore("loon");
+store.set("bannerSource", "activity");
+const value = store.get("bannerSource", "activity"); // caller's fallback when absent or unreadable
+```
+
+The document is `{ "schemaVersion": 1, "values": { … } }` at
+`<gentle config home>/gentle-shell-bridge/<pluginId>.json`. `values` is an envelope, so a plugin
+key cannot collide with `schemaVersion`. Writes are atomic: a temporary file in the same directory,
+then a rename over the target. `pluginId` is rejected before any filesystem access unless it is one
+non-empty path segment. A malformed file or an unknown `schemaVersion` reads as empty and is
+reported by `/bridge-status`; it is not repaired or deleted, and a later `set` writes a valid
+document. Details and the rejected alternatives: §10 and [state.md](state.md).
+
+### When the API is absent: the plugin decides
+
+| What the handler sees | What it means | What the plugin may do |
+| --- | --- | --- |
+| `bridgeApi() === undefined`, or the direct read is `undefined` | the bridge is not installed | notify and continue; render its own fallback; fail loudly |
+| the object fails the gate | another library's payload, another major, or a partial object | same as absent: never call it |
+| a compatible object | the bridge is installed, with every surface above | register, then forget about load order |
+
+There is nothing else to check and no third state. The bridge cannot tell a plugin what to do when
+it is absent, and does not try: notify-and-continue, a local fallback and a loud failure are all
+legitimate, and only the plugin knows which one fits.
+
+### The compatibility cliff, on purpose
+
+An older bridge publishes nothing at this key, so a newer plugin sees **absent** instead of being
+deferred silently. A newer bridge and an older plugin meet the same way when the plugin's gate
+demands a member the old object does not have. That is the intended answer: a plugin can always
+tell the user it found no compatible bridge, and no registration can sit invisible in a holding
+area waiting for a version that will never arrive.
 
 ## 10. Persistence
 
@@ -375,7 +452,7 @@ same per-plugin decision recorded in [state.md](state.md).
 
 ## Limits
 
-- `registerRows`, `registerSection`, `createStore`, `attachBridge` and `isBridgeApi` are the
+- `registerRows`, `registerSection`, `createStore`, `bridgeApi` and `isBridgeApi` are the
   contract; anything a plugin does inside `action()` beyond calling inline helpers is the
   plugin's own business.
 - Rows can join existing categories only; `category` is typed to gentle-shell's closed

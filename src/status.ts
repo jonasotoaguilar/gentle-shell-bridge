@@ -159,9 +159,9 @@ export function collectStatus(): StatusSnapshot {
     // contributor. Without them, a frame that lost every section would report nothing (B1).
     snapshot.sidebarFailures = sidebarDiagnostics.lastFailures;
   }
-  // The notices the bridge had to report out of band (a foreign API object, a queued initialiser
-  // that threw). They are listed here so removing them from the terminal never made them
-  // invisible: after the one-time notify, this is where they stay.
+  // The notices the bridge had to report out of band (an incompatible API object). They are listed
+  // here so removing them from the terminal never made them invisible: after the one-time notify,
+  // this is where they stay.
   const notices = snapshotNotices();
   if (notices.entries.length > 0) {
     snapshot.notices = notices.entries.map((entry) => ({

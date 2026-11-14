@@ -44,24 +44,26 @@ interface ConsoleCapture {
   restore: () => void;
 }
 
-/** Record every console write the process would show in the terminal. */
+/** Record every terminal write the process would show. */
 const captureConsole = (): ConsoleCapture => {
   const writes: string[] = [];
-  const original = { log: console.log, warn: console.warn, error: console.error };
+  const sink = (globalThis as unknown as { console: { log: unknown; warn: unknown; error: unknown } })
+    .console;
+  const original = { log: sink.log, warn: sink.warn, error: sink.error };
   const record =
     (method: string) =>
     (...args: unknown[]): void => {
       writes.push(`${method}: ${args.map((arg) => String(arg)).join(" ")}`);
     };
-  console.log = record("log");
-  console.warn = record("warn");
-  console.error = record("error");
+  sink.log = record("log");
+  sink.warn = record("warn");
+  sink.error = record("error");
   return {
     writes,
     restore: () => {
-      console.log = original.log;
-      console.warn = original.warn;
-      console.error = original.error;
+      sink.log = original.log;
+      sink.warn = original.warn;
+      sink.error = original.error;
     },
   };
 };

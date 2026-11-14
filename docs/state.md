@@ -167,23 +167,30 @@ it, which contradicts "one call, zero extra steps". Neither channel carries a ve
 either can hand a plugin an object it cannot use with no way to notice. Removed from the example
 in `f0f30fe`.
 
-**E. Chosen: publish a frozen, versioned object on `globalThis`, with an early-loader queue.**
-The bridge publishes `{ schema, version, VERSION, registerRows, registerSection, createStore,
-drain }` at `Symbol.for("gentle-shell-bridge/api/v1")` when its module loads — first-wins, never
-overwritten, never reset — and drains `Symbol.for("gentle-shell-bridge/pending/v1")` at publish
-time and on every `session_start`. A consumer gates on the schema string, `version === 1` and the
-three callable members; anything else is absent, the bridge warns once per process, and the queued
-path still works. `attachBridge(init)` and `isBridgeApi(value)` are the same handshake for a
-plugin that does import the package, and the exact form is quoted in
-[contract.md](contract.md) §9. It follows the `pi-lens` bridge convention (stable symbol,
-versioned, first-wins frozen, new major = new key) and gentle-shell's schema-string plus shape
-gate.
+**E. Chosen: publish a frozen, versioned object on `globalThis`; consume it at `session_start`.**
+The bridge publishes `{ schema, version, VERSION, registerRows, registerSection, createStore }` at
+`Symbol.for("gentle-shell-bridge/api/v1")` when its module loads — first-wins, never overwritten,
+never reset. A plugin registers from its own `session_start` handler: Pi completes every extension
+module's async initialization before firing that event (`docs/extensions.md:213`, `:393`, `:512`),
+so the slot either holds the object or the bridge is not installed. A consumer gates on the schema
+string, `version === 1` and the three callable members; anything else is absent, `bridgeApi()`
+returns `undefined`, and the bridge warns once per process. `bridgeApi()` and `isBridgeApi(value)`
+are the same handshake for a plugin that does import the package, and the exact form is quoted in
+[contract.md](contract.md) §9. It follows the `pi-lens` bridge convention (stable symbol, versioned,
+first-wins frozen, new major = new key) and gentle-shell's schema-string plus shape gate.
 
-The cost is real and accepted: every plugin repeats the same handful of lines — a symbol lookup,
-a shape gate and a queue push — and copies them into its own file, because the whole point is
-that it cannot import the bridge. That boilerplate lasts until Pi ships a real cross-extension
-registry; on that day the inline block in each plugin becomes one call and this decision is
-superseded, not extended.
+**History: a deferred-registration slot was removed.** An earlier revision of this decision added
+a second `Symbol.for` slot holding initialisation callbacks, run at publish time and on every
+`session_start`. It existed only to let a plugin register at module load — the one moment where
+"not yet" and "never" are indistinguishable — and `session_start` already fires after every module
+has loaded, so that path was redundant. Removing it also removed the only path that could defer a
+plugin silently: a newer plugin against an older bridge now sees "absent", which is the intended
+answer.
+
+The cost is real and accepted: every plugin repeats the same handful of lines — a symbol lookup
+and a shape gate — and copies them into its own file, because the whole point is that it cannot
+import the bridge. That boilerplate lasts until Pi ships a real cross-extension registry; on that
+day the inline block in each plugin becomes one call and this decision is superseded, not extended.
 
 ## Open questions
 

@@ -3,9 +3,9 @@
  *
  * Four responsibilities, no more:
  * 1. publish the runtime handshake. Importing `./api.ts` publishes the frozen API object at
- *    `Symbol.for("gentle-shell-bridge/api/v1")` at module load, before any `session_start`, and
- *    runs any initialiser a plugin queued before this package loaded. A plugin therefore needs no
- *    path, no environment variable and no import.
+ *    `Symbol.for("gentle-shell-bridge/api/v1")` at module load, before any `session_start`, so a
+ *    plugin that registers from its own `session_start` handler finds the object or learns the
+ *    bridge is absent. A plugin therefore needs no path, no environment variable and no import.
  * 2. arm the row bridge on `session_start`, only when the context has a UI. Arming is already
  *    idempotent (the capture target and the hook registry carry non-enumerable markers), so this
  *    module adds no second guard layer: a double load, a `/reload` or a rebind all resolve to
@@ -24,7 +24,6 @@
  * no command.
  */
 
-import { drainBridgeQueue } from "./api.ts";
 import { armBridge } from "./arm.ts";
 import { flushNotices } from "./notices.ts";
 import { isRecord } from "./rows.ts";
@@ -140,18 +139,12 @@ export interface BridgeExtensionApi {
 
 export default function gentleShellBridge(pi: BridgeExtensionApi): void {
   pi.on("session_start", (_event, ctx) => {
-    // First: a plugin that loaded before this package queued its initialiser. Draining here is the
-    // second of the two drain points (the other is publication, at module load) and is cheap when
-    // the queue is empty. Each plugin registers by stable id, so a repeated drain replaces rather
-    // than stacking, and a throwing initialiser is isolated inside `drainBridgeQueue` — this handler
-    // gains no new failure mode.
-    drainBridgeQueue();
     // Without a UI there is no customize menu to reach, so there is nothing to arm. There is also
     // no `notify` to show a buffered notice with: those stay pending for the next UI session.
     if (ctx.hasUI !== true) return;
-    // The in-TUI diagnostics channel. A notice produced at module load (an incompatible API slot,
-    // a queued initialiser that threw) has been waiting for this moment; delivered notices stay in
-    // the buffer, so `/bridge-status` keeps reporting them afterwards.
+    // The in-TUI diagnostics channel. A notice produced at module load (an incompatible API slot)
+    // has been waiting for this moment; delivered notices stay in the buffer, so `/bridge-status`
+    // keeps reporting them afterwards.
     flushNotices(ctx.ui);
     armBridge(ctx.ui);
     // The `Sections` provider needs no `tui`, so it is installed even when the rail cannot be

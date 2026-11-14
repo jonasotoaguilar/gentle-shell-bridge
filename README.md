@@ -9,7 +9,7 @@ each other when more than one wants to add a settings row.
 **Status: released as `0.1.0`.** The package exists and runs. It is a manifest-backed Pi
 package (`pi.extensions` → `./src/extension.ts`) loaded from TypeScript sources through
 jiti, so there is no build step and no `dist/`; it registers a `bridge-status` command and
-carries a `node --test` suite of 216 tests, 18 of them end-to-end through the public API and
+carries a `node --test` suite of 233 tests, 18 of them end-to-end through the public API and
 the real extension entry. The capture technique was proven in the real TUI by a 76-line
 throwaway extension (`loon-customize-probe.ts`); the capture backend implements it, while
 the hook backend is implemented but **unverified** — no host has been observed emitting the
@@ -32,16 +32,17 @@ no setting, row or store for it. Copy the file into `~/.pi/agent/extensions/` an
 it; the toggle defaults to `default`, so installing it changes no rendering until the row is
 switched, while the section is visible immediately (`defaultVisible: true`). It does not import the
 package and does not know where it is installed: the example and the bridge meet on `globalThis`
-behind two symbols (see **Reaching the bridge without importing it**), so either load order works —
-if the bridge is not loaded yet, the example says so once and registers its toggle and section the
-moment the bridge publishes.
+behind one symbol (see **Reaching the bridge without importing it**). It registers from its own
+`session_start` handler, where the symbol's presence is the complete answer — if no compatible
+bridge is installed the example says so once and adds nothing.
 
 Both rows carry `preview()`, so `/gentle:customize` draws a literal sample of the card each
 mode produces instead of "Preview unavailable".
 
 A bridge that publishes something else — another major version, a partial object, another library's
-payload at the symbol — is treated as absent, never as an error: the example stays queued instead of
-calling an object it cannot trust, and the bridge reports the version skew once per process.
+payload at the symbol — is treated as absent, never as an error: the example never calls an object it
+cannot trust, says so once through `ctx.ui.notify`, and registers nothing. The bridge reports the
+version skew once per process.
 
 The choice applies to the **next bash call**: the resolver runs when a bash row is built, not per
 frame, so rows already on screen keep the rendering they were built with. Scrolling or `Esc` does
@@ -59,7 +60,7 @@ For a plugin that imports the API, `exports` maps the package root to `src/index
 
 ```ts
 import {
-  attachBridge,
+  bridgeApi,
   createStore,
   isBridgeApi,
   registerRows,
@@ -76,6 +77,9 @@ resolving the package at all.
 Node's native type stripping, with no transpile step.
 
 ## Quick start: a sidebar section
+
+The two quick starts below show the call itself. Make it from your extension's `session_start`
+handler, where the bridge is either present or absent — never somewhere that depends on load order.
 
 The second surface needs no `Sections` row, no setting name and no store of its own — one call
 adds the card to the sidebar and its show/hide toggle to `/gentle:customize` → `Sections`.
@@ -110,40 +114,52 @@ in the host's strictly validated `visual-customization.json`.
 ## Reaching the bridge without importing it
 
 A plugin and the bridge are two independent projects, so a path to one checkout is not a contract.
-The bridge publishes a frozen, versioned object on `globalThis` and drains an early-loader queue:
+They meet on `globalThis`, behind one stable symbol:
 
 - `Symbol.for("gentle-shell-bridge/api/v1")` holds
-  `{ schema: "gentle-shell-bridge/api", version: 1, VERSION, registerRows, registerSection, createStore, drain }`.
+  `{ schema: "gentle-shell-bridge/api", version: 1, VERSION, registerRows, registerSection, createStore }`.
   It is frozen, first-wins (a valid object already there is kept, not replaced) and never reset.
-- `Symbol.for("gentle-shell-bridge/pending/v1")` holds an array of `init(api)` callbacks left by
-  plugins that loaded before the bridge.
 
-This is the whole handshake. Inline it, or import `attachBridge` from the package — the example
-inlines it, because it must not import the bridge even to say hello:
+**Register from a `session_start` handler; then the symbol's presence is the complete answer.** Pi
+finishes loading every extension module before it fires `session_start`
+(`docs/extensions.md:213`), and the bridge publishes as its module loads, so your handler either
+finds the object or knows the bridge is not installed. There is no holding area and nothing to wait
+for. Inline the gate (the example does), or import the package and call `bridgeApi()`:
 
 ```ts
 const KEY = Symbol.for("gentle-shell-bridge/api/v1");
-const QUEUE = Symbol.for("gentle-shell-bridge/pending/v1");
 const isApi = (v: any) => typeof v === "object" && v !== null && v.schema === "gentle-shell-bridge/api" &&
   v.version === 1 && typeof v.registerRows === "function" &&
   typeof v.registerSection === "function" && typeof v.createStore === "function";
-const attachBridge = (init: (api: any) => void) => {
-  const api = (globalThis as any)[KEY];
-  if (isApi(api)) init(api);
-  else ((globalThis as any)[QUEUE] ??= []).push(init);
-};
 
-attachBridge((api) => {
+pi.on("session_start", (_event, ctx) => {
+  const api = (globalThis as any)[KEY];
+  if (!isApi(api)) {
+    ctx.ui?.notify("my-plugin: no compatible gentle-shell-bridge is installed", "warning");
+    return; // it adds nothing; the plugin decides whether to continue or fail loudly
+  }
   api.registerSection({ id: "loon.music", title: "MUSIC", lines: () => ["…"] });
 });
 ```
 
+A plugin that imports the package gets the same answer in one call:
+
+```ts
+import { bridgeApi } from "gentle-shell-bridge";
+
+pi.on("session_start", () => {
+  const api = bridgeApi();
+  if (api === undefined) return; // absent, full stop: no waiting, no deferral
+  api.registerRows({ id: "loon.banner-source", category: "Cards", rows: () => [] });
+});
+```
+
 Rules worth knowing: an object that fails the gate (wrong schema, `version !== 1`, a missing member)
-is **absent**, never an error — the caller is queued instead, one warning is emitted per process,
-and the slot is left exactly as it was. A breaking change takes a new `v2` symbol key rather than
-mutating `v1`. The queue is drained when the bridge publishes and again on every `session_start`;
-draining is idempotent because a plugin registers by stable id, so a repeated drain (or two loads of
-one plugin) replaces instead of stacking.
+is **absent**, never an error — `bridgeApi()` returns `undefined`, one warning is emitted per
+process, and the slot is left exactly as it was. A breaking change takes a new `v2` symbol key
+rather than mutating `v1`. An older bridge publishes nothing at this key, so a newer plugin sees
+"absent" instead of being deferred silently; that compatibility cliff is intentional. The full rule,
+the three surfaces and complete snippets are in [docs/contract.md](docs/contract.md) §9.
 
 ## Quick start: rows
 
@@ -221,7 +237,7 @@ Diagnostics never run a section's `lines()`/`meta()` either. The hook backend is
 - **The capture is heuristic.** It recognises the row array by shape; a menu that builds
   its rows differently produces no capture. That case is reported by `/bridge-status` instead of
   passing silently.
-- **Tests cover a fake host, not the real TUI.** 216 tests run under `node --test`; 18 of
+- **Tests cover a fake host, not the real TUI.** 233 tests run under `node --test`; 18 of
   them are end-to-end through the public API and the extension entry, against a fake host
   that models `gentle-shell.ts:3550-3562` and a fake sidebar that models
   `lib/shell-sidebar.ts` and the layout's card frame. The capture technique is verified in the

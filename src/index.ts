@@ -9,10 +9,12 @@
  * re-exported here. docs/contract.md's Limits section is explicit about which names are the contract.
  *
  * Importing this module also publishes the runtime handshake (`./api.ts`), the channel a plugin
- * uses when it does not import the package at all.
+ * uses when it does not import the package at all. A plugin that does import it calls
+ * `bridgeApi()` from its `session_start` handler: the object, or `undefined` when the bridge is
+ * not installed. There is no deferred path.
  */
-export { VERSION, attachBridge, isBridgeApi } from "./api.ts";
-export type { BridgeApi, BridgeInit } from "./api.ts";
+export { VERSION, bridgeApi, isBridgeApi } from "./api.ts";
+export type { BridgeApi } from "./api.ts";
 export { registerRows, registerSection } from "./bus.ts";
 export { createStore, STORE_SCHEMA_VERSION } from "./store.ts";
 export type { Store, StoreProblem, StoreProblemKind } from "./store.ts";

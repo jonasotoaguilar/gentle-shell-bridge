@@ -7,7 +7,7 @@
  * after the fact. So this module is the only place a bridge problem is reported out of band:
  *
  * - a message produced while a context exists is shown with `ctx.ui.notify(message, level)`;
- * - a message produced before any context exists (module load, the early-loader drain) is buffered
+ * - a message produced before any context exists (module load) is buffered
  *   here and flushed ONCE on the first `session_start` that has a UI;
  * - every message stays in the buffer afterwards, so `/bridge-status` still answers "what went
  *   wrong?" long after the notification scrolled away.

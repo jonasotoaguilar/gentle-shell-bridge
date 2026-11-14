@@ -546,11 +546,12 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
         lines.push(`  - ${failure.styleId}: ${failure.message}`);
       }
     }
-    // S7: a later post-processor (cinlodev wraps the chat container and strips box chrome) can erase
-    // this frame. The bridge cannot prevent it, so it says so instead of pretending otherwise.
+    // S7: a later post-processor — a component that rewrites the conversation's rows after this
+    // frame is drawn — can erase it. The bridge cannot prevent that, so it says so instead of
+    // pretending otherwise.
     lines.push(
-      "card style note: a downstream post-processor (e.g. cinlodev) can strip or override this " +
-        "frame; the bridge cannot prevent it.",
+      "card style note: a downstream post-processor can strip or override this frame; " +
+        "the bridge cannot prevent it.",
     );
   }
 

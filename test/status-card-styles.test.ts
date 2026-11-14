@@ -140,7 +140,7 @@ test("the block reports mode, styles in order, selection, last frame and the dow
     "card style wiring: chat wrapped",
     "card style failures: 1",
     "  - loon.broken: top exploded",
-    "card style note: a downstream post-processor (e.g. cinlodev) can strip or override this frame; " +
+    "card style note: a downstream post-processor can strip or override this frame; " +
       "the bridge cannot prevent it.",
   ]);
 });
@@ -160,7 +160,7 @@ test("a stale selection is reported as missing, never rendered (S12)", () => {
     "card style selection: loon.cute (missing: not registered)",
     "card style frame: pass-through (missing: a disposed style)",
     "card style wiring: chat wrapped",
-    "card style note: a downstream post-processor (e.g. cinlodev) can strip or override this frame; " +
+    "card style note: a downstream post-processor can strip or override this frame; " +
       "the bridge cannot prevent it.",
   ]);
 });

@@ -37,7 +37,8 @@
  * c. **`tui.children[0].children[2]` = the chat container.** The document container's children are
  *    `[headerContainer, loadedResourcesContainer, chatContainer]`
  *    (`interactive-mode.js:404-407`), so index 2 is the component that renders the conversation
- *    cards. Prior art uses exactly this (`pi-cinlodev-cute/src/sidebar.ts:224-228`). **Least
+ *    cards. A downstream post-processor that re-frames the conversation uses exactly this.
+ *    **Least
  *    stable:** the index is insertion order, not a contract.
  *
  * `tui.render(width)` itself, `tui.getScreenLines()` and `tui.getPrimaryScrollView()` are NOT

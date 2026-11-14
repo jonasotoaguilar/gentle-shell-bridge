@@ -382,6 +382,12 @@ test("the example's runtime path resolves no module of the bridge", () => {
   );
   assert.equal(/console\./u.test(source), false, "no console write survives in the example");
   assert.match(source, /pi\.on\("session_start"/u, "registration happens in session_start");
+  assert.match(
+    source,
+    /gentle-shell-bridge:ready/u,
+    "and a bridge that loads later is heard on the announcement channel",
+  );
+  assert.match(source, /pi\.events/u, "the channel comes from Pi's own bus, not a module");
 });
 
 test("the absent case writes zero bytes to stdout and stderr", () => {

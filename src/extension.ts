@@ -2,10 +2,14 @@
  * The extension entry Pi loads (`pi.extensions` in package.json).
  *
  * Four responsibilities, no more:
- * 1. publish the runtime handshake. Importing `./api.ts` publishes the frozen API object at
- *    `Symbol.for("gentle-shell-bridge/api/v1")` at module load, before any `session_start`, so a
- *    plugin that registers from its own `session_start` handler finds the object or learns the
- *    bridge is absent. A plugin therefore needs no path, no environment variable and no import.
+ * 1. publish the runtime handshake and announce it. Importing `./api.ts` publishes the frozen API
+ *    object at `Symbol.for("gentle-shell-bridge/api/v1")` at module load, before any
+ *    `session_start`, so a plugin that registers from its own `session_start` handler finds the
+ *    object or learns the bridge is absent. When Pi loads the plugin BEFORE this package — the
+ *    real TUI order — an absent symbol is only "not yet", so the factory also announces the
+ *    publication on `pi.events` (`gentle-shell-bridge:ready`), once per process and never for an
+ *    incompatible slot (`announceBridgeReady`). A plugin therefore needs no path, no environment
+ *    variable and no import.
  * 2. arm the row bridge on `session_start`, only when the context has a UI. Arming is already
  *    idempotent (the capture target and the hook registry carry non-enumerable markers), so this
  *    module adds no second guard layer: a double load, a `/reload` or a rebind all resolve to
@@ -25,6 +29,7 @@
  */
 
 import { armBridge } from "./arm.ts";
+import { announceBridgeReady, publishBridgeApi, type BridgeEventBus } from "./api.ts";
 import { flushNotices } from "./notices.ts";
 import { isRecord } from "./rows.ts";
 import { installCardStyleRows } from "./card-style-rows.ts";
@@ -141,9 +146,18 @@ export interface BridgeExtensionApi {
     name: string,
     command: { description?: string; handler: BridgeCommandHandler },
   ): void;
+  /** Pi's cross-extension bus (`docs/extensions.md:1965-1972`); absent only in a bare harness. */
+  events?: BridgeEventBus;
 }
 
 export default function gentleShellBridge(pi: BridgeExtensionApi): void {
+  // The module load above already published the object; this factory is the first moment `pi` —
+  // and therefore `pi.events` — exists, so it is where the process is told. Both calls are
+  // idempotent: publishing again hands back the slot's object, and the announcement happens once
+  // per process even when two copies of this package are loaded.
+  publishBridgeApi();
+  announceBridgeReady(pi.events);
+
   pi.on("session_start", (_event, ctx) => {
     // Without a UI there is no customize menu to reach, so there is nothing to arm. There is also
     // no `notify` to show a buffered notice with: those stay pending for the next UI session.

@@ -305,11 +305,13 @@ test("S8 end to end: action persists first and the repaint shows the new bullet"
 
 test("the public entry exports exactly the contract surface and no test seams", () => {
   assert.deepEqual(Object.keys(publicApi).sort(), [
+    "BRIDGE_READY_EVENT",
     "STORE_SCHEMA_VERSION",
     "VERSION",
     "bridgeApi",
     "createStore",
     "isBridgeApi",
+    "onBridgeApi",
     "registerCardStyle",
     "registerRows",
     "registerSection",

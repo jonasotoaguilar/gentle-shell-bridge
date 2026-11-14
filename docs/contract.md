@@ -19,9 +19,10 @@ Registration does **not** open the menu. Rows are built when a menu is actually
 constructed.
 
 The package's public entry exports exactly `registerRows`, `registerSection`, `createStore`,
-`STORE_SCHEMA_VERSION`, `VERSION`, the runtime helpers `bridgeApi` and `isBridgeApi` (§9), and
+`STORE_SCHEMA_VERSION`, `VERSION`, the runtime helpers `bridgeApi`, `isBridgeApi`, `onBridgeApi`,
+the announcement channel `BRIDGE_READY_EVENT` (§9), and
 the row/provider/section/store/API types. `snapshotProviders`, `snapshotSections`,
-`publishBridgeApi` and every `…ForTests` seam are **internal**: they exist so
+`publishBridgeApi`, `announceBridgeReady` and every `…ForTests` seam are **internal**: they exist so
 the bridge's own backends and tests can drive one process, and they are not part of this
 contract.
 
@@ -168,15 +169,20 @@ too: the sections table proves the registration, and the sidebar line proves whe
 was ever reached. Diagnostics never run a provider's `rows()` and never run a section's
 `lines()` or `meta()`: both are UI, and a report is not a frame.
 
-## 9. Reaching the bridge — register from `session_start`
+## 9. Reaching the bridge — `session_start`, or the announcement
 
-**The rule: register from a `session_start` handler. Then the symbol's presence is the complete
-answer.** Pi loads every extension module and waits for its async initialization before it fires
-`session_start` (`docs/extensions.md:213`), and it fires that event for `startup`, `reload`,
-`new`, `resume` and `fork` (`:393`). On a switch or a new session Pi reloads and rebinds the
-extensions, and only then emits `session_start` (`:512`). The bridge publishes its object as its
-module loads, so by the time your handler runs the object either exists or the bridge is
-genuinely not installed. That is exact: there is no third state and nothing to wait for.
+**The rule: register at `session_start` if the package loaded first, otherwise when the
+announcement arrives.** Pi loads every extension module and waits for its async initialization
+before it fires `session_start` (`docs/extensions.md:213`), and it fires that event for `startup`,
+`reload`, `new`, `resume` and `fork` (`:393`). But it does not guarantee that THIS package loaded
+before the plugin: global extensions (`~/.pi/agent/extensions`) load — and receive `session_start` —
+before a configured package's module publishes. A real TUI showed exactly that, with the plugin's
+handler finding no symbol while the bridge went on to publish a moment later.
+
+So an absent symbol at `session_start` is **"not yet"**, not "not installed". The symbol stays the
+only authority for *which* object to use; the announcement below is how a plugin learns that a
+later publication happened. The bridge publishes its object as its module loads, and the process is
+told once, on Pi's cross-extension bus.
 
 ### What is published
 
@@ -208,7 +214,8 @@ the major: a breaking change is a new `v2` key, never a mutation of this one.
 
 ### Two ways to read it
 
-Read the symbol directly — no import, the form the worked example uses:
+Read the symbol directly — no import, the form the worked example uses. The `session_start` attempt
+is kept, and the announcement covers a bridge that publishes after this file loaded:
 
 ```ts
 const KEY = Symbol.for("gentle-shell-bridge/api/v1");
@@ -219,30 +226,70 @@ const isApi = (value: any): boolean =>
   typeof value.registerSection === "function" &&
   typeof value.createStore === "function";
 
-pi.on("session_start", (_event, ctx) => {
+const register = (): boolean => {
   const api = (globalThis as any)[KEY];
-  if (!isApi(api)) {
-    ctx.ui?.notify("my-plugin: no compatible gentle-shell-bridge is installed", "warning");
-    return;
-  }
+  if (!isApi(api)) return false;
   // api.registerRows(...) / api.registerSection(...) / api.createStore(...)
+  return true;
+};
+
+const registered = register();
+if (!registered) pi.events?.on("gentle-shell-bridge:ready", register);
+
+pi.on("session_start", (_event, ctx) => {
+  if (!register()) {
+    ctx.ui?.notify(
+      "my-plugin: waiting for gentle-shell-bridge to announce itself",
+      "warning",
+    );
+  }
 });
 ```
 
-Or import the package and call `bridgeApi()`, which applies the same gate and returns the object or
-`undefined`:
+Or import the package and call `onBridgeApi(handler, pi.events)`, which does both forms for you: the
+handler runs immediately when the object is already published (and no listener is taken), otherwise
+it runs when the announcement arrives, once, after which the subscription removes itself.
 
 ```ts
-import { bridgeApi } from "gentle-shell-bridge";
+import { onBridgeApi, type BridgeApi } from "gentle-shell-bridge";
 
-pi.on("session_start", () => {
-  const api = bridgeApi();
-  if (api === undefined) return; // not installed (or a version without this surface)
+const register = (api: BridgeApi): void => {
   // api.registerRows(...) / api.registerSection(...) / api.createStore(...)
+};
+
+// Works in both orders: this package loaded first, or the plugin did.
+const dispose = onBridgeApi(register, pi.events);
+```
+
+`bridgeApi()` never waits, defers or retries: it answers about the slot as it is right now.
+
+### The announcement: `gentle-shell-bridge:ready`
+
+When this package publishes its object, it emits one event on Pi's cross-extension bus
+(`docs/extensions.md:1965-1972`), the same channel gentle-shell's other extensions use:
+
+```ts
+pi.events.on("gentle-shell-bridge:ready", (payload) => {
+  // { schema: "gentle-shell-bridge/api", version: 1, VERSION: "0.3.0" }
 });
 ```
 
-`undefined` means absent, full stop. `bridgeApi()` never waits, defers or retries.
+- **Name:** `gentle-shell-bridge:ready`. Payload: `{ schema, version, VERSION }` — the same identity,
+  major and release the published object carries, frozen. Informational only: the payload says
+  *which* bridge announced itself, never *what* it can do.
+- **Emitted once per process**, after a successful publish, no matter how many copies of the package
+  Pi loaded (`moduleCache: false` gives it one module instance per extension, not one per process).
+- **Never for an incompatible slot.** If the symbol holds another library's payload or another major,
+  nothing is announced: there is no object to send a listener to, and `bridgeApi()` stays
+  `undefined`.
+- **Silent without a bus.** On a Pi with no `pi.events`, nothing is emitted and nothing is reported;
+  the symbol still works for any plugin that reads it.
+- **It is a notification, not a registry.** The listener still reads the symbol and applies the gate:
+  an announcement that is not backed by a compatible object is ignored. That is why the event can
+  never hand out a half-working API.
+
+The order that matters: the announcement may arrive before or after the plugin's `session_start`,
+and registration is idempotent by stable id, so a plugin may register from both paths.
 
 ### Surface 1: rows for a customize category
 
@@ -322,13 +369,15 @@ document. Details and the rejected alternatives: §10 and [state.md](state.md).
 
 | What the handler sees | What it means | What the plugin may do |
 | --- | --- | --- |
-| `bridgeApi() === undefined`, or the direct read is `undefined` | the bridge is not installed | notify and continue; render its own fallback; fail loudly |
+| `bridgeApi() === undefined`, or the direct read is `undefined`, **and no announcement arrived** | no bridge has published in this process (yet) | notify and continue, wait for `gentle-shell-bridge:ready`, or fail loudly — say which |
 | the object fails the gate | another library's payload, another major, or a partial object | same as absent: never call it |
 | a compatible object | the bridge is installed, with every surface above | register, then forget about load order |
 
-There is nothing else to check and no third state. The bridge cannot tell a plugin what to do when
-it is absent, and does not try: notify-and-continue, a local fallback and a loud failure are all
-legitimate, and only the plugin knows which one fits.
+Absent is still absent: `bridgeApi()` describes the slot as it is right now. What changed is the
+conclusion a plugin draws from it — "not installed" is only honest when no announcement can arrive
+(a Pi without `pi.events`, or a plugin that chose not to listen). The bridge cannot tell a plugin
+what to do when it is absent, and does not try: notify-and-continue, a local fallback and a loud
+failure are all legitimate, and only the plugin knows which one fits.
 
 ### The compatibility cliff, on purpose
 
@@ -549,9 +598,9 @@ conversation broken.
 
 ### What cannot be promised
 
-- A later post-processor that rewrites the conversation — cinlodev wraps the chat container's
-  `render` and strips box chrome — can erase this frame. The bridge cannot prevent it, and
-  `/bridge-status` says so instead of pretending otherwise.
+- A later post-processor that rewrites the conversation — a component that re-frames the rows and
+  strips box chrome — can erase this frame. The bridge cannot prevent it, and
+  `/bridge-status` says so instead of pretending otherwise, naming the mechanism and no product.
 - The repaint depends on the host's own `float` grammar (see
   [architecture.md](architecture.md) §14): a card drawn some other way is left exactly as it is.
 - A style never breaks the conversation: any throw inside detection or inside a style makes that
@@ -626,7 +675,8 @@ outcome is the LAST frame's, not a history: a report is about what the user is l
 ## Limits
 
 - `registerRows`, `registerSection`, `registerCardStyle`, `registerTransform`, `createStore`,
-  `bridgeApi` and `isBridgeApi` are the contract; anything a plugin does inside `action()` beyond
+  `bridgeApi`, `isBridgeApi`, `onBridgeApi` and the `gentle-shell-bridge:ready` event are the
+  contract; anything a plugin does inside `action()` beyond
   calling inline helpers is the plugin's own business.
 - Rows can join existing categories only; `category` is typed to gentle-shell's closed
   union (`lib/visual-customize-view.ts:105`).
@@ -642,8 +692,12 @@ outcome is the LAST frame's, not a history: a report is about what the user is l
   renders a lying `●`.
 - No priority or insertion-index API exists: order is subscription order only.
 - The runtime handshake is proven under `node --test` with a simulated process (a reset
-  `globalThis` and a freshly loaded example per scenario), not by two live Pi extensions loading
-  in either order inside one real session.
+  `globalThis`, a fake `pi.events` and a freshly loaded example per scenario), not by two live Pi
+  extensions loading in either order inside one real session. What it pins: the announcement's name,
+  payload and once-per-process rule, and that an early plugin registers all four surfaces from it.
+- The announcement is only as good as Pi's bus: a host without `pi.events` gets no event, which is
+  why the symbol remains the authority and the example reports that state honestly instead of
+  waiting for something that cannot arrive.
 - A card style's frame is measured in terminal columns (wide characters count 2, combining marks
   0); a style that mixes in its own images or escape tricks owns whatever the terminal does with it.
 - Card styles are proven against a fake conversation component that reproduces gentle-shell's
@@ -655,4 +709,5 @@ outcome is the LAST frame's, not a history: a report is about what the user is l
 - A transform is a per-frame pass, so a slow transform is a slow frame; the bridge isolates its
   failures and clips its width, and can bound nothing else. It sees lines, never tool metadata.
 - The API is released (`0.3.0`). The `v1` symbol is the compatibility boundary: a breaking
-  change takes a new key instead of mutating this one (§9).
+  change takes a new key instead of mutating this one (§9). The `gentle-shell-bridge:ready` event is
+  additive: a plugin that never subscribes loses nothing but the late-load case.

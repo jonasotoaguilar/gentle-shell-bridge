@@ -12,11 +12,23 @@
  *                                              registerTransform, createStore }
  * ```
  *
- * A plugin registers from its own `session_start` handler. Pi finishes loading every extension
- * module before it fires `session_start` (`docs/extensions.md:213`, `:393`, `:512`), and this
- * module publishes as it loads, so by the time any plugin's handler runs the API either exists or
- * the bridge is not installed. That makes the symbol's presence the complete answer: there is no
- * queue, no deferral and nothing to wait for. `bridgeApi()` returns the object, or `undefined`.
+ * A plugin registers from its own `session_start` handler. But Pi does NOT guarantee that this
+ * package loaded first: the real TUI showed global extensions (`~/.pi/agent/extensions`) loading —
+ * and receiving `session_start` — before a configured package's module ever published. So the
+ * symbol's presence is the complete answer only when it is present. When it is absent, the plugin
+ * still needs a way to hear about a bridge that publishes later, and it hears it on Pi's own
+ * cross-extension bus (`docs/extensions.md:1965-1972`):
+ *
+ * ```ts
+ * pi.events.on("gentle-shell-bridge:ready", ({ schema, version, VERSION }) => …)
+ * ```
+ *
+ * The bridge emits that event once per process, after a successful publish and never for an
+ * incompatible slot (`announceBridgeReady`). A plugin that imports this package calls
+ * `onBridgeApi(handler, pi.events)`, which serves it immediately when the object is already there
+ * and subscribes when it is not. The symbol stays the authority: the announcement only says "look
+ * again", so a copy that publishes an incompatible slot announces nothing and a listener that
+ * hears the event still gates on the object itself.
  *
  * Why a symbol instead of a path or `GENTLE_SHELL_BRIDGE_MODULE`: a path is not a contract between
  * two projects — it names one checkout on one machine, and it breaks the day either project moves.
@@ -62,6 +74,48 @@ export const API_VERSION = 1;
 /** The published service object's stable, process-global key. */
 export const BRIDGE_API_KEY: symbol = Symbol.for("gentle-shell-bridge/api/v1");
 
+/**
+ * The channel this package announces itself on, on Pi's cross-extension bus.
+ *
+ * A plugin loaded before this package has no object to read yet, so it subscribes here. The
+ * announcement is a notification, never a registry: it says "the object is published now", and the
+ * listener reads the symbol. That keeps one authority (the symbol and its shape gate) and one
+ * channel for the timing.
+ */
+export const BRIDGE_READY_EVENT = "gentle-shell-bridge:ready";
+
+/** What the announcement carries: identity, major version and the publishing release. */
+export interface BridgeReadyPayload {
+  readonly schema: typeof API_SCHEMA;
+  readonly version: typeof API_VERSION;
+  readonly VERSION: string;
+}
+
+/**
+ * The two members of `pi.events` this package uses (`docs/extensions.md:1965-1972`). Both are
+ * optional so a host without a bus is a normal case, not a type error: no bus means the symbol is
+ * the only channel, which is exactly how this worked before.
+ */
+export type BridgeEventUnsubscribe = () => void;
+
+export interface BridgeEventBus {
+  emit?(channel: string, data: unknown): void;
+  on?(channel: string, handler: (data: unknown) => void): BridgeEventUnsubscribe | void;
+}
+
+/** The one payload every announcement carries; frozen like the published object. */
+const READY_PAYLOAD: BridgeReadyPayload = Object.freeze({
+  schema: API_SCHEMA,
+  version: API_VERSION,
+  VERSION,
+});
+
+/**
+ * Bookkeeping for "one announcement per process", keyed by a symbol so two copies of this module
+ * share it, exactly like the slot and the skew notice.
+ */
+const READY_KEY: symbol = Symbol.for("gentle-shell-bridge/api/v1.ready");
+
 /** Bookkeeping for "one skew notice per process", kept off module scope for the same reason as the bus. */
 const WARNED_KEY: symbol = Symbol.for("gentle-shell-bridge/api/v1.warned");
 
@@ -102,16 +156,41 @@ interface WarnedState {
   skew: boolean;
 }
 
-function warnedState(): WarnedState {
+/** One announcement per process, no matter how many copies publish or how often they ask. */
+interface ReadyState {
+  announced: boolean;
+}
+
+/**
+ * The process-global state for a symbol-keyed flag, created on first use. A foreign object at the
+ * key is replaced by a fresh one: this state belongs to this package alone, and it carries nothing
+ * a consumer reads.
+ */
+function flagState<T extends object>(key: symbol, shape: (candidate: Partial<T>) => boolean, created: T): T {
   const host = apiHost();
-  const existing = host[WARNED_KEY];
+  const existing = host[key];
   if (typeof existing === "object" && existing !== null) {
-    const candidate = existing as Partial<WarnedState>;
-    if (typeof candidate.skew === "boolean") return candidate as WarnedState;
+    const candidate = existing as Partial<T>;
+    if (shape(candidate)) return candidate as T;
   }
-  const created: WarnedState = { skew: false };
-  host[WARNED_KEY] = created;
+  host[key] = created;
   return created;
+}
+
+function warnedState(): WarnedState {
+  return flagState<WarnedState>(
+    WARNED_KEY,
+    (candidate) => typeof candidate.skew === "boolean",
+    { skew: false },
+  );
+}
+
+function readyState(): ReadyState {
+  return flagState<ReadyState>(
+    READY_KEY,
+    (candidate) => typeof candidate.announced === "boolean",
+    { announced: false },
+  );
 }
 
 /** One clear notice per process, no matter how many copies ask. */
@@ -169,11 +248,13 @@ function compatibleApi(): BridgeApi | undefined {
 }
 
 /**
- * The validated published object, or `undefined`.
+ * The validated published object as the slot holds it RIGHT NOW, or `undefined`.
  *
- * This is the whole handshake for a plugin that imports the package. Call it from a
- * `session_start` handler: `undefined` means the bridge is not installed (or publishes a version
- * without this surface), and there is nothing to wait for.
+ * This is the whole handshake for a plugin that imports the package and is loaded after it. Call it
+ * from a `session_start` handler: an object means register now. `undefined` means nothing is
+ * published yet — which is "not yet", not necessarily "not installed", because Pi may load your
+ * plugin before this package. Use `onBridgeApi(handler, pi.events)` when both orders have to work;
+ * `bridgeApi()` itself never waits, defers or retries.
  */
 export function bridgeApi(): BridgeApi | undefined {
   return compatibleApi();
@@ -200,16 +281,147 @@ export function publishBridgeApi(): BridgeApi {
 }
 
 /**
- * Test-only seam: forget the published object and the once-per-process notice flag. Clearing the
- * published object is what lets a test model "the bridge is not installed"; the extension never
- * calls this. Deliberately not re-exported from `src/index.ts`.
+ * Test-only seam: forget the published object, the once-per-process notice flag and the
+ * announcement flag. Clearing the published object is what lets a test model "the bridge is not
+ * installed"; clearing the announcement flag is what lets one process prove "once" twice. The
+ * extension never calls this. Deliberately not re-exported from `src/index.ts`.
  */
 export function resetBridgeApiForTests(): void {
   const host = apiHost();
   delete host[BRIDGE_API_KEY];
   delete host[WARNED_KEY];
+  delete host[READY_KEY];
 }
 
-// The publishing point: loading this module publishes the API. `./extension.ts` imports it, so
-// Pi's load order can never hide the handshake.
+// ---------------------------------------------------------------------------------------------
+// The announcement: how a plugin loaded BEFORE the package learns about it
+// ---------------------------------------------------------------------------------------------
+
+/** The `emit` member of a bus-shaped object, bound to it, or `undefined` when unusable. */
+function busEmitter(events: unknown): ((channel: string, data: unknown) => void) | undefined {
+  if (typeof events !== "object" || events === null) return undefined;
+  const emit = (events as BridgeEventBus).emit;
+  if (typeof emit !== "function") return undefined;
+  return (channel, data) => {
+    emit.call(events, channel, data);
+  };
+}
+
+/** The `on` member of a bus-shaped object, bound to it, or `undefined` when unusable. */
+function busListener(
+  events: unknown,
+): ((channel: string, handler: (data: unknown) => void) => BridgeEventUnsubscribe | void) | undefined {
+  if (typeof events !== "object" || events === null) return undefined;
+  const on = (events as BridgeEventBus).on;
+  if (typeof on !== "function") return undefined;
+  return (channel, handler) => on.call(events, channel, handler);
+}
+
+/**
+ * Announce this process's bridge, on Pi's cross-extension bus, at most once.
+ *
+ * Called from the extension entry — the first moment `pi.events` exists — right after the module
+ * load that published the object. Rules, all of them observable in the tests:
+ *
+ * - **once per process**, across package copies: the flag lives on `globalThis`, like the slot;
+ * - **never for an incompatible slot**: a process whose slot holds another library's payload (or
+ *   another major) has no bridge to announce, and telling plugins to look again would only send
+ *   them to an object that is absent;
+ * - **silent without a bus**: Pi may have no `pi.events` in a bare harness; the symbol still works
+ *   for any plugin that reads it, so nothing is reported and nothing throws.
+ *
+ * Returns whether this call emitted.
+ */
+export function announceBridgeReady(events: unknown): boolean {
+  const emit = busEmitter(events);
+  if (emit === undefined) return false;
+  const state = readyState();
+  if (state.announced) return false;
+  // The announcement says "the slot is usable now": an incompatible slot is never announced.
+  if (compatibleApi() === undefined) return false;
+  state.announced = true;
+  try {
+    emit(BRIDGE_READY_EVENT, READY_PAYLOAD);
+  } catch {
+    // A bus that throws cannot un-announce the process: the flag stays set, so `once` holds even
+    // when the delivery failed. Nothing is written to the terminal.
+  }
+  return true;
+}
+
+/** What a consumer does with the published object. */
+export type BridgeApiHandler = (api: BridgeApi) => void;
+
+/**
+ * Serve a plugin the published API, now or when it is announced.
+ *
+ * This is the helper form of the corrected timing rule:
+ *
+ * - **the object is already published** (this package loaded first): the handler runs immediately, in
+ *   the same turn, and nothing is subscribed — calling it twice cannot leak a listener;
+ * - **it is not published yet** (the plugin loaded first, the real defect): the handler runs when the
+ *   bridge announces itself, at most once per subscription, and the listener detaches itself.
+ *
+ * `events` is `pi.events`. Without a bus the helper cannot hear a later publication: it returns a
+ * no-op disposer and never calls the handler, which is the honest answer for a host with no bus.
+ * A handler that throws is contained: one plugin's failure must not break the announcement for the
+ * next listener.
+ */
+export function onBridgeApi(handler: BridgeApiHandler, events?: unknown): () => void {
+  /** One plugin's throw is its own: the bus must survive to notify the next listener. */
+  const deliver = (api: BridgeApi): void => {
+    try {
+      handler(api);
+    } catch {
+      // Contained on purpose (see the contract: nothing a plugin does may throw into Pi's render).
+    }
+  };
+
+  const existing = bridgeApi();
+  if (existing !== undefined) {
+    deliver(existing);
+    return () => {};
+  }
+
+  const listen = busListener(events);
+  if (listen === undefined) return () => {};
+
+  let active = true;
+  let unsubscribe: BridgeEventUnsubscribe | void;
+
+  const detach = (): void => {
+    const off = unsubscribe;
+    unsubscribe = undefined;
+    if (typeof off !== "function") return;
+    try {
+      off();
+    } catch {
+      // A disposer that throws cannot resurrect the subscription.
+    }
+  };
+
+  const onReady = (): void => {
+    if (!active) return;
+    const api = bridgeApi();
+    if (api === undefined) return; // an announcement not backed by a usable slot
+    active = false;
+    detach();
+    deliver(api);
+  };
+
+  try {
+    unsubscribe = listen(BRIDGE_READY_EVENT, onReady);
+  } catch {
+    return () => {};
+  }
+
+  return () => {
+    active = false;
+    detach();
+  };
+}
+
+// The publishing point: loading this module publishes the API. `./extension.ts` imports it, so the
+// object exists as soon as the package has loaded at all — and, when the package loads after a
+// plugin, `announceBridgeReady` from the same entry is how that plugin hears about it.
 publishBridgeApi();

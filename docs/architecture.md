@@ -331,7 +331,9 @@ installed, configured or imported.
   `emit`/`on` delivers values to listeners at emit time. It is not a registry the host reads
   synchronously while it builds the menu. gentle-shell builds its rows inside the `ctx.ui.custom`
   factory (§5) and reads the rail map at render time (§12), so a plugin reachable only through an
-  event handler cannot put rows into either. Events are not the seam.
+  event handler cannot put rows into either. Events are not the seam for *delivery*. They are the
+  only way to learn that a package loaded later published something, which is what the announcement
+  below uses — and why it carries a signal ("look again") instead of the API itself.
 - **`globalThis` is the one object two separately loaded extensions already share** in one
   process, and gentle-shell already relies on it: one stable `Symbol.for` key per piece of
   process-global state (`lib/shell-card.ts:40-41`, `lib/card-content-policy.ts:78`,
@@ -351,19 +353,46 @@ carrying the schema string, the major version and the three callable members, an
 checks all of them with `isBridgeApi` (`src/api.ts`). `v1` in the key is the major: `v2` is a new
 key and `v1` is never mutated.
 
-### First wins, and consumption at `session_start`
+### First wins, and the publication announcement
 
-`src/api.ts` publishes at module load — importing `./extension.ts` or `./index.ts` loads it — so
-the API exists before any `session_start`. A compatible object already in the slot is kept and
-returned untouched. An incompatible one is left exactly where it is (never overwritten, deleted
-or reset); this copy's own object still works for registration and operates on the same
-process-global bus (§7).
+`src/api.ts` publishes at module load — importing `./extension.ts`, directly or through the package
+root — so the API exists as soon as the package has been loaded. A compatible object already in the
+slot is kept and returned untouched. An incompatible one is left exactly where it is (never
+overwritten, deleted or reset); this copy's own object still works for registration and operates on
+the same process-global bus (§7).
 
-A plugin registers from its own `session_start` handler. Pi completes every extension module's
-async initialization before firing that event (`docs/extensions.md:213`), so the handler either
-finds the object or learns the bridge is not installed. The symbol's presence is the complete
-answer: there is no deferred path and no second publication point. `bridgeApi()` returns the
-object or `undefined`, and registration is idempotent because it is by stable id.
+### The load order, as observed rather than assumed
+
+This design first claimed that `session_start` arrives only after every extension module has
+initialized, so a plugin's handler either found the object or knew the bridge was absent
+(`docs/extensions.md:213`). A real TUI disproved it: `/bridge-status` showed a working bridge
+(`backend: capture`, `sidebar: intercepted`, `card style wiring: chat wrapped`) while the worked
+example — a global extension in `~/.pi/agent/extensions` — reported "no compatible
+gentle-shell-bridge is installed". Global extensions load, and receive `session_start`,
+before a configured package's module publishes. The symbol was read too early, not missing.
+
+So an absent slot at `session_start` means "not yet". Two mechanisms answer that, and they stay
+separate on purpose:
+
+1. **the symbol** remains the only authority for *which* object to use (`isBridgeApi`, first wins);
+2. **`gentle-shell-bridge:ready`** tells the process *when* a publication happened. It is emitted
+   from `announceBridgeReady` at the extension factory — the first moment `pi.events` exists —
+   exactly once per process (a `globalThis` flag like every other piece of process state, §7), and
+   never when the slot holds an incompatible payload, because there would be nothing to look at.
+
+A listener never receives the API: it waits for the signal and reads the symbol again, so the gate,
+the first-wins rule and the "absent is absent" rule are unchanged. `onBridgeApi(handler, pi.events)`
+is the helper form — immediate when the object is already published and a subscription when it is
+not, with the subscription detaching itself after one delivery. Registration stays idempotent by
+stable id, so a plugin that registers from `session_start` *and* from the announcement leaves one of
+each surface, and the announcement can arrive before or after the session event without either path
+having to know about the other.
+
+What was rejected: a queue inside the bridge (a plugin's registrations waiting invisibly for a
+version that may never load — the previous revision of this file described exactly that and removed
+it), and retrying `session_start` on a timer (no event to hang it on, and the plugin would have to
+keep state it does not need). The announcement is neither: one event, no holding area, and the
+plugin decides what an absent-and-unannounced bridge means for it.
 
 ### Why a path, and why an environment variable, were rejected
 
@@ -435,13 +464,15 @@ and `missing` is the pass-through.
 
 ### The conflict that cannot be won
 
-cinlodev wraps the chat container's `render` and strips any box chrome it finds
-(`pi-cinlodev-cute/transcript-unwrap.ts:160-206`), which can erase this frame on exactly the cards it
-re-frames — bash in particular. The bridge cannot prevent that, does not try, and says so in
-`/bridge-status`:
+A post-processor downstream of this bridge can wrap the chat container's `render` and strip any box
+chrome it finds — a class of consumer that re-frames the conversation, and the frame that reaches
+the screen is the last one written. That can erase this frame on exactly the cards it re-frames —
+bash in particular. The bridge cannot prevent that, does not try, and says so in `/bridge-status`:
 
-> a downstream post-processor (e.g. cinlodev) can strip or override this frame; the bridge cannot
-> prevent it.
+> a downstream post-processor can strip or override this frame; the bridge cannot prevent it.
+
+Nothing user-visible names such a consumer: the bridge ships to whoever installs it, and no package
+it cannot see is allowed to be a prerequisite for its own report.
 
 ### Why not ask gentle-shell to add a style registry
 

@@ -39,12 +39,14 @@
  *    card is repainted exactly like a `bash` one. Nothing here parses a card: the bridge measures,
  *    extracts the heading and the hint, and hands them over.
  *
- * A bridge that publishes an incompatible API is treated as absent: B, C, D and A register nothing
- * and the example says so once through `ctx.ui.notify`. A bridge that publishes the row and section
- * surfaces but not `registerCardStyle` (an older object) keeps B and C on the line and skips D
- * silently: the member is optional, and this file must not warn about a surface the bridge never
- * promised. The same rule applies to `registerTransform`: absent means "keep the other surfaces and
- * stay quiet", and the section says `transform  absent` instead.
+ * A bridge that publishes an incompatible API is treated as absent, and the example registers
+ * nothing; it says so once through `ctx.ui.notify` — with the announcement channel named when this
+ * Pi has one, because then a later publication is still possible. A bridge that publishes the row
+ * and section
+ * surfaces but not `registerCardStyle` (an older object) keeps the rows and the section on the line
+ * and skips the style silently: the member is optional, and this file must not warn about a surface
+ * the bridge never promised. The same rule applies to `registerTransform`: absent means "keep the
+ * other surfaces and stay quiet", and the section says `transform  absent` instead.
  *
  * Loading: copy this file into `~/.pi/agent/extensions/` (or point Pi's `packages` entry at this
  * repository) and `/reload`. The toggle defaults to `default`, so installing the example changes
@@ -52,13 +54,20 @@
  *
  * Reaching the bridge needs no path, no environment variable and no import: the file and the
  * bridge meet on `globalThis` behind one `Symbol.for` key (see "Reaching gentle-shell-bridge"
- * below). The example registers inside its own `pi.on("session_start", ...)` handler, which is the
- * moment the symbol's presence is the complete answer: Pi finishes loading every module before it
- * fires that event, so the bridge either published already or is not installed.
+ * below). Two load orders therefore have to work, and Pi really produces both: global extensions
+ * (`~/.pi/agent/extensions`) load — and receive `session_start` — BEFORE a configured package's
+ * module publishes. So the example tries the symbol in its own `pi.on("session_start", ...)`
+ * handler, and additionally listens on Pi's cross-extension bus for
+ * `"gentle-shell-bridge:ready"`. Whichever happens first registers the surfaces; the guard below
+ * makes the second one a no-op.
  *
- * Diagnostics stay inside Pi: nothing here writes to stdout/stderr. A message (no bridge) is
- * buffered and delivered through `ctx.ui.notify` on `session_start`, which is the only channel Pi
- * renders in its own report.
+ * When no bridge is published at `session_start` the notice reports which state this is: waiting
+ * for the announcement on a Pi that has an event bus (`pi.events`), or nothing to wait for on one
+ * that does not — never "the bridge is not installed" while it may simply not have loaded yet.
+ *
+ * Diagnostics stay inside Pi: nothing here writes to stdout/stderr. A message is buffered and
+ * delivered through `ctx.ui.notify` on `session_start`, which is the only channel Pi renders in its
+ * own report.
  *
  * Nothing here imports `@earendil-works/pi-coding-agent` or `@earendil-works/pi-tui`: this
  * repository depends on neither, so every host shape this file touches is declared structurally
@@ -217,6 +226,18 @@ interface NoticeUiLike {
 interface ExtensionApiLike {
   /** `session_start` carries the UI context, so this is where a buffered notice is delivered. */
   on?(event: "session_start", handler: (event: unknown, ctx: SessionContextLike) => void): void;
+  /** Pi's cross-extension bus (`docs/extensions.md:1965-1972`); absent on a bare harness. */
+  events?: unknown;
+}
+
+/**
+ * The one member of `pi.events` this file needs: subscribe, and keep the unsubscribe if the bus
+ * hands one back. A bus whose `on` returns nothing simply cannot be detached.
+ */
+type EventUnsubscribe = () => void;
+
+interface ExtensionEventsLike {
+  on(channel: string, handler: (payload: unknown) => void): EventUnsubscribe | void;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -517,10 +538,13 @@ function readStoredMode(store: BridgeStoreLike | undefined): BashRenderingMode {
 //
 //   Symbol.for("gentle-shell-bridge/api/v1")  → the frozen, versioned API object
 //
-// Registration happens in this file's own `session_start` handler. Pi completes every extension's
-// async initialization before firing that event (`docs/extensions.md:213`), and the bridge
-// publishes as its module loads, so the handler either finds the object or knows the bridge is not
-// installed. There is nothing to wait for and nowhere to defer a registration.
+// Registration happens in this file's own `session_start` handler, AND on the bridge's
+// announcement. Pi does not guarantee that the package loaded first: global extensions load and
+// receive `session_start` before a configured package's module publishes, which is exactly the
+// order the real TUI reported. So when the symbol is absent the example subscribes to
+// `"gentle-shell-bridge:ready"` and registers when it fires; when the symbol is present there is
+// nothing to wait for and no listener is taken. Each path calls the same guarded registration, so
+// both happening leaves one of each surface.
 //
 // The constant and the gate MIRROR `src/api.ts` and are inlined on purpose: this file must not
 // import the bridge, not even to say hello, and a copy-pasteable handshake is the smallest way to
@@ -529,6 +553,17 @@ function readStoredMode(store: BridgeStoreLike | undefined): BashRenderingMode {
 
 /** The published API object's key. */
 const BRIDGE_API_KEY = Symbol.for("gentle-shell-bridge/api/v1");
+
+/**
+ * The channel the bridge announces itself on. The string MIRRORS `src/api.ts`
+ * (`BRIDGE_READY_EVENT`): this file cannot import it, so the two are kept in sync by hand, the
+ * same way the symbol key and the gate are.
+ *
+ * The announcement is a notification, never a registry: it says "the object is published now", and
+ * this file reads the symbol again. That keeps one authority — the symbol and the shape gate — and
+ * makes a bridge loaded after this file reachable at all.
+ */
+const BRIDGE_READY_EVENT = "gentle-shell-bridge:ready";
 
 function bridgeHost(): Record<symbol, unknown> {
   // SAFETY: `globalThis` accepts symbol keys; every value read through this view is gated by
@@ -553,40 +588,99 @@ function isBridgeApi(value: unknown): value is BridgeApiLike {
   );
 }
 
-/** The one notice when this load has nowhere to register: the bridge is absent, full stop. */
-const NO_BRIDGE_NOTICE =
-  "[bash-card] no compatible gentle-shell-bridge is installed, so this load adds nothing: no " +
-  "Cards toggle, no BASH CARD sidebar section, no `plain` card style and no bash transform. A " +
-  "slot that holds another object is treated as absent, never used.";
+/**
+ * The two notices for "no published object yet", which are honestly DIFFERENT states:
+ *
+ * - with a bus, the bridge may still load and announce itself, so the example is waiting and says
+ *   what will register when the announcement arrives;
+ * - without one, nothing can arrive in this process, so this load adds nothing and says that.
+ *
+ * Neither claims the bridge is not installed unless nothing can arrive: the old single notice did,
+ * and it was the misleading part of the real defect.
+ */
+const NO_SIGNAL_NOTICE =
+  "[bash-card] no compatible gentle-shell-bridge is installed, and this Pi has no cross-extension " +
+  "event bus (`pi.events`) for one to announce itself on, so nothing can arrive later: this load " +
+  "adds nothing — no Cards toggle, no BASH CARD sidebar section, no `plain` card style and no bash " +
+  "transform. A slot that holds another object is treated as absent, never used.";
+
+const WAITING_NOTICE =
+  "[bash-card] no compatible gentle-shell-bridge API is published yet, so this load is waiting for " +
+  "the \"gentle-shell-bridge:ready\" announcement the bridge emits when it publishes. If a bridge is " +
+  "installed it registers the Cards toggle, the BASH CARD sidebar section, the `plain` card style " +
+  "and the bash transform when the announcement arrives; if it is not installed, or the published " +
+  "object is incompatible, nothing arrives and nothing registers. A slot that holds another object " +
+  "is treated as absent, never used.";
+
+// ---------------------------------------------------------------------------------------------
+// The host's cross-extension bus: how a later bridge reaches this load
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The host's event bus, when this Pi has one and it looks usable. Reading `pi.events` is guarded
+ * because it is host state: a getter that throws must cost the announcement, not the load.
+ */
+function extensionEvents(pi: ExtensionApiLike): ExtensionEventsLike | undefined {
+  let events: unknown;
+  try {
+    events = pi.events;
+  } catch {
+    return undefined;
+  }
+  if (typeof events !== "object" || events === null) return undefined;
+  const candidate = events as { on?: unknown };
+  return typeof candidate.on === "function" ? (candidate as ExtensionEventsLike) : undefined;
+}
 
 // ---------------------------------------------------------------------------------------------
 // The in-TUI diagnostics channel
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Messages that must reach Pi's TUI but cannot yet: at module load no context exists. They are
+ * A message that must reach Pi's TUI but cannot yet: at module load no context exists. Notices are
  * NEVER printed — Pi renders its own diagnostics inside the TUI, and text written to the terminal
  * at startup lands outside the report the user reads.
  */
-const pendingNotices: string[] = [];
+interface PendingNotice {
+  message: string;
+  /** Drop it once the surfaces register: "waiting" stops being true at that moment. */
+  untilRegistered: boolean;
+}
+
+const pendingNotices: PendingNotice[] = [];
 /** How many a session already showed; a delivered message is never delivered twice. */
 let deliveredNotices = 0;
 
-function recordNotice(message: string): void {
-  if (!pendingNotices.includes(message)) pendingNotices.push(message);
+function recordNotice(message: string, options: { untilRegistered?: boolean } = {}): void {
+  if (pendingNotices.some((entry) => entry.message === message)) return;
+  pendingNotices.push({ message, untilRegistered: options.untilRegistered === true });
+}
+
+/**
+ * Forget a notice a later registration made untrue. Already-delivered messages stay in the buffer
+ * (so they are never shown twice); every other pending message keeps its order.
+ */
+function withdrawWaitingNotice(): void {
+  const stillPending = pendingNotices
+    .slice(deliveredNotices)
+    .filter((entry) => !entry.untilRegistered);
+  pendingNotices.length = deliveredNotices;
+  pendingNotices.push(...stillPending);
 }
 
 /**
  * Deliver every pending notice through `ctx.ui.notify`. A context without a `notify` delivers
  * nothing, and a `notify` that throws leaves the remaining messages pending for the next session.
+ * `settled` means the surfaces are registered, so a "waiting" notice must not be shown.
  */
-function flushNotices(ui: unknown): void {
+function flushNotices(ui: unknown, settled: boolean): void {
   const surface = typeof ui === "object" && ui !== null ? (ui as NoticeUiLike) : undefined;
   const notify = surface?.notify;
   if (typeof notify !== "function") return;
+  if (settled) withdrawWaitingNotice();
   while (deliveredNotices < pendingNotices.length) {
     try {
-      notify.call(surface, pendingNotices[deliveredNotices], "warning");
+      notify.call(surface, pendingNotices[deliveredNotices].message, "warning");
     } catch {
       return;
     }
@@ -701,10 +795,26 @@ export default function bashCardExample(pi: ExtensionApiLike): () => void {
   const disposers: Array<() => void> = [];
   let closed = false;
   let bridgeRegistered = false;
+  // The bus this Pi offers, when it offers one: the only channel a later-loading bridge can use.
+  const events = extensionEvents(pi);
+  let unsubscribeReady: EventUnsubscribe | undefined;
+
+  /** Stop listening for the announcement. Anything that throws here cannot cost the load. */
+  const stopListening = (): void => {
+    const off = unsubscribeReady;
+    unsubscribeReady = undefined;
+    if (off === undefined) return;
+    try {
+      off();
+    } catch {
+      // A disposer that throws cannot resurrect the subscription.
+    }
+  };
 
   /** Every surface belongs to one registration lifetime: disposing must not leave half of them. */
   const dispose = (): void => {
     closed = true;
+    stopListening();
     for (const registered of disposers.splice(0, disposers.length)) {
       try {
         registered();
@@ -756,26 +866,66 @@ export default function bashCardExample(pi: ExtensionApiLike): () => void {
     bridgeRegistered = true;
   };
 
+  /**
+   * Register through the published object, if there is one. Three outcomes, because "absent" and
+   * "present but unusable" need different notices: the store is the one registration that can fail
+   * while the API is right there.
+   */
+  const tryRegister = (): "registered" | "absent" | "failed" => {
+    if (closed || bridgeRegistered) return "registered";
+    const published = bridgeHost()[BRIDGE_API_KEY];
+    if (!isBridgeApi(published)) return "absent";
+    registerWithBridge(published);
+    return bridgeRegistered ? "registered" : "failed";
+  };
+
+  /**
+   * The bridge published after this file loaded: the defect's fix. Registration is the same guarded
+   * call `session_start` makes, so an announcement and a later session cannot both register, and a
+   * "waiting" notice the user has not seen yet is withdrawn because it is no longer true.
+   */
+  const onBridgeReady = (): void => {
+    // The announcement only says "look again": the symbol is the authority. An emit that is not
+    // backed by a usable slot changes nothing, and this load keeps waiting for the real one.
+    if (tryRegister() === "absent") return;
+    withdrawWaitingNotice();
+    stopListening();
+  };
+
+  // The symbol first. If the bridge loaded before this file there is nothing to wait for, so no
+  // listener is taken at all (no leak on every load, no event that never comes). Otherwise the
+  // announcement is the only way a later bridge can be heard.
+  if (events !== undefined && !isBridgeApi(bridgeHost()[BRIDGE_API_KEY])) {
+    try {
+      const off = events.on(BRIDGE_READY_EVENT, onBridgeReady);
+      if (typeof off === "function") unsubscribeReady = off;
+    } catch {
+      // No subscription: the `session_start` attempt below still tries the symbol.
+    }
+  }
+
   // Pi renders diagnostics inside the TUI, so every message this example produces is delivered
   // there — never on stdout/stderr — and the handler does nothing when the context has no UI.
   //
-  // Registration happens here, not at module load: by `session_start` every extension module has
-  // loaded, so the symbol's presence is the complete answer. Absent means "not installed" (or an
-  // incompatible version); there is nothing to wait for, so the example says so once and returns.
+  // Registration is attempted here too, because a bridge that loaded before this file is already
+  // published and waiting for an announcement that will never come would be pure delay.
   const onSessionStart = (_event: unknown, ctx: SessionContextLike): void => {
     if (closed || ctx.hasUI !== true) return;
 
-    if (!bridgeRegistered) {
-      const published = bridgeHost()[BRIDGE_API_KEY];
-      if (isBridgeApi(published)) registerWithBridge(published);
-      else recordNotice(NO_BRIDGE_NOTICE);
+    if (tryRegister() === "absent") {
+      // Two honest states: with a bus the bridge may still announce itself, without one nothing can
+      // arrive in this process. The notice says which, and the waiting one is withdrawn if it
+      // happens to register before the next session shows it.
+      if (events === undefined) recordNotice(NO_SIGNAL_NOTICE);
+      else recordNotice(WAITING_NOTICE, { untilRegistered: true });
     }
 
-    flushNotices(ctx.ui);
+    flushNotices(ctx.ui, bridgeRegistered);
   };
   if (typeof pi.on === "function") pi.on("session_start", onSessionStart);
 
   // Nothing depends on this return value — the stable ids are what make a `/reload` replace rather
-  // than stack — it exists so a programmatic caller can tear every surface down together.
+  // than stack — it exists so a programmatic caller can tear every surface down together, and it
+  // drops the announcement listener with them.
   return dispose;
 }

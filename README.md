@@ -9,9 +9,10 @@ each other when more than one wants to add a settings row.
 **Status: released as `0.3.0`.** The package exists and runs. It is a manifest-backed Pi
 package (`pi.extensions` → `./src/extension.ts`) loaded from TypeScript sources through
 jiti, so there is no build step and no `dist/`; it registers a `bridge-status` command and
-carries a `node --test` suite of 367 tests, 26 of them end-to-end through the public API and
-the real extension entry, plus 8 driving the worked example's transform through a real
-conversation wrapper. The capture technique was proven in the real TUI by a 76-line
+carries a `node --test` suite of 390 tests, 26 of them end-to-end through the public API and
+the real extension entry, 8 driving the worked example's transform through a real
+conversation wrapper, and 22 pinning the publication announcement in both load orders. The capture
+technique was proven in the real TUI by a 76-line
 throwaway extension (`loon-customize-probe.ts`); the capture backend implements it, while
 the hook backend is implemented but **unverified** — no host has been observed emitting the
 registry it looks for. The sidebar surface is proven against a fake rail, not in a live TUI:
@@ -42,7 +43,7 @@ example registers no tool renderer at all — one owner, one look, past and new 
 `plain` is a style for TOOL cards in general: selecting it repaints a `read` card exactly like a
 `bash` one, so one style applies across tools. Choosing `neon` or `float` returns to the host's
 rendering, because those values ARE the host rendering. The style and the transform are registered
-from the same `session_start` handler as the other surfaces, through the API object, and only when
+from the same guarded call as the other surfaces, through the API object, and only when
 the published object actually carries them — an older bridge keeps what it can and the example says
 nothing about a surface the bridge never promised.
 
@@ -50,17 +51,22 @@ Copy the file into `~/.pi/agent/extensions/` and `/reload` to load it; the toggl
 `default`, so installing it changes no bash rendering until the row is switched, while the section
 is visible immediately (`defaultVisible: true`). It does not import the package and does not know
 where it is installed: the example and the bridge meet on `globalThis` behind one symbol (see
-**Reaching the bridge without importing it**). It registers from its own `session_start` handler,
-where the symbol's presence is the complete answer — if no compatible bridge is installed the
-example says so once and adds nothing.
+**Reaching the bridge without importing it**). Global extensions load before configured packages,
+so the example does not assume the bridge got there first: it tries the symbol in its own
+`session_start` handler **and** listens for the bridge's `gentle-shell-bridge:ready` announcement,
+whichever comes first registering the same four surfaces (registration replaces by stable id, so
+the second one adds nothing). When neither has happened yet, the notice says which state the load
+is in — waiting for an announcement on a Pi with an event bus, or nothing to wait for on one
+without — instead of claiming the bridge is not installed.
 
 Both rows carry `preview()`, so `/gentle:customize` draws a literal sample of the card each
 mode produces instead of "Preview unavailable".
 
 A bridge that publishes something else — another major version, a partial object, another library's
 payload at the symbol — is treated as absent, never as an error: the example never calls an object it
-cannot trust, says so once through `ctx.ui.notify`, and registers nothing. The bridge reports the
-version skew once per process.
+cannot trust, registers nothing, and says so once through `ctx.ui.notify` (naming the announcement
+channel when this Pi has one, because then a later publication is still possible). The bridge reports
+the version skew once per process.
 
 ## Install
 
@@ -73,9 +79,11 @@ For a plugin that imports the API, `exports` maps the package root to `src/index
 
 ```ts
 import {
+  BRIDGE_READY_EVENT,
   bridgeApi,
   createStore,
   isBridgeApi,
+  onBridgeApi,
   registerCardStyle,
   registerRows,
   registerSection,
@@ -94,7 +102,8 @@ Node's native type stripping, with no transpile step.
 ## Quick start: a sidebar section
 
 The two quick starts below show the call itself. Make it from your extension's `session_start`
-handler, where the bridge is either present or absent — never somewhere that depends on load order.
+handler — or, if your plugin may load before this package, through `onBridgeApi(handler, pi.events)`,
+which answers in both orders.
 
 The second surface needs no `Sections` row, no setting name and no store of its own — one call
 adds the card to the sidebar and its show/hide toggle to `/gentle:customize` → `Sections`.
@@ -198,11 +207,27 @@ They meet on `globalThis`, behind one stable symbol:
   `{ schema: "gentle-shell-bridge/api", version: 1, VERSION, registerRows, registerSection, registerCardStyle, registerTransform, createStore }`.
   It is frozen, first-wins (a valid object already there is kept, not replaced) and never reset.
 
-**Register from a `session_start` handler; then the symbol's presence is the complete answer.** Pi
-finishes loading every extension module before it fires `session_start`
-(`docs/extensions.md:213`), and the bridge publishes as its module loads, so your handler either
-finds the object or knows the bridge is not installed. There is no holding area and nothing to wait
-for. Inline the gate (the example does), or import the package and call `bridgeApi()`:
+**Register at `session_start` if the package loaded first, otherwise when it announces itself.**
+The symbol is the authority; the announcement is the timing. Pi does not guarantee that this
+package loaded before your plugin: global extensions (`~/.pi/agent/extensions`) load, and receive
+`session_start`, before a configured package's module publishes — observed in a real TUI, where the
+worked example said "no compatible bridge" while a bridge was about to appear. So a plugin loaded
+early listens for one event:
+
+```ts
+pi.events?.on("gentle-shell-bridge:ready", ({ schema, version, VERSION }) => {
+  // the object is published now: read the symbol again and register
+});
+```
+
+The bridge emits it **once per process**, after a successful publish, and never when the slot holds
+an incompatible payload. It carries identity only — `{ schema, version, VERSION }` — because it is a
+notification, not a registry: the listener reads the symbol and applies the same gate. A Pi without
+`pi.events` emits nothing, and the symbol still works for anyone who reads it.
+
+Inline the gate (the example does), or import the package and let `onBridgeApi` handle both forms —
+handler called immediately when the object is already there, subscribed when it is not, detached
+after one delivery:
 
 ```ts
 const KEY = Symbol.for("gentle-shell-bridge/api/v1");
@@ -210,26 +235,32 @@ const isApi = (v: any) => typeof v === "object" && v !== null && v.schema === "g
   v.version === 1 && typeof v.registerRows === "function" &&
   typeof v.registerSection === "function" && typeof v.createStore === "function";
 
-pi.on("session_start", (_event, ctx) => {
+const register = (): boolean => {
   const api = (globalThis as any)[KEY];
-  if (!isApi(api)) {
-    ctx.ui?.notify("my-plugin: no compatible gentle-shell-bridge is installed", "warning");
-    return; // it adds nothing; the plugin decides whether to continue or fail loudly
-  }
+  if (!isApi(api)) return false;
   api.registerSection({ id: "loon.music", title: "MUSIC", lines: () => ["…"] });
+  return true;
+};
+
+if (!register()) pi.events?.on("gentle-shell-bridge:ready", register);
+
+pi.on("session_start", (_event, ctx) => {
+  if (!register()) {
+    ctx.ui?.notify("my-plugin: waiting for gentle-shell-bridge to announce itself", "warning");
+  }
 });
 ```
 
-A plugin that imports the package gets the same answer in one call:
+A plugin that imports the package gets both forms in one call — the handler runs immediately when
+the object is published and when the announcement arrives otherwise, and the subscription detaches
+itself after one delivery:
 
 ```ts
-import { bridgeApi } from "gentle-shell-bridge";
+import { onBridgeApi } from "gentle-shell-bridge";
 
-pi.on("session_start", () => {
-  const api = bridgeApi();
-  if (api === undefined) return; // absent, full stop: no waiting, no deferral
+const dispose = onBridgeApi((api) => {
   api.registerRows({ id: "loon.banner-source", category: "Cards", rows: () => [] });
-});
+}, pi.events); // works in both load orders; `bridgeApi()` alone does not wait
 ```
 
 Rules worth knowing: an object that fails the gate (wrong schema, `version !== 1`, a missing member)
@@ -329,8 +360,8 @@ registered, so a session that never used the pipeline keeps the historical repor
   its rows differently produces no capture. That case is reported by `/bridge-status` instead of
   passing silently.
 - **Card styles are a repaint, not a host feature.** The bridge rewrites the `float` frames
-  gentle-shell already drew, so it depends on that grammar, and a downstream post-processor
-  (cinlodev strips box chrome from the cards it re-frames) can override the result — the bridge
+  gentle-shell already drew, so it depends on that grammar, and a downstream post-processor that
+  re-frames the conversation and strips box chrome can override the result — the bridge
   says so in `/bridge-status` instead of pretending otherwise. Detection is proven against a fake
   conversation built from real `shell-card.ts` output, never in a running TUI, and a card with a
   blank body row is detected as ending at that row.
@@ -340,7 +371,7 @@ registered, so a session that never used the pipeline keeps the historical repor
   not tool metadata: a plugin that needs the call's arguments or the result object still has to use
   `pi.registerToolRenderer` for rows that are yet to be built. A throwing transform is isolated per
   frame; a slow one runs on every frame, which the bridge cannot bound.
-- **Tests cover a fake host, not the real TUI.** 367 tests run under `node --test`; 26 of
+- **Tests cover a fake host, not the real TUI.** 390 tests run under `node --test`; 26 of
   them are end-to-end through the public API and the extension entry, against a fake host
   that models `gentle-shell.ts:3550-3562` and a fake sidebar that models
   `lib/shell-sidebar.ts` and the layout's card frame. The capture technique is verified in the

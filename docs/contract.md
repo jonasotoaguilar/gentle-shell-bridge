@@ -304,7 +304,7 @@ told once, on Pi's cross-extension bus.
 Object.freeze({
   schema: "gentle-shell-bridge/api", // identity, so a foreign payload is never mistaken for ours
   version: 1,                        // the major; a breaking change is a NEW symbol key
-  VERSION: "0.3.0",                  // the publishing release; informational only
+  VERSION: "0.3.1",                  // the publishing release; informational only
   registerRows,
   registerSection,
   registerCardStyle,                 // since 0.2.0; optional on an older published object

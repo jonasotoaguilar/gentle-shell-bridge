@@ -34,6 +34,7 @@ import {
   type RepaintTrigger,
 } from "./repaint.ts";
 import { getTransformFrameOutcomes } from "./transform-pipeline.ts";
+import { getPluginLineReport, type PluginLineReport } from "./plugin-lines.ts";
 import { getLastRowBuild, type RowBuildRecord } from "./rows.ts";
 import {
   getSidebarDiagnostics,
@@ -205,6 +206,13 @@ export interface StatusSnapshot {
    * byte for byte.
    */
   transforms?: StatusTransformEntry[];
+  /**
+   * The INTEGRATIONS rows this bridge paints on the plugins' behalf (I1–I7): one entry per plugin,
+   * the name and whether it was derived or explicit, the registrations accepted and rejected, and
+   * whether the host's `setStatus` was available at all. Absent when no plugin has registered, so a
+   * session without one keeps its historical output byte for byte.
+   */
+  pluginLines?: PluginLineReport;
 }
 
 /**
@@ -300,6 +308,10 @@ export function collectStatus(): StatusSnapshot {
   // outcomes are the ones the last frame already recorded.
   const transforms = describeTransforms();
   if (transforms !== undefined) snapshot.transforms = transforms;
+  // The per-plugin INTEGRATIONS rows. Nothing here calls the host: the records are the ones each
+  // registration (and `session_start`'s paint attempt) already made.
+  const pluginLines = describePluginLines();
+  if (pluginLines !== undefined) snapshot.pluginLines = pluginLines;
   const sidebarEntry = describeSidebar(sidebarDiagnostics);
   // The sidebar line is worth a line only when it explains something: a registered section that may
   // not be appearing, or a rail that IS intercepted. A row-only session with no rail keeps the
@@ -387,7 +399,19 @@ function describeTransforms(): StatusTransformEntry[] | undefined {
 }
 
 /**
- * The last repaint a bridge-owned write requested (R3/R4), or `undefined` before one happened.
+ * The INTEGRATIONS block, or `undefined` when no plugin has registered with the bridge.
+ *
+ * The guard is the same discipline as every other block: a session with no plugin keeps its
+ * historical report exactly. The line's TEXT is deliberately not recomputed here — it is what the
+ * host was handed — but `line`/`reason` say whether a row is currently set, so a missing row is an
+ * answer (I6).
+ */
+function describePluginLines(): PluginLineReport | undefined {
+  const report = getPluginLineReport();
+  return report.plugins.length === 0 ? undefined : report;
+}
+
+/** The last repaint a bridge-owned write requested (R3/R4), or `undefined` before one happened.
  *
  * The guard is the same discipline as every other block: a session that never toggled anything keeps
  * its historical report exactly. A trigger whose outcome is `unavailable` is the interesting case —
@@ -686,6 +710,10 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
     }
   }
 
+  if (snapshot.pluginLines !== undefined) {
+    lines.push(...formatPluginLines(snapshot.pluginLines));
+  }
+
   if (snapshot.notices !== undefined) {
     lines.push(`notices: ${snapshot.notices.length}`);
     for (const notice of snapshot.notices) {
@@ -697,6 +725,40 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
     lines.push(`notices dropped: ${snapshot.noticesDropped}`);
   }
 
+  return lines;
+}
+
+/** The INTEGRATIONS header's availability note: empty when the host surface is installed. */
+function formatPluginAvailability(report: PluginLineReport): string {
+  if (report.availability === "installed") return "";
+  const state = report.availability === "unavailable" ? "unavailable" : "not armed";
+  const reason = report.reason === undefined ? "" : `: ${report.reason}`;
+  return ` (status ${state}${reason})`;
+}
+
+/** The per-plugin INTEGRATIONS list: the name, how it was chosen, and the registration counts. */
+function formatPluginLines(report: PluginLineReport): string[] {
+  const lines = [`plugin lines: ${report.plugins.length}${formatPluginAvailability(report)}`];
+  for (const plugin of report.plugins) {
+    const source =
+      plugin.nameSource === "explicit"
+        ? "explicit name"
+        : `derived from package ${JSON.stringify(plugin.packageName ?? "")}`;
+    // `(no line)` is a state, not a name: a module path is diagnostics and stays on this line only,
+    // never in the footer (I2).
+    const label = plugin.name === undefined ? "(no line)" : `${JSON.stringify(plugin.name)} (${source})`;
+    const where = plugin.name === undefined ? ` module ${plugin.modulePath}` : "";
+    const state =
+      plugin.line === "set"
+        ? plugin.status
+        : `no line set (${plugin.reason ?? "no reason recorded"})`;
+    lines.push(
+      `  - ${label}${where}: ${state}, ${plugin.accepted} accepted, ${plugin.rejected.length} rejected`,
+    );
+    for (const rejection of plugin.rejected) {
+      lines.push(`    - ${rejection.surface} ${JSON.stringify(rejection.id)}: ${rejection.reason}`);
+    }
+  }
   return lines;
 }
 

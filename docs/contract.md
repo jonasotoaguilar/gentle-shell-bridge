@@ -32,6 +32,7 @@ contract.
 interface RowProvider {
   id: string;                                  // unique, stable, e.g. "loon.banner-source"
   category: string;                            // a category gentle-shell already renders
+  name?: string;                               // optional: this plugin's INTEGRATIONS row (§8)
   rows(ctx: RowContext): CustomizeRow[];       // evaluated lazily, per menu build
 }
 ```
@@ -193,12 +194,44 @@ One command, `/bridge-status`, reporting:
 | Card style surfaces | per surface (`conversation`, `rail`): whether the selected style reached it and what its last frame did there (`transformed N cards`, `pass-through (native / missing / no card)`, `failed` with the style and message); `not reached` carries the attach outcome (`no-layout-root`, `no-sidebar`, `no-rail`, …). Emitted with the card-style block |
 | Last repaint | the most recent repaint a bridge-owned write requested: the surfaces, the cause (`section "loon.music" → hidden`, `card style → loon.cute`) and `repainted` or `unavailable` with the reason. Omitted until such a write happens |
 | Row name rejections | every line name and row label the bridge refused (`rows`, `section` or `card style`), with the surface, the registration `id`, the field (`line name`/`row label`), the offending string VERBATIM and the rule it broke; omitted when nothing was rejected |
+| Plugin lines | one entry per plugin that registered (`rows`, `section`, `card style` or `transform`): its row name and whether it was `derived from package "@acme/loon-kit"` or an `explicit name`, the registrations `accepted` and `rejected`, and whether the line is `set` or, with the reason, `no line set`. The header also says when the host's `setStatus` was unavailable. Omitted when no plugin registered so far |
 
 A menu that opened without the bridge's rows must show up here — armed-but-uncaptured,
 shape mismatch, or provider failure. A registered section that never appears must show up
 too: the sections table proves the registration, and the sidebar line proves whether the rail
 was ever reached. Diagnostics never run a provider's `rows()` and never run a section's
 `lines()` or `meta()`: both are UI, and a report is not a frame.
+
+### The plugin's INTEGRATIONS line
+
+`ctx.ui.setStatus(key, text)` paints one row in the host's INTEGRATIONS card, and `undefined`
+removes it. The bridge sets exactly **one** row per plugin, no matter how many rows, sections,
+card styles or transforms that plugin registers (one plugin, one line).
+
+- **The text is opaque.** The host renders the whole string as one row; it is not parsed into a
+  key and a value, so everything the row says must be inside it: `Loon kit · ready`. The host's
+  `sanitizeStatus` strips ANSI sequences and collapses whitespace, so **ANSI is not yours** and a
+  glyph must be part of the text itself (the host's own fixture row is `🧠 gentle-pi · ready`).
+- **Colour belongs to the host.** Every entry is painted with one shared status role. A plugin
+  cannot choose a colour; it can only choose a glyph.
+- **The name is derived, not configured.** The bridge captures the module that registered, resolves
+  it to its owning `package.json` and derives one to three plain words from its `name`
+  (`@acme/loon-kit` → `Loon kit`). The answer is cached per module. A module with no owning package
+  (a single copied file) gets NO row, and `/bridge-status` says why. Any registration kind accepts an
+  optional `name`, honoured on the plugin's **first** registration only, which overrides the derived
+  name; that is how a single-file extension names itself.
+- **The name obeys the row-name shape** (§4, Row names). A derived name is cleaned; when nothing
+  usable is left there is no row. An explicit name is validated, never rewritten: a rejected name
+  produces no row at all.
+- **The state is derived, never promised.** `ready` means every registration the bridge accepted;
+  one rejected registration (an invalid id, a row label that broke the shape rule) repaints the same
+  key as `degraded`, and this report names the rejected items.
+- **One key, painted in place.** A plugin's key is stable for its lifetime; every later change
+  repaints that same key, and `session_shutdown` clears it with `undefined`. A `ctx.ui` without
+  `setStatus` skips the whole feature and is reported here instead of throwing into a registration.
+
+The row name is the diagnostic column's label; the key and the module path stay in this report,
+because it is read by the plugin author, not by the user reading the footer.
 
 ## 9. Reaching the bridge — `session_start`, or the announcement
 

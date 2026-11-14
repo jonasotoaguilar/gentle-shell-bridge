@@ -37,6 +37,7 @@ import { installCardStyleTransform, installRailCardStyleTransform } from "./card
 import { installSectionRows } from "./sections-rows.ts";
 import { installSidebarBackend, noteSidebarUnavailable, type SidebarTuiLike } from "./sidebar.ts";
 import { setRepaintHost } from "./repaint.ts";
+import { clearPluginStatus, installPluginStatus } from "./plugin-lines.ts";
 import { installSectionRail } from "./sidebar-render.ts";
 import { collectStatus, formatStatus } from "./status.ts";
 
@@ -147,7 +148,7 @@ export function armSidebar(ui: unknown): SidebarArmResult {
 
 /** The part of Pi's `ExtensionAPI` this extension uses. */
 export interface BridgeExtensionApi {
-  on(event: "session_start", handler: BridgeSessionHandler): void;
+  on(event: "session_start" | "session_shutdown", handler: BridgeSessionHandler): void;
   registerCommand(
     name: string,
     command: { description?: string; handler: BridgeCommandHandler },
@@ -182,10 +183,21 @@ export default function gentleShellBridge(pi: BridgeExtensionApi): void {
     // disposes this provider the moment it extends the host's line instead).
     installCardStyleRows();
     armSidebar(ctx.ui);
+    // The ONE INTEGRATIONS line each plugin gets (I1–I6). A plugin that registered before any `ui`
+    // existed is painted here; a plugin that registers later repaints its own key in place. A host
+    // whose `ctx.ui` has no `setStatus` is recorded as unavailable instead of throwing (I6).
+    installPluginStatus(ctx.ui);
+  });
+
+  // The footer row is session state, like everything the bridge paints: the host is told to drop
+  // every key this module set (`undefined`) before the next bind, and the records survive so the
+  // next `session_start` paints the same keys again (I5).
+  pi.on("session_shutdown", () => {
+    clearPluginStatus();
   });
 
   pi.registerCommand(STATUS_COMMAND, {
-    description: "Show gentle-shell-bridge providers, backend, capture and store diagnostics",
+    description: "Show gentle-shell-bridge providers, backend, capture, store and plugin line diagnostics",
     handler: (_args, ctx) => {
       const report = formatStatus(collectStatus()).join("\n");
       ctx.ui?.notify?.(report, "info");

@@ -136,6 +136,13 @@ interface CustomizeRowLike {
 interface RowProviderLike {
   id: string;
   category: string;
+  /**
+   * The plugin's INTEGRATIONS row name. Optional in the bridge (a package is attributed from its
+   * module), but this file is meant to be COPIED into `~/.pi/agent/extensions/`, where it has no
+   * owning package — and the bridge refuses to invent a name, so it would get no row. Naming it
+   * here is the documented way for a single-file extension to get its one line.
+   */
+  name?: string;
   rows(ctx: { theme: unknown; configHome: string }): CustomizeRowLike[];
 }
 
@@ -877,6 +884,10 @@ export default function bashCardExample(pi: ExtensionApiLike): () => void {
       api.registerRows({
         id: "bash-card-example.rendering",
         category: ROW_CATEGORY,
+        // The first registration names the plugin, so its one INTEGRATIONS row reads `Bash card`
+        // even when this file is a copied single extension with no `package.json` above it. Later
+        // registrations do not need it: the bridge honours the first one only.
+        name: "Bash card",
         rows: () => bashRenderingRows(store),
       }),
       api.registerSection(bashCardSection(store, () => state.transformRegistered)),

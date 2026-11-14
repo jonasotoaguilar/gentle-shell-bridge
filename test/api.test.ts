@@ -315,8 +315,8 @@ const installWidgetSurface = (host: FakeHost): void => {
 const armThroughEntry = (host: FakeHost): void => {
   const handlers: BridgeSessionHandler[] = [];
   const pi: BridgeExtensionApi = {
-    on(_event, handler) {
-      handlers.push(handler);
+    on(event, handler) {
+      if (event === "session_start") handlers.push(handler);
     },
     registerCommand() {},
   };

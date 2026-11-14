@@ -88,6 +88,8 @@ export interface SidebarSection {
   id: string;
   /** The section heading, drawn like the host's own `AGENTS`/`CHANGES`/`STATS` titles. */
   title: string;
+  /** Optional display name for the plugin's INTEGRATIONS line; see `RowProvider.name`. */
+  name?: string;
   /**
    * What the `Sections` rows read, e.g. `"music"`. Optional: when absent the bridge derives it from
    * `title` (lowercase words, no dots, no prefix), and two sections whose labels read the same are
@@ -116,6 +118,15 @@ export interface RowProvider {
   id: string;
   /** The category this provider adds rows to. */
   category: string;
+  /**
+   * Optional display name for this plugin's INTEGRATIONS line, e.g. `"Loon kit"`. Honoured on the
+   * plugin's FIRST registration only; later ones are ignored. It overrides the name derived from the
+   * owning package, must obey the row-name shape (one to three plain words, no structural marks) and
+   * is never rewritten: a rejected name produces no line at all. A single-file extension with no
+   * `package.json` above it is otherwise unattributable and gets no line — naming it here is how it
+   * gets one.
+   */
+  name?: string;
   /** Evaluated each time the menu is built, never at registration. */
   rows(ctx: RowContext): CustomizeRow[];
 }
@@ -178,6 +189,8 @@ export interface TransformContext {
 export interface TranscriptTransform {
   /** Unique and stable: the replacement key, the ordering key and the `/bridge-status` name. */
   id: string;
+  /** Optional display name for the plugin's INTEGRATIONS line; see `RowProvider.name`. */
+  name?: string;
   /**
    * Optional integer. Transforms with an `order` run first, ascending; the rest follow in
    * registration order, so several plugins always produce one deterministic pipeline (S2).
@@ -198,6 +211,8 @@ export interface CardStyleRegistration {
    * because the line would then show the same value twice.
    */
   id: string;
+  /** Optional display name for the plugin's INTEGRATIONS line; see `RowProvider.name`. */
+  name?: string;
   /** The short text shown on the `Card style` line for this value. */
   label: string;
   /**

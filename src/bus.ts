@@ -24,6 +24,7 @@
  */
 
 import { HOST_CARD_STYLE_VALUES, RESERVED_CARD_STYLE_IDS } from "./card-style-line.ts";
+import { attributeRegistration } from "./plugin-lines.ts";
 import { cardStyleRowLabelText, sectionRowLabelText } from "./row-labels.ts";
 import { rejectRowName, clearRowNameRejections } from "./row-names.ts";
 import type {
@@ -107,6 +108,13 @@ function bus(): BusState {
  *   disposer twice does nothing the second time.
  */
 export function registerRows(provider: RowProvider): () => void {
+  // Attribution is a wrapper, not part of the store: the plugin gets ONE INTEGRATIONS line from any
+  // number of registrations (`./plugin-lines.ts`, I1), and `registerRowsStored` keeps doing exactly
+  // what it did — including throwing a plugin's invalid id back at it.
+  return attributeRegistration("rows", provider, undefined, () => registerRowsStored(provider));
+}
+
+function registerRowsStored(provider: RowProvider): () => void {
   const state = bus();
   const entry: BusEntry = { provider };
   const index = state.entries.findIndex((candidate) => candidate.provider.id === provider.id);
@@ -200,6 +208,10 @@ function assertRowLabel(kind: string, id: string, rowLabel: unknown): void {
 }
 
 export function registerSection(section: SidebarSection): () => void {
+  return attributeRegistration("section", section, "section", () => registerSectionStored(section));
+}
+
+function registerSectionStored(section: SidebarSection): () => void {
   assertSectionId(section.id);
   assertRowLabel("section", section.id, section.rowLabel);
   // The label is what a user reads, so it obeys the row-name shape before anything is stored (N8):
@@ -344,6 +356,12 @@ function assertCardStyleLabelIsDistinct(style: CardStyleRegistration): void {
  *   never half-registers and never reaches a menu build.
  */
 export function registerCardStyle(style: CardStyleRegistration): () => void {
+  return attributeRegistration("card style", style, "card style", () =>
+    registerCardStyleStored(style),
+  );
+}
+
+function registerCardStyleStored(style: CardStyleRegistration): () => void {
   assertRegistrationId("card style", style.id);
   if (RESERVED_CARD_STYLE_IDS.has(style.id)) {
     throw new Error(
@@ -452,6 +470,12 @@ function assertTransformFunction(id: string, transform: unknown): void {
  *   half-registers and never reaches a frame.
  */
 export function registerTransform(transform: TranscriptTransform): () => void {
+  return attributeRegistration("transform", transform, undefined, () =>
+    registerTransformStored(transform),
+  );
+}
+
+function registerTransformStored(transform: TranscriptTransform): () => void {
   assertRegistrationId("transform", transform.id);
   assertTransformFunction(transform.id, transform.transform);
 

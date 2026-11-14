@@ -226,6 +226,39 @@ command: armed but never captured, captured a row array that failed the shape ch
 provider threw, provider returned nothing, duplicate `category` + `setting` across
 providers. Silent success is not a valid state.
 
+### The plugin's own INTEGRATIONS line
+
+The host renders Pi's extension-status map (`footerData.getExtensionStatuses()`) as the INTEGRATIONS
+card: one row per entry, plus the permissions row (`extensions/gentle-shell.ts:357-385`,
+`lib/shell-bar.ts:289-298`). A row is the WHOLE opaque string the extension set via
+`ctx.ui.setStatus(key, text)`; the host strips its ANSI and paints every entry with one shared role,
+so a glyph must live inside the text and colour belongs to the host (`lib/shell-bar.ts:151-155`).
+`undefined` removes a key, which is what `session_shutdown` uses.
+
+Because the host has no notion of "a plugin", the bridge owns exactly one key per plugin
+(`src/plugin-lines.ts`). Attribution needs no configuration from the author: every registration in
+`src/bus.ts` goes through `attributeRegistration`, which reads the calling module from the stack
+once per registration (the first frame outside this package's `src/`), walks up from it to the
+nearest `package.json` with a non-empty `name`, and caches that answer per module. Three outcomes:
+another package (a plugin, whose display name is derived from the package name), this package
+(plumbing — the bridge's own providers and fallbacks never claim a row), and no owning package (a
+single copied file: fail closed, no row, reason in `/bridge-status`). An optional `name` on the
+plugin's first registration overrides the derived name and is the documented way for such a file to
+name itself; it is validated against the row-name shape, never rewritten.
+
+One key per plugin is hashed from the package root (or the module path when it has no owner), so a
+plugin's ten registrations update one row in place instead of adding ten. The text is
+`<name> · <ready|degraded>`: `ready` is derived — one rejected registration (an invalid id, a row
+label that broke the shape rule) repaints the same key as `degraded`. `installPluginStatus` runs on
+`session_start` (for plugins that registered before any `ctx.ui` existed) and paints or repaints;
+`clearPluginStatus` runs on `session_shutdown` and clears every key this module set with `undefined`.
+A `ctx.ui` without `setStatus` makes the feature a reported no-op: nothing here can throw into a
+plugin's registration path.
+
+What is proven where: the bridge's side is tested against a fake footer (an object with
+`setStatus`), plus real temporary plugin packages for attribution. The host's rendering — sort
+order, shared role, ANSI stripping — is read-only evidence from gentle-shell, not executed here.
+
 ## 11. Backend selection and module boundaries
 
 Arming happens once per `ctx.ui` object, from `session_start` in `src/extension.ts`. The

@@ -398,6 +398,30 @@ order` — and what the last frame did with each one: `applied`, `skipped`, `fai
 or `not run` for a transform registered after that frame. The block appears only when a transform is
 registered, so a session that never used the pipeline keeps the historical report byte for byte.
 
+The bridge also sets **one INTEGRATIONS row per plugin** in Pi's footer, through
+`ctx.ui.setStatus(key, text)`, and reports it as a per-plugin list: the name and whether it was
+`derived from package "@acme/loon-kit"` or an `explicit name`, the registrations `accepted` and
+`rejected`, and whether the row is set — or `no line set` with the reason. The header says when the
+host's `setStatus` is unavailable at all. The rules that line obeys:
+
+- **The row text is opaque.** The host renders the whole string as one row, so everything the row
+  says is inside it: `Loon kit · ready`. Its `sanitizeStatus` strips ANSI and collapses whitespace,
+  so **ANSI is not available** to a plugin, and any glyph must be part of the text
+  (`🧠 gentle-pi · ready` is the host's own fixture).
+- **Colour belongs to the host.** Every entry is painted with one shared role; a plugin chooses a
+  glyph, never a colour.
+- **One plugin means one line.** Ten rows, three sections, a card style and a transform still paint
+  one row; later changes repaint the same key in place, and `session_shutdown` clears it with
+  `undefined`.
+- **The name is derived, or given once.** The bridge resolves the module that registered to its
+  owning `package.json` and derives one to three plain words (`@acme/loon-kit` → `Loon kit`); an
+  optional `name` on the plugin's first registration overrides it. A single copied file with no
+  owning package gets **no row** (fail closed, the reason is in `/bridge-status`) unless it passes
+  that `name`. A rejected name is never shown.
+- **`ready` is derived, never promised.** One rejected registration — an invalid id, a row label that
+  broke the shape rule — makes the same key read `degraded`, and the report names the rejected
+  items.
+
 ## Limits
 
 - **No new categories.** gentle-shell's renderer types `category` as a closed union

@@ -9,8 +9,9 @@
 
 import { snapshotProviders } from "./bus.ts";
 import { getConfigHome } from "./config.ts";
-import { clearRowNameRejections, rejectRowName } from "./row-names.ts";
-import type { CustomizeRow, RowContext } from "./types.ts";
+import { recordNotice } from "./notices.ts";
+import { clearRowNameRejections, rejectReservedCategory, rejectRowName } from "./row-names.ts";
+import type { CustomizeRow, InlineHelpers, RowContext } from "./types.ts";
 
 /** A provider that threw while its rows were built; all of that provider's rows were dropped. */
 export interface RowBuildFailure {
@@ -125,6 +126,40 @@ function acceptsRowName(providerId: string, row: CustomizeRow): boolean {
 }
 
 /**
+ * Contain a BUTTON row's `action` (S16): a row with `action` and no `choice` is the host's own
+ * `Reset`/`Profiles` shape, and the host runs it on Enter/Space. This host catches a throw and
+ * reports it (`lib/visual-customize-view.ts:224-234`), but a host that does not — or an action that
+ * only returns a rejected promise nobody awaits — would put a plugin's failure in Pi's render loop.
+ * So the bridge catches it, reports it ONCE through the notice channel `/bridge-status` lists
+ * (`./notices.ts` records an identical message+level once, so pressing the row again does not
+ * repeat it) and returns normally: the menu and every other row stay usable.
+ *
+ * The row is a shallow COPY — the provider's object is never mutated — and every other field is the
+ * same reference. A toggle row (one with a `choice`) is returned untouched: its action's failure
+ * behaviour is the host's and is not part of this rule.
+ */
+function containButtonAction(providerId: string, row: CustomizeRow): CustomizeRow {
+  const action = row.action;
+  if (row.choice !== undefined || typeof action !== "function") return row;
+  const name = rowLabelText(row);
+  const where = name === undefined ? "a button row" : `the button row ${JSON.stringify(name)}`;
+  return {
+    ...row,
+    action: async (inline: InlineHelpers): Promise<void> => {
+      try {
+        await action(inline);
+      } catch (error) {
+        recordNotice(
+          `gentle-shell-bridge: ${where} from ${JSON.stringify(providerId)} failed: ` +
+            `${errorMessage(error)}. The menu stays open; fix the row's action.`,
+          "error",
+        );
+      }
+    },
+  };
+}
+
+/**
  * Apply the bridge's ONE behaviour to a row that carries a choice (A1–A3): ←/→ moves the cursor,
  * Enter applies. The host decides per row (`lib/visual-customize-view.ts:565` applies on the move only
  * while `choice.applyOnMove !== false`), so a provider row that omits the field — every row before
@@ -155,8 +190,15 @@ function confirmOnEnter(row: CustomizeRow): CustomizeRow {
  * not part of the effective set. The rejection is recorded verbatim for the report; the bridge never
  * rewrites a name it was given.
  *
+ * A row that asks for a RESERVED category is dropped the same way (S15): `Keymaps` is the host's own
+ * interaction, so the row is refused and reported while its siblings still reach the menu. A
+ * provider whose OWN category is reserved loses every row — including one registered by a copy of
+ * this package older than the registration check (`./bus.ts`), so one rule holds however the bus was
+ * filled.
+ *
  * Every row that carries a `choice` is staged with `applyOnMove: false` (A2), on a copy of the row
- * and of its `choice` — see `confirmOnEnter`.
+ * and of its `choice` — see `confirmOnEnter`. A BUTTON row (S16) keeps no choice and gains none; its
+ * `action` is contained by `containButtonAction`.
  */
 export function buildRows(ctx: RowContext): RowBuildResult {
   const providers = snapshotProviders();
@@ -170,11 +212,16 @@ export function buildRows(ctx: RowContext): RowBuildResult {
     // does not outlive the name it described.
     clearRowNameRejections("rows", provider.id);
     try {
-      for (const row of provider.rows(ctx)) {
-        if (!acceptsRowName(provider.id, row)) continue;
-        const withCategory =
-          row.category === undefined ? { ...row, category: provider.category } : row;
-        staged.push(confirmOnEnter(withCategory));
+      // A provider standing in the reserved page loses all of its rows: the refusal is about the
+      // page, not about one row of it.
+      if (!rejectReservedCategory(provider.id, provider.category)) {
+        for (const row of provider.rows(ctx)) {
+          if (!acceptsRowName(provider.id, row)) continue;
+          const withCategory =
+            row.category === undefined ? { ...row, category: provider.category } : row;
+          if (rejectReservedCategory(provider.id, withCategory.category)) continue;
+          staged.push(containButtonAction(provider.id, confirmOnEnter(withCategory)));
+        }
       }
     } catch (error) {
       failures.push({

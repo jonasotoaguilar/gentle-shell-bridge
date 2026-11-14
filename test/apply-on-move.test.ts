@@ -467,5 +467,11 @@ test("the build defers every provider choice on a copy, never mutating the provi
   assert.equal(built[1], alreadyDeferring, "an authored false already conforms: no copy is needed");
   assert.equal(explicitImmediate.choice?.applyOnMove, true, "an authored true is not mutated either");
   assert.equal(built[2]?.choice?.applyOnMove, false, "but the emitted copy defers");
-  assert.equal(built[3], plain, "a row without a choice is carried as the provider's own object");
+  // A row without a choice is a BUTTON row (S16). The bridge hands the host a copy so it can contain
+  // a failing `action`; nothing else about it changes and the provider's object is never mutated.
+  assert.notEqual(built[3], plain, "a button row is a copy, so its action can be contained (S16)");
+  assert.equal(built[3]?.label, plain.label, "its label is carried as the same reference");
+  assert.notEqual(built[3]?.action, plain.action, "its action is the contained wrapper");
+  assert.equal(built[3]?.choice, undefined, "no choice is invented for a button");
+  assert.deepEqual(Object.keys(plain).sort(), ["action", "category", "label"], "the provider's row is not mutated");
 });

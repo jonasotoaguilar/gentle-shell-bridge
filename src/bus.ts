@@ -26,7 +26,12 @@
 import { HOST_CARD_STYLE_VALUES, RESERVED_CARD_STYLE_IDS } from "./card-style-line.ts";
 import { attributeRegistration } from "./plugin-lines.ts";
 import { cardStyleRowLabelText, sectionRowLabelText } from "./row-labels.ts";
-import { rejectRowName, clearRowNameRejections } from "./row-names.ts";
+import {
+  clearRowNameRejections,
+  rejectRowName,
+  reservedCategory,
+  RESERVED_CATEGORY_RULE,
+} from "./row-names.ts";
 import type {
   CardStyleRegistration,
   RowProvider,
@@ -114,7 +119,32 @@ export function registerRows(provider: RowProvider): () => void {
   return attributeRegistration("rows", provider, undefined, () => registerRowsStored(provider));
 }
 
+/**
+ * `Keymaps` is the host's own interaction (S15), not one of its setting pages: its rows capture the
+ * next key press, write `keymaps.json` and get a category footer that promises `Enter assign`
+ * (`lib/keymaps-customize.ts:49-68`, `lib/visual-customize-view.ts:40`). A plugin row there would be
+ * advertised as an assignable binding and could never honour it, so the page is reserved and the
+ * provider is refused BEFORE anything is stored.
+ *
+ * The throw is the refusal: `attributeRegistration` is the boundary every registration already goes
+ * through, so the refusal lands in the plugin's INTEGRATIONS line as a rejected registration (the
+ * same line, and the same `degraded` state, as an invalid id) and in `/bridge-status`. Nothing is
+ * stored, so a refused provider can never reach a menu build. A row that carries the reserved
+ * category ITSELF is refused per row at build time instead, so its siblings survive (`./rows.ts`).
+ */
+function assertRowProviderCategory(provider: RowProvider): void {
+  const reserved = reservedCategory(provider.category);
+  if (reserved === undefined) return;
+  throw new Error(
+    `gentle-shell-bridge: cannot register row provider ${JSON.stringify(provider.id)}: its ` +
+      `category ${JSON.stringify(String(provider.category))} is the reserved category ` +
+      `${JSON.stringify(reserved)}. ${reserved} ${RESERVED_CATEGORY_RULE}. Place the rows in one of ` +
+      `the host's other categories, e.g. "Cards".`,
+  );
+}
+
 function registerRowsStored(provider: RowProvider): () => void {
+  assertRowProviderCategory(provider);
   const state = bus();
   const entry: BusEntry = { provider };
   const index = state.entries.findIndex((candidate) => candidate.provider.id === provider.id);

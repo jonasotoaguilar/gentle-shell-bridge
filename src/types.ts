@@ -49,14 +49,36 @@ export interface InlineHelpers {
 }
 
 /**
- * A settings row as gentle-shell's renderer understands it. `category` is one of the
- * categories the host already renders; the bridge cannot create new ones.
+ * A settings row as gentle-shell's renderer understands it. There are exactly two kinds (S16), and
+ * both are first class — neither is an accident of a missing field:
+ *
+ * - a TOGGLE row carries a `choice`. Consecutive rows sharing `choice.setting` render as one line and
+ *   ←/→ moves the cursor; the bridge stages every such row with `applyOnMove: false` so Enter applies;
+ * - a BUTTON row carries an `action` and NO `choice`. Enter (or Space) runs it — exactly the shape of
+ *   the host's own `Reset` and `Profiles` rows (`extensions/gentle-shell.ts:3541,3550`, run at
+ *   `lib/visual-customize-view.ts:575-577`). Its whole visible text is its `label`.
+ *
+ * `category` names the page. The host derives its pages from the rows it holds, but a page it owns
+ * differently is not open to plugins: `Keymaps` is REFUSED (S15) — the whole registration when that
+ * is the provider's own category, and the single row when the row names it, so its siblings still
+ * render. Every other value is an ordinary category.
+ *
+ * `label` — and a button's label above all, because it is the row's entire visible text — is a row
+ * name: one to three plain words with no arrow, colon, dot, pipe, slash or bracket (`./row-names.ts`).
+ * A label that breaks the shape is refused and reported verbatim, never rewritten.
+ *
+ * The bridge adds nothing to a button row: no `choice` is invented and no `applyOnMove` is staged
+ * (`./rows.ts`). Its one deliberate change is the `action`, which it wraps so a throw or a rejected
+ * promise is reported once through the bridge's notice channel and never reaches the menu.
  */
 export interface CustomizeRow {
   /**
    * Optional here: a provider whose rows all belong to its own `provider.category` may omit it,
    * and the capture backend fills it from there (shallow-cloning the row, never mutating it).
    * The host's renderer still requires a category on every row it receives.
+   *
+   * `Keymaps` is the one reserved value (S15): the row is refused and reported instead of appearing
+   * on the host's key-capture page.
    */
   category?: string;
   label?: RowLabel;
@@ -65,6 +87,15 @@ export interface CustomizeRow {
   /** Hidden when false; a throw fails closed (row hidden). */
   visible?: () => boolean;
   keyhint?: string;
+  /**
+   * Runs on Enter/Space. The host requires it on every row (`lib/visual-customize-view.ts:124`); on a
+   * button row (no `choice`) it is what makes the row do anything at all.
+   *
+   * The bridge hands the host a wrapped copy and never the raw function: a synchronous throw or a
+   * rejected promise is caught, reported once in `/bridge-status` (and by the next `ui.notify`), and
+   * swallowed, so neither the menu nor the other rows can be broken by one failing action. The
+   * provider's own object is not mutated.
+   */
   action?: (inline: InlineHelpers) => void | Promise<void>;
 }
 
@@ -163,7 +194,11 @@ export interface SidebarSection {
 export interface RowProvider {
   /** Unique and stable, e.g. `"loon.banner-source"`; the key for ordering and replacement. */
   id: string;
-  /** The category this provider adds rows to. */
+  /**
+   * The category this provider adds rows to. `Keymaps` is reserved (S15): a registration naming it is
+   * refused with an error that says why, before anything is stored, and the refusal is reported in
+   * the plugin's INTEGRATIONS line. Place the rows in one of the host's setting categories instead.
+   */
   category: string;
   /**
    * Optional display name for this plugin's INTEGRATIONS line, e.g. `"Loon kit"`. Honoured on the

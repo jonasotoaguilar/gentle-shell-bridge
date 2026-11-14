@@ -301,7 +301,7 @@ export interface StatusSnapshot {
    */
   toolDesigns?: StatusToolDesigns;
   /**
-   * Plugin row names the bridge rejected for breaking the row-name shape (N8): the offending
+   * Plugin row names the bridge rejected for breaking the row-name shape (N8), or a row category it refused as reserved (S15): the offending
    * string, verbatim, and the rule it broke. Absent when nothing was rejected, so a clean session
    * keeps its historical output exactly.
    */
@@ -845,7 +845,7 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
   }
 
   if (snapshot.rowNames !== undefined) {
-    lines.push(`row name rejections: ${snapshot.rowNames.length}`);
+    lines.push(`row rejections: ${snapshot.rowNames.length}`);
     for (const rejection of snapshot.rowNames) {
       // The offending string is printed EXACTLY as the author wrote it: the report is how they find
       // it, and the bridge never rewrites a name it refused (N8).

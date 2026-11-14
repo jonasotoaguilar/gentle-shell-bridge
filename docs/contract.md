@@ -7,7 +7,7 @@ What a plugin can rely on. The mechanism behind it is in
 
 ```ts
 const dispose: () => void = registerRows(provider);
-```
+```text
 
 Registers a row provider with the process-global bridge and returns a disposer
 unsubscribing exactly that provider — no other provider's rows and no bridge state are
@@ -35,7 +35,7 @@ interface RowProvider {
   name?: string;                               // optional: this plugin's INTEGRATIONS row (§8)
   rows(ctx: RowContext): CustomizeRow[];       // evaluated lazily, per menu build
 }
-```
+```text
 
 - `rows()` runs each time the menu is built, never at registration. That is what makes
   `current()` honest: the plugin reads its live state at build time, so the bullet matches
@@ -91,7 +91,7 @@ const toggle = (value: string) => ({
 });
 
 rows: () => [toggle("activity"), toggle("output")], // one rendered line
-```
+```text
 
 The renderer draws one line, `Name  ● current  ○ other`, and handles the keys itself: ←/→ moves
 the cursor inside the line and applies a value only when that row does not defer, Enter applies
@@ -151,7 +151,7 @@ Bash design                     OK    a row name: the host's own vocabulary
 Bash card → Bash rendering      BAD   arrow and a repeated qualifier: reads as a breadcrumb
 Bash card: rendering            BAD   colon
 Section: bash-card.status       BAD   prefix plus a dotted id
-```
+```text
 
 The bridge enforces the shape instead of trusting authors; it is never a silent rewrite:
 
@@ -313,7 +313,7 @@ Object.freeze({
   requestRepaint,                    // since 0.3.0; optional on an older published object
   createStore,
 });
-```
+```text
 
 Publication is **first wins**: a compatible object already in the slot is kept and never replaced,
 and the slot is never reset. A consumer gates on the schema string, `version === 1` and the three
@@ -359,7 +359,7 @@ pi.on("session_start", (_event, ctx) => {
     );
   }
 });
-```
+```text
 
 Or import the package and call `onBridgeApi(handler, pi.events)`, which does both forms for you: the
 handler runs immediately when the object is already published (and no listener is taken), otherwise
@@ -374,7 +374,7 @@ const register = (api: BridgeApi): void => {
 
 // Works in both orders: this package loaded first, or the plugin did.
 const dispose = onBridgeApi(register, pi.events);
-```
+```text
 
 `bridgeApi()` never waits, defers or retries: it answers about the slot as it is right now.
 
@@ -387,7 +387,7 @@ When this package publishes its object, it emits one event on Pi's cross-extensi
 pi.events.on("gentle-shell-bridge:ready", (payload) => {
   // { schema: "gentle-shell-bridge/api", version: 1, VERSION: "0.3.0" }
 });
-```
+```text
 
 - **Name:** `gentle-shell-bridge:ready`. Payload: `{ schema, version, VERSION }` — the same identity,
   major and release the published object carries, frozen. Informational only: the payload says
@@ -432,7 +432,7 @@ const dispose = api.registerRows({
   category: "Cards",
   rows: () => [toggle("activity"), toggle("output")], // consecutive rows → one line
 });
-```
+```text
 
 Nothing may sit between the two values or the renderer draws two lines. `current()` is evaluated
 when the menu is built, `action()` runs before the host's own repaint, and `preview()` replaces the
@@ -454,7 +454,7 @@ const dispose = api.registerSection({
   defaultVisible: true,         // absent means true
   order: 10,                    // optional integer
 });
-```
+```text
 
 The bridge generates the `Sections` rows for it: two consecutive rows sharing one label,
 values `shown` / `hidden`, with a live `current()` and a persist-first `action()`. The label — not
@@ -472,7 +472,7 @@ or writes that file.
 const store = api.createStore("loon");
 store.set("bannerSource", "activity");
 const value = store.get("bannerSource", "activity"); // caller's fallback when absent or unreadable
-```
+```text
 
 The document is `{ "schemaVersion": 1, "values": { … } }` at
 `<gentle config home>/gentle-shell-bridge/<pluginId>.json`. `values` is an envelope, so a plugin
@@ -548,7 +548,7 @@ const dispose: () => void = registerSection({
   defaultVisible: true,             // absent means true
   order: 10,                        // optional integer
 });
-```
+```text
 
 - `id` — registering an existing id **replaces** the previous section in place; a second
   card never appears. It is the toggle's identity (replacement, disposer and the persisted
@@ -582,7 +582,7 @@ A row is a plain **string** or a structured **row object**:
 
 ```ts
 { label: string; meta?: string; glyph?: string; tone?: Tone; onClick?: () => void }
-```
+```text
 
 - a plain string is drawn **byte for byte**: the author's characters, clipped to the width, no
   indent, no padding, no styling. Every section written before structured rows existed looks
@@ -626,7 +626,7 @@ child, and the conversation gets `columns - 53`. One decision IS made from a par
 
 ```text
 const active = railLines.length > 0 && railLines.every((line) => visibleWidth(line) <= contentWidth);
-```
+```text
 (`lib/shell-sidebar-layout.ts:410`) — a single rail row wider than the content width drops the whole
 rail, and the conversation then takes every column: the layout's widths changed because of what a
 part returned.
@@ -706,7 +706,7 @@ label the user reads, never an id and never a prefix:
 ```text
 stats             ● shown  ○ hidden     ← the host's own row
 music             ● shown  ○ hidden     ← a plugin's section (id "loon.music", title "MUSIC")
-```
+```text
 
 For every registered section the bridge emits **two consecutive rows** in category `Sections`,
 sharing one label as their `choice.setting` (the host prints the setting as the line's name) with
@@ -752,7 +752,7 @@ one namespaced file:
     "collapsed": { "loon.music": true }
   }
 }
-```
+```text
 
 `sections` maps a section id to `true` (shown) / `false` (hidden); a missing id falls back to
 `defaultVisible`. `collapsed` maps a section id to `true` (folded) / `false` (open); a missing id is
@@ -781,7 +781,7 @@ const dispose: () => void = registerCardStyle({
   frame: { top, line, bottom }, // the three functions below; nothing else is called
   preview: () => ({ title: "Cute", sample: "○ cute  ╭─ welcome ─╮" }), // optional, literal
 });
-```
+```text
 
 The id never appears in a row: the host's line reads `Card style  ○ neon ● float ○ cute`, and the
 style's own row is labelled `cute` (or the author's `rowLabel`), exactly like a host row's visible
@@ -794,7 +794,7 @@ text. `label` stays the line's value — the text the host renders and the uniqu
 top(ctx: { width: number; title?: string; hint?: string }): string;
 line(ctx: { text: string; width: number; first: boolean }): string;
 bottom(ctx: { width: number }): string;
-```
+```text
 
 `width` is the width the host rendered at. `title` is the heading the host printed, without its
 glyph and without the right-aligned hint; `hint` is that hint when its style runs prove it is one
@@ -812,7 +812,7 @@ setting, so the user sees ONE line in the host's own position:
 
 ```text
 Card style  ○ neon ● float ○ cute
-```
+```text
 
 The host's own rows keep the host's `current()` and `action()`, wrapped in exactly two ways:
 `current()` reports `false` while a registered style is selected (one bullet at a time), and
@@ -868,7 +868,7 @@ The selection is the bridge's state, not the plugin's:
 
 ```json
 { "schemaVersion": 1, "values": { "cardStyle": "loon.cute" } }
-```
+```text
 
 `cardStyle` is a style id or `native`. A missing file, an unreadable one, an unknown
 `schemaVersion` or a non-string value reads as `native`. A stored id whose style was disposed
@@ -928,7 +928,7 @@ const dispose: () => void = registerTransform({
     return rows;
   },
 });
-```
+```text
 
 ### What the transform receives
 
@@ -1009,7 +1009,7 @@ keeps its report byte for byte:
 transforms: 2 registered
   - loon.bash-cards (order 10): applied, 13 lines, 4 candidates, 1 recognised, 1 rewritten, shapes: float 1
   - loon.strict (registration order): failed (definitions are missing), 13 lines, 0 candidates, 0 recognised, 0 rewritten
-```
+```text
 
 `applied` means the frame changed, `skipped` means the transform was called and left the rows as they
 were, `failed` carries its message, and `not run` means it was registered after the last frame. The
@@ -1034,7 +1034,7 @@ api.registerToolDesign({
     return lines.map((line) => rewriteTheMarkOnly(line));
   },
 });
-```
+```text
 
 ### The convention: lines in, lines out
 
@@ -1199,21 +1199,78 @@ The bridge registers exactly ONE `pi.registerToolRenderer` resolver for the whol
 out to these designs. That is why two plugins contributing designs for the same tool do not stack
 wrappers, and why a plugin must never call `pi.registerToolRenderer` itself for a design.
 
+## 15. Plugin keymaps and the command palette
+
+The bridge publishes what plugins contributed; the **host reads it per build**. The direction is the
+design: there is no registration handshake, no startup cache and no lifecycle in the host, so a
+registration made during `session_start` is visible at the next menu or palette open, in any load
+order.
+
+```text
+Symbol.for("gentle-shell-bridge/plugin-surface/v1") → { schema: 1, keymaps(), commands() }
+```text
+
+Both getters answer with a **copy**, never the live array, so a host that keeps one cannot mutate
+what the bridge owns.
+
+### `registerKeymap(registration): () => void`
+
+One action for the host's Keymaps page: `{ id, label, env?, defaultKey?, command? }`.
+
+- `id` and `label` must be non-empty strings; `env`, `defaultKey` and `command` are optional but,
+  when present, must be non-empty strings too. Validation happens here, where the plugin author sees
+  the error.
+- An `id` starting with `command:` is refused: those name palette command bindings, not plugin
+  actions.
+- The same `id` registered twice **replaces in place and is reported**, like every other
+  registration in this package. A silent takeover would be one plugin stealing another's row.
+- The disposer removes exactly the entry it created. A replaced entry is a different object, so
+  disposing the old registration never deletes its successor.
+- A contributed id can never shadow a built-in action or a `command:<name>` binding: the host keeps
+  its own ids.
+
+### `registerCommands(contribution | contribution[]): () => void`
+
+One palette item, or several: `{ id, label, command, section? }`.
+
+- An item joins the section it names, after that section's own entries, or opens a section of its
+  own after the host's catalog. Without `section` it lands in the shared `Plugins` page.
+- The host lists an item only while its command is registered, so a missing extension leaves no
+  dead row, and an own section that would be left empty does not appear at all.
+- An `id` twice **in one call** is refused whole: the batch would silently keep only the last one.
+  Across calls it replaces in place and is reported, exactly like keymaps.
+
+### `resolveKeymap(id): { key?; unavailable? }`
+
+The key an id currently uses, answered by the shell that owns the file, the environment override
+and the defaults — environment variable, then saved binding, then default. It never throws: no
+shell, an older shell or a throwing getter is an `unavailable` reason the caller reports.
+
+The plugin then binds the key itself with `pi.registerShortcut`. The bridge never binds for a
+plugin, and the shell never binds a plugin's key. That split is what keeps one implementation of the
+precedence: the row and the real binding cannot disagree.
+
+**A keymap change applies after `/reload`.** Pi reads extension shortcuts at startup and on reload,
+for native actions and contributed ones alike, and it exposes no way to re-register a shortcut while
+running. The Keymaps page says so, and its last row offers the reload.
+
 ## Limits
 
 - `registerRows`, `registerSection`, `registerCardStyle`, `registerTransform`,
-  `registerToolDesign`, `requestRepaint`, `createStore`, `bridgeApi`, `isBridgeApi`, `onBridgeApi`
+  `registerToolDesign`, `registerKeymap`, `registerCommands`, `resolveKeymap`, `requestRepaint`,
+  `createStore`, `bridgeApi`, `isBridgeApi`, `onBridgeApi`
   and the `gentle-shell-bridge:ready` event are the contract; anything a plugin does inside `action()` beyond
   calling inline helpers is the plugin's own business.
-- **`Keymaps` is reserved.** A provider registered with `category: "Keymaps"` is refused before
-  anything is stored, with an error naming the category and why (its own key capture and footer; not
-  open to plugins yet); the refusal is a rejected registration in the plugin's INTEGRATIONS line and in
-  `/bridge-status`. A single row whose own `category` is `Keymaps` is dropped and reported the same way,
-  and its siblings still render. The comparison is trimmed and case-insensitive: ` keymaps ` and
-  `KEYMAPS` are the same page; `Keymap` and `Key maps` are ordinary categories. `Profiles` and `Reset`
-  are not reserved: a plugin row there renders as an ordinary line. A refusal of one row is listed under
-  `row rejections` but is not counted in the plugin's INTEGRATIONS line (a build cannot reach it; only the
-  registration refusal does).
+- **`Keymaps` stays reserved for row providers.** A provider registered with `category: "Keymaps"` is
+  refused before anything is stored, with an error naming the category and why; the refusal is a rejected
+  registration in the plugin's INTEGRATIONS line and in `/bridge-status`. A single row whose own
+  `category` is `Keymaps` is dropped and reported the same way, and its siblings still render. The
+  comparison is trimmed and case-insensitive: ` keymaps ` and `KEYMAPS` are the same page; `Keymap` and
+  `Key maps` are ordinary categories. `Profiles` and `Reset` are not reserved: a plugin row there renders
+  as an ordinary line. A refusal of one row is listed under `row rejections` but is not counted in the
+  plugin's INTEGRATIONS line (a build cannot reach it; only the registration refusal does). The reason
+  is unchanged and now has a supported alternative: that page captures keys and claims a footer, so a
+  plain row would be advertised as assignable and could never honour it — a plugin uses §15 instead.
 - **A new category becomes a page.** The host computes its page list once, in the view's constructor
   (`lib/visual-customize-view.ts:387`), so the rows must be in the array before that `map` runs; see
   [architecture.md](architecture.md) "A brand-new page". The cost is stated there. The one residual
@@ -1261,6 +1318,6 @@ wrappers, and why a plugin must never call `pi.registerToolRenderer` itself for 
   simply false) and keeps working.
 - A transform is a per-frame pass, so a slow transform is a slow frame; the bridge isolates its
   failures and clips its width, and can bound nothing else. It sees lines, never tool metadata.
-- The API is released (`0.3.0`). The `v1` symbol is the compatibility boundary: a breaking
+- The API is released (`0.3.1`). The `v1` symbol is the compatibility boundary: a breaking
   change takes a new key instead of mutating this one (§9). The `gentle-shell-bridge:ready` event is
   additive: a plugin that never subscribes loses nothing but the late-load case.

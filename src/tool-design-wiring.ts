@@ -127,10 +127,18 @@ export const toolDesignResolver: ToolDesignResolver = (toolName, next) => {
   }
 };
 
-/** The renderer members this module wraps, with the argument index that carries the host's theme. */
-const WRAPPED_RENDERERS: ReadonlyArray<{ member: "renderCall" | "renderResult"; themeIndex: number }> = [
-  { member: "renderCall", themeIndex: 1 },
-  { member: "renderResult", themeIndex: 2 },
+/**
+ * The renderer members this module wraps, with the argument index that carries the host's theme and
+ * the part of the card that renderer draws (S12). The two are wrapped SEPARATELY, so the design is
+ * told which one it is drawing instead of having to guess it from the rows.
+ */
+const WRAPPED_RENDERERS: ReadonlyArray<{
+  member: "renderCall" | "renderResult";
+  themeIndex: number;
+  part: "call" | "result";
+}> = [
+  { member: "renderCall", themeIndex: 1, part: "call" },
+  { member: "renderResult", themeIndex: 2, part: "result" },
 ];
 
 /**
@@ -163,7 +171,7 @@ export function wrapRenderers(
   if (!wrapCall && !wrapResult) return renderers;
 
   const wrapped: ToolRenderersLike = { ...renderers };
-  for (const { member, themeIndex } of WRAPPED_RENDERERS) {
+  for (const { member, themeIndex, part } of WRAPPED_RENDERERS) {
     const original = renderers[member];
     if (typeof original !== "function") continue;
     // SAFETY: `typeof` just proved this member callable. A renderer's arguments (args, options, the
@@ -172,7 +180,7 @@ export function wrapRenderers(
     const hostRenderer = original as (
       ...args: Record<string, unknown>[]
     ) => Record<string, unknown>;
-    wrapped[member] = wrapRenderer(hostRenderer, tool, themeIndex, origin);
+    wrapped[member] = wrapRenderer(hostRenderer, tool, themeIndex, origin, part);
   }
   Object.defineProperty(wrapped, TOOL_RENDERERS_WRAPPED, {
     value: true,
@@ -198,12 +206,13 @@ function wrapRenderer(
   tool: string,
   themeIndex: number,
   origin: ToolRendererWrapperOrigin,
+  part: "call" | "result",
 ): (...args: Record<string, unknown>[]) => Record<string, unknown> {
   return function (this: unknown, ...args: Record<string, unknown>[]): Record<string, unknown> {
     const component = original.apply(this, args);
     // The theme is the host's own opaque object at the documented index of this renderer's arguments
     // (`renderCall`: second, `renderResult`: third); the bridge only forwards it.
-    return wrapComponent(component, tool, args[themeIndex], origin);
+    return wrapComponent(component, tool, args[themeIndex], origin, part);
   };
 }
 
@@ -219,6 +228,7 @@ function wrapComponent(
   tool: string,
   theme: Record<string, unknown> | undefined,
   origin: ToolRendererWrapperOrigin,
+  part: "call" | "result",
 ): Record<string, unknown> {
   if (!isRecord(component) || typeof component.render !== "function") return component;
   // SAFETY: a record whose own `render` is callable is exactly the Pi component contract
@@ -251,7 +261,7 @@ function wrapComponent(
       }
       // No design selected, or the selected design is gone: the host's bytes, untouched.
       if (selection.kind !== "design") return rows;
-      const ctx: ToolDesignContext = { width, tool, theme };
+      const ctx: ToolDesignContext = { width, tool, theme, part };
       const applied = applyToolDesign(selection.design, rows, ctx);
       return applied === undefined ? rows : applied;
     },

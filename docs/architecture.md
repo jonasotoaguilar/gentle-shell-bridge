@@ -773,12 +773,17 @@ included, which decides whether the host frames the card itself — is the host'
 wrapper's `render(width)` is:
 
 ```
-hostComponent.render(width) → design.apply(rows, { width, tool, theme }) → rows
+hostComponent.render(width) → design.apply(rows, { width, tool, theme, part }) → rows
 ```
 
 so the chrome (`neon`, `float`, whatever the host's Card style is) exists before the design sees
 anything. `invalidate()` and the optional mouse/key-release members are delegated, so the card keeps
 behaving exactly as the host's did — only the rows can differ.
+
+`part` is `"call"` when this row set came from `renderCall` and `"result"` when it came from
+`renderResult` (S12). The two members are wrapped SEPARATELY, so the design is told which half of the
+card it is drawing instead of having to infer it from the rows: the host draws both with the same
+chrome, and a float result row that begins with `$ ` is indistinguishable from a float heading.
 
 Wrapping even when nothing is selected is deliberate. Pi resolves the renderers ONCE per card, when
 it constructs it (`interactive-mode.js:1816-1818,2957-2961,3028-3032,3376-3380`), and re-renders that

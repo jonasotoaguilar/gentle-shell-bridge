@@ -13,7 +13,7 @@
  *    that card produced:
  *
  *    ```text
- *    apply(lines, { width, tool, theme }) → lines
+ *    apply(lines, { width, tool, theme, part }) → lines
  *    ```
  *
  *    So the frame is the host's, by construction: with `Card style = neon` the card stays neon, with
@@ -151,6 +151,13 @@ interface ToolDesignContextLike {
   tool: string;
   /** The host's opaque theme object. This file never reads a colour from it. */
   theme?: unknown;
+  /**
+   * Which half of the card this pass is drawing (S12): `renderCall` or `renderResult`. OPTIONAL here
+   * because a bridge published before the field existed hands a context without it; this file then
+   * treats the part as UNKNOWN and keeps its previous behaviour (the row grammar decides), so an
+   * older bridge decorates exactly what it decorated before.
+   */
+  part?: "call" | "result";
 }
 
 /**
@@ -249,11 +256,12 @@ interface ExtensionEventsLike {
 //    tells the two components apart in the `default` cell;
 // 4. the row must not begin with the outline frame's SIDE or CLOSING rule (`│`, `╰`): a heading is
 //    always on the card's top, so a `$` on a body row of the `neon` card (`cat script.sh` printing a
-//    prompt) is output, not a heading. In the `float` cell the top row and a body row share both
-//    chrome and position, so a float body row that begins with `$ ` is the one shape this design
-//    cannot tell from a heading — the bridge hands `apply` rows without a call/result role. That is
-//    the documented limit (README, `test/example-bash-matrix.test.ts`); it costs no data and no
-//    width, and no other cell has it.
+//    prompt) is output, not a heading.
+//
+// In the `float` cell the top row and a body row share both chrome and position, so this row grammar
+// alone could not tell a heading from output — which is why the bridge says WHICH part of the card it
+// is drawing (`ctx.part`, S12). The design acts on the CALL only: everything the result component
+// draws is returned byte-identical, so a script that echoes `$ …` keeps its output intact.
 //
 // The word replaces the mark and the row's padding or rule fill gives back the columns it adds, so
 // the row keeps the width the host made it. When there is no fill to take them from — a heading whose
@@ -261,12 +269,12 @@ interface ExtensionEventsLike {
 // reports that once, through the same two channels the rest of this file uses (`ctx.ui.notify` and
 // the BASH CARD section), instead of silently drawing nothing the way the first iterations did.
 //
-// The three limits this rule leaves, all of them stated in README.md and pinned by
-// `test/example-bash-matrix.test.ts`: a `float` RESULT body row that begins with `$ ` is
-// indistinguishable from a heading (point 4); the fill is the row's WIDEST run, so a command carrying
-// a wider run of spaces than the frame's fill would have those shortened instead; and a heading is
-// only looked for in the component's first content row, so a chrome that adds a second row above the
-// heading is reported as unrecognised rather than guessed at.
+// The two limits this rule leaves, both of them stated in README.md and pinned by
+// `test/example-bash-matrix.test.ts`: the fill is the row's WIDEST run, so a command carrying a wider
+// run of spaces than the frame's fill would have those shortened instead; and a heading is only
+// looked for in the component's first content row, so a chrome that adds a second row above the
+// heading is reported as unrecognised rather than guessed at. Nothing here parses the frame, and the
+// result component is never touched at all (`ctx.part === "result"` returns the host's bytes).
 
 /** The heading mark the host prints, and the word the design puts in its place. */
 const MARK = "$";
@@ -513,6 +521,14 @@ function applyBashHeading(lines: readonly string[], ctx: ToolDesignContextLike):
   // received another tool's rows would be a bridge bug, and drawing them unchanged is the safe
   // answer rather than rewriting a card the design was not for.
   if (ctx.tool !== TOOL_NAME) return [...lines];
+
+  // Only the CALL component heads a card (S12). The host draws the call and the result with the same
+  // chrome, so in the `float` cell a result body row that begins with `$ ` sits exactly where a
+  // heading sits — and real output does begin with `$ ` when a script echoes its commands. The
+  // bridge wraps the two renderers separately and says which one this is, so output is never
+  // rewritten. A context with NO `part` comes from an older bridge and is UNKNOWN, not a result:
+  // the previous behaviour stands and the row grammar below decides.
+  if (ctx.part === "result") return [...lines];
 
   const recognition = headingSite(lines);
   if (recognition.kind === "unrecognised") {

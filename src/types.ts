@@ -320,11 +320,20 @@ export interface TranscriptTransform {
  * design was declared for (never anything the card draws), and `theme` is the opaque theme object the
  * host handed that renderer (`renderCall`'s second argument, `renderResult`'s third). The bridge does
  * not depend on the theme's shape, so a design that wants a colour narrows it itself.
+ *
+ * `part` says WHICH half of the card this pass is drawing (S12). A card has two components — the call
+ * and the result — and the host draws them with the same chrome, so from rows alone the two are
+ * indistinguishable: a float result body row that begins with `$ ` (a script echoing commands) sits
+ * exactly where a float heading sits. The bridge wraps the two renderers separately and sets `part`
+ * per renderer, so a design can act on the call alone instead of guessing from drawn text. A design
+ * that ignores `part` behaves exactly as it did before the field existed.
  */
 export interface ToolDesignContext {
   readonly width: number;
   readonly tool: string;
   readonly theme?: unknown;
+  /** The renderer this pass came from: `renderCall` or `renderResult`. */
+  readonly part: "call" | "result";
 }
 
 /**

@@ -139,9 +139,9 @@ export const BASH_MINIMAL_FLOAT_RESULT: readonly string[] = [
 
 /**
  * `minimal` x `float`, the RESULT component of a command that echoed a prompt: its first body row
- * begins with `$ `. This is the limit the design documents — the call and the result are separate
- * components with the same float chrome, so from rows alone this row sits exactly where a heading
- * sits (`test/example-bash-matrix.test.ts` pins the behaviour).
+ * begins with `$ `. From rows alone this row sits exactly where a heading sits, because the call and
+ * the result share the float chrome. The design tells them apart by `ctx.part` (S12), so this result
+ * passes through byte for byte (`test/example-bash-matrix.test.ts` pins it).
  */
 export const BASH_MINIMAL_FLOAT_RESULT_PROMPT: readonly string[] = [
   " \u001b[48;5;236m\u001b[95m▎\u001b[39m\u001b[95m                                                         \u001b[39m\u001b[49m ",

@@ -76,15 +76,17 @@ How the design finds the heading, without parsing frame chrome it does not own:
 4. the row may not begin with the outline frame's side or closing rule (`│`, `╰`): a heading is on
    the card's top, so a `$` on an outline body row is output;
 5. the word's three extra columns come out of the row's widest padding/rule fill, so the row keeps
-   the host's width exactly; when no run is wide enough the row is left as the host drew it.
+   the host's width exactly; when no run is wide enough the row is left as the host drew it;
+6. the design acts on the CALL only, because the bridge tells it which half of the card it is drawing
+   (`ctx.part`). In the `float` cell the call and the result are separate components drawn with the
+   same chrome, so a RESULT whose first body row begins with `$ ` (a command echoing a prompt) sits
+   exactly where a heading sits — with `part` it is returned byte-identical, and the other two cells
+   exclude it independently (blank row / `│` side).
 
-**Limits, stated rather than hidden.** (a) In the `float` cell the call and the result are separate
-components drawn with the same chrome, and the bridge hands `apply` rows without a call/result role,
-so a float RESULT whose first body row begins with `$ ` (a command echoing a prompt) sits exactly
-where a heading sits and is rewritten; the other two cells exclude it (blank row / `│` side).
-(b) A command containing a wider run of spaces than the frame's own fill would have those spaces
-shortened instead of the fill. (c) The heading must be in the first row of content: a host that puts
-a second row of chrome above its heading would be reported as unrecognised, not guessed at.
+**Limits, stated rather than hidden.** (a) A command containing a wider run of spaces than the
+frame's own fill would have those spaces shortened instead of the fill. (b) The heading must be in
+the first row of content: a host that puts a second row of chrome above its heading would be
+reported as unrecognised, not guessed at.
 
 **A frame the design cannot prove** comes back byte-identical and is reported once: the `BASH CARD`
 section carries an `unrecognised  <reason>` row (`none` until it happens) and the same reason is
@@ -282,8 +284,10 @@ const dispose: () => void = registerToolDesign({
   name: "Loon kit",             // optional: this plugin's INTEGRATIONS row
   preview: () => ({ title: "Cards · bash heading", sample: "╭─ bash npm test ─╮" }),
   apply(lines, ctx) {           // the HOST's rows in, the rows to draw out
-    // ctx is { width, tool, theme }; lines already carry the host's frame, ANSI and padding.
+    // ctx is { width, tool, theme, part }; lines already carry the host's frame, ANSI and padding.
+    // `part` is "call" or "result", so a heading is only looked for on the call.
     // Change only the mark the design is for, and keep every other row byte-identical:
+    if (ctx.part === "result") return [...lines];
     return lines.map((line) => rewriteTheMarkOnly(line));
   },
 });

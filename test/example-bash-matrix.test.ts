@@ -58,10 +58,10 @@ import { buildRows, resetRowBuildStateForTests } from "../src/rows.ts";
 import { disableSidebarBackend, resetSidebarStateForTests } from "../src/sidebar.ts";
 import { resetSectionFailuresForTests } from "../src/sidebar-render.ts";
 import { resetStoreStateForTests } from "../src/store.ts";
-import { resetToolDesignsForTests } from "../src/tool-designs.ts";
+import { resetToolDesignsForTests, snapshotToolDesigns } from "../src/tool-designs.ts";
 import { resetToolDesignRowStateForTests } from "../src/tool-design-rows.ts";
 import { resetToolDesignWiringForTests } from "../src/tool-design-wiring.ts";
-import type { CustomizeRow, InlineHelpers, SidebarSection } from "../src/types.ts";
+import type { CustomizeRow, InlineHelpers, SidebarSection, ToolDesignContext } from "../src/types.ts";
 import { createFakeHost } from "./fake-host.ts";
 import {
   BASH_DEFAULT_CALL,
@@ -528,25 +528,59 @@ test("T19: a result component is never rewritten, in every cell the shapes allow
   world.dispose();
 });
 
-test("T19 LIMIT: in the float cell an output row that starts with the mark sits where a heading sits", async () => {
-  const world = await startWorld("matrix-float-limit");
+test("T21/S12: in the float cell an output row that starts with the mark passes through byte for byte", async () => {
+  const world = await startWorld("matrix-float-result-prompt");
   await world.pick("bash heading");
   const resolved = world.resolver("bash", () =>
     fakeRenderers(BASH_MINIMAL_FLOAT_RESULT_PROMPT, BASH_MINIMAL_FLOAT_RESULT_PROMPT),
   );
   assert.ok(resolved !== undefined);
-  const output = mount(resolved, "renderCall").render(60);
 
   // The call component and the result component of a float card are drawn with the SAME chrome and
-  // the same row positions (padding row, then a `▎ ` row), and the bridge hands a design rows only —
-  // no call/result role. So `cat script.sh` printing a line that begins with `$ ` is the one shape
-  // this design cannot tell from a heading. It is documented in README.md and named in the task's
-  // risks; the width is still the host's, which is the part that cannot be silently wrong.
-  assert.equal(output.length, BASH_MINIMAL_FLOAT_RESULT_PROMPT.length);
+  // the same row positions (padding row, then a `▎ ` row), so `cat script.sh` printing a line that
+  // begins with `$ ` sits exactly where a heading sits. The bridge now says WHICH part it is drawing
+  // (`ctx.part`), so the design acts on the call alone and the host's output is what is drawn: no
+  // data is lost, no row is widened, and every byte — ANSI, padding, the echoed command — comes
+  // back as the host drew it.
+  const output = mount(resolved, "renderResult").render(60);
+
+  assert.deepEqual(output, [...BASH_MINIMAL_FLOAT_RESULT_PROMPT], "the result is the host's, row for row");
+  assert.equal(stripAnsi(output[1] ?? "").includes("$ echo hi"), true, "the echoed prompt survives");
   assertWidths(output, 60, "float prompt echo");
-  assert.equal(stripAnsi(output[0] ?? ""), stripAnsi(BASH_MINIMAL_FLOAT_RESULT_PROMPT[0] ?? ""));
-  assert.equal(stripAnsi(output[3] ?? ""), stripAnsi(BASH_MINIMAL_FLOAT_RESULT_PROMPT[3] ?? ""));
-  assert.equal(stripAnsi(output[1] ?? "").includes("$ echo hi"), false, "the documented limit");
+
+  // The SAME rows handed to the CALL renderer are still a heading: `part` decides, never the row's
+  // shape, so the design still does its job where a heading really is.
+  const call = mount(resolved, "renderCall").render(60);
+  assert.equal(call.length, BASH_MINIMAL_FLOAT_RESULT_PROMPT.length, "the frame keeps its row count");
+  assert.equal(stripAnsi(call[1] ?? "").includes("bash echo hi"), true, "the call is still headed");
+  assert.equal(stripAnsi(call[1] ?? "").includes("$ echo hi"), false, "and its mark is gone");
+  assertWidths(call, 60, "float prompt echo call");
+
+  world.dispose();
+});
+
+test("T21/S12: a context with no `part` (an older bridge) keeps the previous behaviour", async () => {
+  const world = await startWorld("matrix-no-part");
+  await world.pick("bash heading");
+
+  // A bridge published BEFORE this field hands a design `{ width, tool, theme }` and no `part` at all.
+  // This build's wrapper always sets it, so an older context cannot be produced through the bus: this
+  // is the one place the registered design is driven directly, and what it pins is the fallback — the
+  // part is UNKNOWN, never `result`, so the design keeps the behaviour it had before the field
+  // existed (the row grammar decides) instead of refusing every frame an older bridge hands it.
+  const design = snapshotToolDesigns("bash").find((entry) => entry.id === "bash-card.bash-heading");
+  assert.ok(design !== undefined, "the example's design is the one on the bus");
+  // SAFETY: the older bridge's context has no `part`; the published type says it is always set, so the
+  // older shape is spelled on purpose here — that IS the case this test exists for.
+  const legacyContext = { width: 60, tool: "bash" } as ToolDesignContext;
+  const legacy = design.apply(BASH_MINIMAL_FLOAT_RESULT_PROMPT, legacyContext);
+
+  assert.equal(
+    stripAnsi(legacy[1] ?? "").includes("bash echo hi"),
+    true,
+    "with no part the row grammar still decides, exactly as before",
+  );
+  assertWidths(legacy, 60, "no part");
 
   world.dispose();
 });

@@ -555,7 +555,7 @@ test("T8: a design for another tool applies to that tool only", () => {
   ]);
 });
 
-test("T8: the design receives the width the host asked for, its tool and the host's theme", () => {
+test("T8/T20: the design receives the width the host asked for, its tool, the theme and the part", () => {
   const seen: ToolDesignContext[] = [];
   registerToolDesign({
     ...bashHeadingDesign,
@@ -572,8 +572,44 @@ test("T8: the design receives the width the host asked for, its tool and the hos
   renderThrough(resolved, "renderCall", 72);
   renderThrough(resolved, "renderResult", 41);
 
-  assert.deepEqual(seen[0], { width: 72, tool: "bash", theme: THEME });
-  assert.deepEqual(seen[1], { width: 41, tool: "bash", theme: THEME }, "the theme is the host's own");
+  // The two renderers are wrapped SEPARATELY and each says which half of the card it draws (S12): the
+  // host draws both with the same chrome, so the rows alone cannot tell a heading from output.
+  assert.deepEqual(seen[0], { width: 72, tool: "bash", theme: THEME, part: "call" });
+  assert.deepEqual(
+    seen[1],
+    { width: 41, tool: "bash", theme: THEME, part: "result" },
+    "the theme is the host's own, and the part is the renderer's own",
+  );
+});
+
+test("T20/S12: a design that ignores `part` draws exactly the rows it drew before the field existed", () => {
+  // Additive means additive: a design written against the older context keeps its own behaviour, and
+  // the field it never reads changes nothing about what reaches the screen.
+  const partBlind: ToolDesignRegistration = {
+    tool: "bash",
+    id: "loon.part-blind",
+    label: "part blind",
+    apply: (lines: readonly string[]): string[] => lines.map((line) => line.replace("bash", "BASH")),
+  };
+  registerToolDesign(partBlind);
+  setToolDesignSelection("bash", "loon.part-blind");
+  const { renderers } = bashRenderers();
+  const resolved = toolDesignResolver("bash", () => renderers);
+  assert.ok(resolved !== undefined);
+
+  // The same rewrite, byte for byte, in both renderers: the call's own rows and the result's own rows,
+  // edited by the one rule the design states and nothing else.
+  assert.deepEqual(renderThrough(resolved, "renderCall", 80).lines, [
+    "╭─ ✿ BASH card ───────────── ctrl+o ╮",
+    "│ \u001b[36m$ ls -la\u001b[0m                ",
+    "│ total 4                           ",
+    "╰───────────────────────────────────╯",
+  ]);
+  assert.deepEqual(renderThrough(resolved, "renderResult", 60).lines, [
+    "╭─ ✿ BASH ─╮",
+    "│ done",
+    "╰──────────╯",
+  ]);
 });
 
 test("T8: an apply that throws leaves the host's card intact and is reported ONCE", () => {

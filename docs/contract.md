@@ -1028,8 +1028,16 @@ api.registerToolDesign({
 
 `apply(lines, ctx)` receives the rows the HOST's own card produced — ANSI sequences, padding, the
 right-aligned hint, the frame's rails, everything — and returns the rows to draw. `ctx` is
-`{ width, tool, theme }`: the width the host asked its own component to render at, the tool name the
-design was declared for, and the host's opaque theme object.
+`{ width, tool, theme, part }`: the width the host asked its own component to render at, the tool name
+the design was declared for, the host's opaque theme object, and which half of the card this pass is
+drawing (`"call"` for `renderCall`, `"result"` for `renderResult`).
+
+**`part` is what tells the call from the result.** A card has two components and the host draws both
+with the same chrome, so the rows alone cannot distinguish a heading from output: under the `float`
+style a result body row that begins with `$ ` (a script echoing its commands) sits exactly where a
+heading sits. The bridge wraps the two renderers separately and sets `part` per renderer, so a design
+that must not touch the result returns it unchanged when `ctx.part === "result"` instead of guessing
+from drawn text. The field is additive: a design that never reads it behaves exactly as before.
 
 **The frame is the host's, so the card style is preserved by construction.** With `Card style` on
 `neon` the card is still neon, with `float` it is still float, because the chrome was drawn before the
@@ -1151,10 +1159,11 @@ wrappers, and why a plugin must never call `pi.registerToolRenderer` itself for 
   on the published object: an object published by a copy older than that surface passes the gate but
   lacks it, so a plugin that needs one checks `typeof api.registerCardStyle === "function"` (or
   `registerTransform`, `registerToolDesign`, `requestRepaint`) first.
-- A design receives ROWS and a width, never a renderer identity: the bus does not tell `apply`
-  whether it is looking at `renderCall` or `renderResult`. A design that keys on drawn text (like the
-  bash heading mark) has to accept that a result row which happens to begin with the same mark is
-  indistinguishable from the card's heading; the bridge adds no field for it.
+- A design receives ROWS, a width and the PART it is drawing (`call` or `result`), never a renderer
+  object and never the theme's shape. `part` is one of two literals; a design that ignores it is
+  byte-identical to one written before the field existed, and a context produced by an older copy of
+  the bridge carries no `part` at all — a design reads it as unknown (`ctx.part === "result"` is
+  simply false) and keeps working.
 - A transform is a per-frame pass, so a slow transform is a slow frame; the bridge isolates its
   failures and clips its width, and can bound nothing else. It sees lines, never tool metadata.
 - The API is released (`0.3.0`). The `v1` symbol is the compatibility boundary: a breaking

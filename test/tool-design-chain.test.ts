@@ -405,6 +405,46 @@ test("S10/T15: a throwing invalidate is reported, and the wrapped card still dra
 });
 
 // ---------------------------------------------------------------------------------------------
+// T20/S12 — the part of the card, on the ADOPTION path
+// ---------------------------------------------------------------------------------------------
+
+test("S12/T20: the adoption path hands the design the part it is drawing, on both renderers", () => {
+  const parts: string[] = [];
+  registerToolDesign({
+    ...bashHeadingDesign,
+    id: "loon.part-probe",
+    apply: (lines: readonly string[], ctx: ToolDesignContext): string[] => {
+      parts.push(ctx.part);
+      return [...lines];
+    },
+  });
+  setToolDesignSelection("bash", "loon.part-probe");
+
+  const card = mountCard({ toolName: "bash", toolDefinition: bashRenderers() });
+  // Adoption wraps the stored definition; the design runs when the host RENDERS the component.
+  assert.equal(adoptToolCards({ children: [card] }).adopted, 1);
+  card.render(80);
+  assert.deepEqual(parts, ["call"], "the adopted card's call renderer says `call`");
+
+  card.render(80);
+  assert.equal(parts.at(-1), "call", "every later call frame says `call` too");
+
+  // The SAME adopted definition's result renderer says `result`: one wrapper, two parts.
+  const renderResult = isRecord(card.toolDefinition) ? card.toolDefinition.renderResult : undefined;
+  assert.equal(typeof renderResult, "function", "the result renderer is carried over");
+  const component = (renderResult as (...args: unknown[]) => { render(width: number): string[] })(
+    { content: [] },
+    { expanded: false },
+    THEME,
+    { args: {} },
+  );
+  component.render(60);
+
+  assert.equal(parts.at(-1), "result", "the result renderer says `result`, never `call`");
+  assert.deepEqual([...new Set(parts)].sort(), ["call", "result"], "both parts reach the design");
+});
+
+// ---------------------------------------------------------------------------------------------
 // T16 — the report says which path ran, per tool
 // ---------------------------------------------------------------------------------------------
 

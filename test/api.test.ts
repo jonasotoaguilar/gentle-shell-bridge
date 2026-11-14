@@ -140,6 +140,7 @@ test("publishing stores one frozen, versioned API object at the stable symbol", 
     "registerCardStyle",
     "registerRows",
     "registerSection",
+    "registerTransform",
     "schema",
     "version",
   ]);

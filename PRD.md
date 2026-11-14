@@ -60,8 +60,9 @@ behind the adapter.
 | R13 | `registerCardStyle(style)` accepts `{ id, label, frame: { top, line, bottom }, preview?, order? }`, validates id/label/frame before storing, replaces in place on the same id, and returns a disposer that removes exactly that style. | `registerCardStyle`, frame contract | Implemented; validation, ordering, replacement and disposal are unit-tested, and the published-API path is exercised end to end |
 | R14 | A registered style joins the host's own `Card style` line (spliced in place, one coalesced line, the host's values untouched), with a `Bridge → card style` fallback line only when the host's line is not reachable; the selection is bridge-owned state, pressing a host value returns to native rendering, and a disposed style degrades to `native`/`missing`. | `bridge-card-style.json`, [docs/contract.md](docs/contract.md) §12 | Implemented; one bullet at a time, the way back, the fallback line and the missing-selection degrade are pinned against the fake host and reported by `/bridge-status` |
 | R15 | When a registered style is selected, the bridge repaints the conversation frames the host already drew — detection, title/hint extraction, one style at a time, width clipping, and a pass-through for `native`, for a missing selection and for any throw — and reports the frame outcome. | [docs/architecture.md](docs/architecture.md) §14 | Implemented; proven against a fake conversation built from real `shell-card.ts` output, plus the end-to-end suite through the public API. A downstream post-processor can override the frame, which `/bridge-status` states |
+| R16 | `registerTransform(transform)` accepts `{ id, order?, transform(lines, ctx) }`, validates the id and the function before storing, replaces in place on the same id and returns a disposer that removes exactly that transform; the conversation wrapper runs the card-style repaint first and then every transform in order, each receiving the previous output, clipping the result to the host width, isolating a throw or a non-lines return to that transform, and returning the host's own array when nothing changed; `/bridge-status` lists the pipeline in order with the last frame's outcome per transform. | `registerTransform`, [docs/contract.md](docs/contract.md) §13 | Implemented; ordering, replacement, disposal, identity, clipping, throw isolation and the status block are unit-tested, and the worked example's toggle is proven to restyle cards already on screen, with past and new cards byte-identical |
 
-Fifteen requirements are implemented and covered by the 328-test `node --test` suite, 26 of them
+Sixteen requirements are implemented and covered by the 367-test `node --test` suite, 26 of them
 end to end through the public API and the real extension entry. What is proven and what is not:
 
 - **Proven against a fake host.** The row side drives a fake menu host that models
@@ -70,7 +71,10 @@ end to end through the public API and the real extension entry. What is proven a
 - **Proven against a fake conversation.** The card-style side drives a fake transcript built from
   real `gentle-shell/lib/shell-card.ts` output at a fixed width, plus a fake `tui` that models Pi's
   documented tree: detection, repaint, clipping, the pass-through paths, the disposal degrade, the
-  host line splice, the fallback line and the generation guard.
+  host line splice, the fallback line and the generation guard. The transform pipeline drives the
+  same conversation through the real wrapper: ordering, identity, clipping, per-transform throw
+  isolation and the `/bridge-status` block — plus the worked example's `Bash rendering` toggle, end
+  to end, where a card drawn before the switch and one drawn after it come out byte-identical.
 - **Proven against a fake rail.** The sidebar side drives a fake terminal that models
   `lib/shell-sidebar.ts`'s state symbol and `parts` map plus the layout's card frame
   (`lib/shell-sidebar-layout.ts:35-44,392-410`): section cards, ordering, the `Sections` rows,
@@ -98,6 +102,9 @@ end to end through the public API and the real extension entry. What is proven a
 - A plugin can add a card style with one call: the value appears on the host's own `Card style`
   line, selecting it repaints every card the host drew, and selecting a host value or losing the
   plugin returns the conversation to the host's rendering.
+- A plugin can apply a rendering choice to the WHOLE conversation with one call: the choice reaches
+  cards drawn before the switch, not only the next one, and the worked example proves that a bash
+  card drawn before and one drawn after are byte-identical.
 - The reference probe's observed result reproduces through the package against the fake host
   that models the real call chain: a `Cards` category showing the injected line
   `Card bash   ● activity ○ output`. It has not yet been re-run in the real TUI through the

@@ -234,13 +234,13 @@ diagnostics stop reporting `hook`.
 
 | Module | Owns |
 | --- | --- |
-| `src/index.ts` | the plugin-facing API: `registerRows`, `registerSection`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, `bridgeApi`, `isBridgeApi`, types; importing it also publishes the handshake through `./api.ts` |
+| `src/index.ts` | the plugin-facing API: `registerRows`, `registerSection`, `registerCardStyle`, `registerTransform`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, `bridgeApi`, `isBridgeApi`, types; importing it also publishes the handshake through `./api.ts` |
 | `src/api.ts` | the runtime handshake: the one `Symbol.for` slot, the frozen published object, the shape gate, `bridgeApi()` and publication |
 | `src/extension.ts` | the Pi entry from `pi.extensions`: `session_start` arming (rows + sidebar widget), the `Sections` provider, and the `/bridge-status` command |
 | `src/arm.ts` | backend selection and the arm result |
 | `src/capture.ts` | the single `Array.prototype.map` patch and the captured array |
 | `src/hook.ts` | the host-registry probe and the one fan-out provider |
-| `src/bus.ts` | the `globalThis` provider list and its ordered snapshot, plus the section registry |
+| `src/bus.ts` | the `globalThis` provider list and its ordered snapshot, plus the section, card-style and transform registries |
 | `src/rows.ts` | the one row builder both backends call, with per-provider isolation |
 | `src/sidebar.ts` | the rail interception: the state symbol, the patched `parts` map, the rail wrapper |
 | `src/sidebar-render.ts` | the section renderer: card rows and groups per frame, clipping, failures |
@@ -248,6 +248,7 @@ diagnostics stop reporting `hook`.
 | `src/visibility.ts` | bridge-owned section visibility in the namespaced store |
 | `src/store.ts` | `createStore`, the namespaced path and the atomic write |
 | `src/status.ts` | the `/bridge-status` text |
+| `src/transform-pipeline.ts` | the ordered per-frame transform pass: width clipping, throw isolation and the last frame's outcomes |
 | `src/config.ts`, `src/types.ts` | config-home resolution; the row, provider and context types |
 
 Because both backends call `src/rows.ts`, a plugin sees the same `registerRows` semantics on
@@ -446,6 +447,53 @@ re-frames — bash in particular. The bridge cannot prevent that, does not try, 
 
 Rejected in [state.md](state.md) (§Alternatives rejected, F/G). The package exists because the host
 does not take every change; a design that waits for one is not a bridge.
+
+## 15. The transform pipeline
+
+The fourth surface. §14 explains how the bridge reaches the conversation component; this section
+is what that wrapper does with the rows it intercepts, now that it serves more than one feature.
+
+### One wrapper, an ordered pipeline inside it
+
+`src/card-style-wiring.ts` installs a single `render(width)` wrapper on the conversation component.
+Inside it the host's own render runs first (a host failure stays the host's), then:
+
+1. `transformCardLines` (`src/card-style-transform.ts`) repaints the selected card style, or returns
+   the host's array unchanged when there is nothing to do;
+2. `applyTransforms` (`src/transform-pipeline.ts`) runs every registered transform in order, handing
+   each one the previous output and clipping what comes back to the width the host passed;
+3. the result goes to Pi.
+
+With no style selected and no transform registered, both steps return their input, so the host's own
+array instance reaches Pi: the identity the card styles already promised is now the whole pipeline's
+promise. The wrapper keeps the generation guard and the own-property marker unchanged, so a rebind, a
+second `session_start` or a second package copy still resolve to `already-wrapped` instead of
+stacking pipelines.
+
+### Why the loop belongs to the bridge, not to each plugin
+
+`pi.registerToolRenderer` resolves when a tool row is BUILT (`docs/extensions.md`, "Custom
+Rendering"), so a rendering choice made through that slot can only reach the next row. Pi exposes no
+API to repaint rows that are already drawn, and the component that renders them is not reachable
+from a row's `action()`. The bridge already wraps that component for card styles, so the transform
+layer is a widening of a proven path rather than a new interception: one loop, one place to clip, one
+place to isolate a throw, and one place `/bridge-status` reads.
+
+That is also why the worked example retired its `pi.registerToolRenderer` resolver: a resolver draws
+its own component from the tool's arguments, while a transform can only restyle what the host
+already drew. Keeping both would have meant two different pictures of the same card — the transform
+for history, the resolver for new rows — which is exactly the asymmetry the feature exists to remove.
+The transform is the single owner there, and `test/example-transform.test.ts` proves that a card
+drawn before the switch and one drawn after it are byte-identical.
+
+### Ordering, isolation and the width
+
+`snapshotTransforms()` decides the sequence once per frame, with the same rule as sections and card
+styles: an explicit `order` first, ascending, then registration order. A transform that throws, or
+that returns something which is not an array of strings, is skipped for that frame — the lines in
+force are kept and the remaining transforms still run — and the failure is recorded with its id and
+message for `/bridge-status`. Whatever comes back is clipped with `clipToWidth`, so a transform
+cannot make the frame wider than the terminal.
 
 ## Limits
 

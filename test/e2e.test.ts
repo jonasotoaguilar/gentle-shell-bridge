@@ -28,6 +28,8 @@ import {
   type Store,
   type StoreProblem,
   type StoreProblemKind,
+  type TransformContext,
+  type TranscriptTransform,
 } from "../src/index.ts";
 // The real Pi entry: armed and commanded exactly as Pi loads it.
 import gentleShellBridge, {
@@ -311,6 +313,7 @@ test("the public entry exports exactly the contract surface and no test seams", 
     "registerCardStyle",
     "registerRows",
     "registerSection",
+    "registerTransform",
   ]);
   for (const seam of [
     "installCardStyleTransform",
@@ -346,6 +349,11 @@ test("the public entry exports exactly the contract surface and no test seams", 
     "resetBridgeApiForTests",
     "publishBridgeApi",
     "BRIDGE_API_KEY",
+    "snapshotTransforms",
+    "resetTransformsForTests",
+    "applyTransforms",
+    "getTransformFrameOutcomes",
+    "resetTransformPipelineForTests",
   ]) {
     assert.equal(seam in publicApi, false, `${seam} must not be public`);
   }
@@ -390,9 +398,23 @@ test("the documented values and types are reachable from the public entry", () =
     defaultVisible: true,
     order: 1,
   };
+  // The transform surface: one function over the rows, plus the context it receives.
+  const transform: TranscriptTransform = {
+    id: "api.transform",
+    order: 2,
+    transform: (lines: readonly string[], transformCtx: TransformContext) => [
+      ...lines,
+      String(transformCtx.width),
+    ],
+  };
 
   assert.equal(provider.rows(context).length, 0);
   assert.equal(typeof publicApi.registerCardStyle, "function", "the entry exports the registration");
+  assert.equal(
+    typeof publicApi.registerTransform,
+    "function",
+    "and the transcript-transform registration",
+  );
   assert.equal(cardStyle.frame.top({ width: 1, title: "t" }), "t");
   assert.equal(cardStyle.frame.line({ text: "x", width: 1, first: true }), "xtrue");
   assert.equal(cardStyle.frame.bottom({ width: 7 }), "7");
@@ -406,5 +428,6 @@ test("the documented values and types are reachable from the public entry", () =
   assert.equal(STORE_SCHEMA_VERSION, 1);
   assert.equal(section.title, "API");
   assert.equal(section.lines(context).length, 1);
-  assert.equal(VERSION, "0.2.0");
+  assert.deepEqual(transform.transform(["a"], { width: 3 }), ["a", "3"]);
+  assert.equal(VERSION, "0.3.0");
 });

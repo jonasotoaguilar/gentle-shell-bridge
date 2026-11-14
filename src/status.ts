@@ -9,7 +9,7 @@
  * fixed (docs/contract.md §6).
  */
 
-import { snapshotCardStyles, snapshotProviders, snapshotSections } from "./bus.ts";
+import { snapshotCardStyles, snapshotProviders, snapshotSections, snapshotTransforms } from "./bus.ts";
 import {
   CARD_STYLE_ROWS_PROVIDER_ID,
   cardStyleRowMode,
@@ -26,6 +26,7 @@ import { resolveCardStyleSelection } from "./card-styles.ts";
 import { getCaptureDiagnostics, type CaptureOutcome } from "./capture.ts";
 import { getHookDiagnostics } from "./hook.ts";
 import { snapshotNotices, type NoticeLevel } from "./notices.ts";
+import { getTransformFrameOutcomes } from "./transform-pipeline.ts";
 import { getLastRowBuild, type RowBuildRecord } from "./rows.ts";
 import {
   getSidebarDiagnostics,
@@ -112,6 +113,17 @@ export interface StatusCardStyles {
   failures: CardStyleTransformFailure[];
 }
 
+/** One registered transform, as `/bridge-status` lists it: in pipeline order. */
+export interface StatusTransformEntry {
+  id: string;
+  /** The position's source: an explicit integer, or registration order when absent. */
+  order: number | "registration";
+  /** What the LAST frame did with it; `not run` when no frame has reached it yet. */
+  outcome: "applied" | "skipped" | "failed" | "not run";
+  /** Only when `outcome` is `failed`: the transform's own message, verbatim. */
+  message?: string;
+}
+
 export interface StatusSnapshot {
   providers: StatusProviderEntry[];
   backend: StatusBackend;
@@ -143,6 +155,12 @@ export interface StatusSnapshot {
    * selection native, no transform attempt and no frame — so a row-only session keeps its output.
    */
   cardStyles?: StatusCardStyles;
+  /**
+   * Every registered transcript transform in pipeline order, with the last frame's outcome. Absent
+   * when none is registered, so a session that never used the pipeline keeps its historical output
+   * byte for byte.
+   */
+  transforms?: StatusTransformEntry[];
 }
 
 /**
@@ -220,6 +238,10 @@ export function collectStatus(): StatusSnapshot {
   }
   const cardStyles = describeCardStyles();
   if (cardStyles !== undefined) snapshot.cardStyles = cardStyles;
+  // The transform pipeline, in the order the wrapper runs it. Nothing here calls a transform: the
+  // outcomes are the ones the last frame already recorded.
+  const transforms = describeTransforms();
+  if (transforms !== undefined) snapshot.transforms = transforms;
   const sidebarEntry = describeSidebar(sidebarDiagnostics);
   // The sidebar line is worth a line only when it explains something: a registered section that may
   // not be appearing, or a rail that IS intercepted. A row-only session with no rail keeps the
@@ -269,6 +291,31 @@ function describeCardStyles(): StatusCardStyles | undefined {
     wiring,
     failures,
   };
+}
+
+/**
+ * The transform block, or `undefined` when this process registered no transform at all.
+ *
+ * The guard is what keeps a session that never used the pipeline byte-identical: the block appears
+ * only when a transform exists, and the outcomes are the ones the last frame recorded (a transform
+ * registered after that frame reads `not run` rather than borrowing another one's answer).
+ */
+function describeTransforms(): StatusTransformEntry[] | undefined {
+  const registered = snapshotTransforms();
+  if (registered.length === 0) return undefined;
+  const frame = new Map(getTransformFrameOutcomes().map((outcome) => [outcome.id, outcome]));
+  return registered.map((transform) => {
+    const outcome = frame.get(transform.id);
+    return {
+      id: transform.id,
+      order:
+        typeof transform.order === "number" && Number.isFinite(transform.order)
+          ? transform.order
+          : "registration",
+      outcome: outcome?.status ?? "not run",
+      ...(outcome?.message === undefined ? {} : { message: outcome.message }),
+    };
+  });
 }
 
 function formatCardSelection(selection: StatusCardStyleSelection): string {
@@ -505,6 +552,18 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
       "card style note: a downstream post-processor (e.g. cinlodev) can strip or override this " +
         "frame; the bridge cannot prevent it.",
     );
+  }
+
+  if (snapshot.transforms !== undefined) {
+    lines.push(`transforms: ${snapshot.transforms.length} registered`);
+    for (const entry of snapshot.transforms) {
+      const order = entry.order === "registration" ? "registration order" : `order ${entry.order}`;
+      const outcome =
+        entry.outcome === "failed"
+          ? `failed (${entry.message ?? "no message"})`
+          : entry.outcome;
+      lines.push(`  - ${entry.id} (${order}): ${outcome}`);
+    }
   }
 
   if (snapshot.notices !== undefined) {

@@ -20,7 +20,7 @@ import {
   publishBridgeApi,
   resetBridgeApiForTests,
 } from "../src/api.ts";
-import { resetBusForTests, resetSectionsForTests, snapshotProviders, snapshotSections } from "../src/bus.ts";
+import { resetBusForTests, resetSectionsForTests, snapshotProviders, snapshotSections, snapshotTransforms } from "../src/bus.ts";
 import { resetStoreStateForTests } from "../src/store.ts";
 import type { CustomizeRow, InlineHelpers } from "../src/types.ts";
 
@@ -158,7 +158,11 @@ test("with no bridge installed the example adds nothing and says so once", async
 
   assert.deepEqual(captured.writes, [], "nothing lands in the terminal");
   assert.equal(sessionHandlers.length, 1, "a session_start handler carries the answer");
-  assert.equal(registrations(), 1, "the bash renderer is still claimed: that half needs no bridge");
+  assert.equal(
+    registrations(),
+    0,
+    "the example claims no tool renderer: the bridge transform is the single owner",
+  );
 
   const { ui, calls } = notifySurface();
   sessionHandlers[0]({}, { hasUI: true, ui });
@@ -231,7 +235,7 @@ test("the example's session handler does nothing without a UI, then registers on
   assert.ok(snapshotSections().some((registered) => registered.id === "bash-card.status"));
 });
 
-test("a Pi without registerToolRenderer reports it through notify, not the terminal", async () => {
+test("a Pi without registerToolRenderer is enough: the example claims no renderer slot", async () => {
   publishBridgeApi();
   const sessionHandlers: SessionHandler[] = [];
   const pi: FakePi = {
@@ -250,11 +254,15 @@ test("a Pi without registerToolRenderer reports it through notify, not the termi
   assert.deepEqual(captured.writes, []);
   const { ui, calls } = notifySurface();
   sessionHandlers[0]({}, { hasUI: true, ui });
-  assert.equal(calls.length, 1);
-  assert.match(calls[0][0], /no pi\.registerToolRenderer/u);
+  assert.deepEqual(calls, [], "no notice: the example needs no renderer slot to render bash");
   assert.ok(
     providerById("bash-card-example.rendering") !== undefined,
-    "the bridge half still registers",
+    "the bridge surfaces register on any Pi",
+  );
+  assert.deepEqual(
+    snapshotTransforms().map((transform) => transform.id),
+    ["bash-card-example.bash-cards"],
+    "and the toggle's rendering is a transform, not a resolver",
   );
 });
 
@@ -300,7 +308,7 @@ test("with the API present at session_start the example registers rows, store an
   assert.ok(exampleSection !== undefined, "the example's section registered itself");
   assert.equal(exampleSection.meta?.(sectionContext()), "tool", "and reads the value just written");
   const lines = exampleSection.lines(sectionContext());
-  assert.deepEqual(lines, ["rendering  tool", "renderer   registered"]);
+  assert.deepEqual(lines, ["rendering  tool", "transform  registered"]);
 });
 
 test("two session_start events leave one provider and one section, not two", async () => {

@@ -1,20 +1,33 @@
 /**
  * Worked consumer of `gentle-shell-bridge`: ONE Pi extension that demonstrates every surface the
- * package publishes — a row toggle, a sidebar section and a card style — plus one Pi-native
- * renderer of its own.
+ * package publishes — a row toggle, a sidebar section, a card style and a transcript transform.
  *
- * A. Its own bash rendering — pure Pi, no bridge. `pi.registerToolRenderer` offers this extension
- *    the chance to draw `bash` calls itself. It only takes the offer while the toggle below
- *    selects `tool`; on `default` it returns `next()` untouched, so gentle-shell's or Pi's own
- *    rendering applies and no second frame is drawn around it.
+ * A. The bash rendering — through the bridge, as a TRANSFORM. `registerTransform` receives the
+ *    conversation's rows on EVERY frame and returns the rows to draw, so the toggle below restyles
+ *    the bash cards that are already on screen, not only the ones built after the switch. That is
+ *    the whole point: `pi.registerToolRenderer` resolves once, when a tool row is BUILT, so a
+ *    rendering choice made there can never reach history — the defect this file used to document
+ *    instead of fixing. The transform recognises a bash card by what the host already produced (a
+ *    `float` card whose heading is `bash`) and rewrites it with this file's chrome:
+ *
+ *    ```text
+ *    ▸ bash
+ *    ▸ ls -1
+ *    ▸
+ *    ```
+ *
+ *    `default` returns the lines untouched, so the host's card is exactly the host's card;
+ *    `tool` rewrites every bash card in the frame. One owner, one look: this file registers no
+ *    tool renderer at all.
  *
  * B. The toggle row — through the bridge. `registerRows` contributes two consecutive `Cards` rows
  *    sharing one `choice.setting`, and `createStore("bash-card-example")` persists the choice, so
- *    the row and the renderer read the same value.
+ *    the row and the transform read the same value. It is the only control: `default` and `tool`
+ *    are the two looks, and no second setting is needed to reach them.
  *
  * C. The sidebar section — through the bridge too. `registerSection` adds a `BASH CARD` card to
  *    gentle-shell's fullscreen sidebar, drawn by the host's own frame, whose body reports the mode
- *    and whether this load actually wired the bash renderer. The same registration gives it a
+ *    and whether this load actually registered its transform. The same registration gives it a
  *    `Sections` toggle in `/gentle:customize`, so the card can be hidden without the plugin writing
  *    a row, a setting or a store for it.
  *
@@ -22,14 +35,16 @@
  *    the `Card style` line `/gentle:customize` already draws: `○ neon ○ float ○ plain`. Choosing it
  *    makes the bridge repaint every conversation card the host drew with this file's frame — a
  *    single gutter character per row, the heading as plain text, no box — and choosing `neon` or
- *    `float` puts the host's own rendering back. Nothing here parses a card: the bridge measures,
+ *    `float` puts the host's own rendering back. It is a style for TOOL cards in general: a `read`
+ *    card is repainted exactly like a `bash` one. Nothing here parses a card: the bridge measures,
  *    extracts the heading and the hint, and hands them over.
  *
- * A bridge that publishes an incompatible API is treated as absent: B, C and D register nothing and
- * the example says so once through `ctx.ui.notify`. A bridge that publishes the row and section
- * surfaces but not `registerCardStyle` (an older 0.1.x object) keeps B and C on the line and skips
- * D silently: the member is optional, and this file must not warn about a surface the bridge never
- * promised.
+ * A bridge that publishes an incompatible API is treated as absent: B, C, D and A register nothing
+ * and the example says so once through `ctx.ui.notify`. A bridge that publishes the row and section
+ * surfaces but not `registerCardStyle` (an older object) keeps B and C on the line and skips D
+ * silently: the member is optional, and this file must not warn about a surface the bridge never
+ * promised. The same rule applies to `registerTransform`: absent means "keep the other surfaces and
+ * stay quiet", and the section says `transform  absent` instead.
  *
  * Loading: copy this file into `~/.pi/agent/extensions/` (or point Pi's `packages` entry at this
  * repository) and `/reload`. The toggle defaults to `default`, so installing the example changes
@@ -41,20 +56,13 @@
  * moment the symbol's presence is the complete answer: Pi finishes loading every module before it
  * fires that event, so the bridge either published already or is not installed.
  *
- * Diagnostics stay inside Pi: nothing here writes to stdout/stderr. A message (no bridge, no
- * renderer slot) is buffered and delivered through `ctx.ui.notify` on `session_start`, which is
- * the only channel Pi renders in its own report.
- *
- * Stale rows: the choice is read when a bash row is BUILT, not per frame, so switching it applies
- * to the next bash call. Rows already on screen keep the rendering they were built with; `Esc` or
- * scrolling does not re-render history. Pi exposes no extension API that repaints already-drawn
- * tool rows — `tui.requestRender()` is injected into a component created through `ctx.ui.custom`,
- * not into a customize-row `action()` — so the example documents this instead of inventing one.
+ * Diagnostics stay inside Pi: nothing here writes to stdout/stderr. A message (no bridge) is
+ * buffered and delivered through `ctx.ui.notify` on `session_start`, which is the only channel Pi
+ * renders in its own report.
  *
  * Nothing here imports `@earendil-works/pi-coding-agent` or `@earendil-works/pi-tui`: this
  * repository depends on neither, so every host shape this file touches is declared structurally
- * below, the way `src/extension.ts` declares the extension API it uses. The renderer returns plain
- * strings, which is all a `Component` is required to do.
+ * below, the way `src/extension.ts` declares the extension API it uses.
  */
 
 // ---------------------------------------------------------------------------------------------
@@ -63,7 +71,7 @@
 
 /** Store file: `<gentle config home>/gentle-shell-bridge/bash-card-example.json`. */
 const PLUGIN_ID = "bash-card-example";
-/** The single setting key, read by the renderer resolver and by the row's `current()`. */
+/** The single setting key, read by the transform and by the row's `current()`. */
 const SETTING_KEY = "bashRendering";
 const MODE_DEFAULT = "default";
 const MODE_TOOL = "tool";
@@ -79,62 +87,9 @@ const SETTING_NAME = "Bash card → Bash rendering";
 /** A category the host already renders; the bridge cannot create new ones (`docs/contract.md`, Limits). */
 const ROW_CATEGORY = "Cards";
 
-/** Command rows a collapsed card may spend, so a huge heredoc cannot fill the transcript. */
-const COMMAND_LINE_LIMIT = 6;
-/** Columns of indent on a command row that continues below the `bash $ ` head. */
-const CONTINUATION_INDENT = 2;
-/** Result rows a collapsed card keeps. */
-const RESULT_LINE_LIMIT = 8;
-/** Result rows an expanded card keeps; still capped, only less tightly. */
-const RESULT_EXPANDED_LINE_LIMIT = 40;
-
 // ---------------------------------------------------------------------------------------------
 // Host shapes, declared structurally
 // ---------------------------------------------------------------------------------------------
-
-/** `docs/extensions.md`: a renderer slot returns a Component. */
-interface ComponentLike {
-  render(width: number): string[];
-  invalidate(): void;
-}
-
-/** The part of Pi's theme this file paints with. */
-interface ThemeLike {
-  fg?(color: string, text: string): string;
-  bold?(text: string): string;
-}
-
-/** The part of the render context this file reads (`docs/extensions.md`, "Custom Rendering"). */
-interface RenderContextLike {
-  /** The component this slot returned last frame, so one instance can own one frame cache. */
-  lastComponent?: unknown;
-  /** Current call arguments; read them here instead of copying them into `context.state`. */
-  args?: unknown;
-  expanded?: boolean;
-  isPartial?: boolean;
-  isError?: boolean;
-}
-
-/** The second argument of a `renderResult` slot. */
-interface RenderOptionsLike {
-  expanded?: boolean;
-  isPartial?: boolean;
-}
-
-type RenderCallLike = (args: unknown, theme: ThemeLike, context?: RenderContextLike) => ComponentLike;
-type RenderResultLike = (result: unknown, options: RenderOptionsLike, theme: ThemeLike, context?: RenderContextLike) => ComponentLike;
-
-/**
- * The renderer set Pi resolves for one tool. `next()` returns this, and this example passes it
- * straight back untouched when it is not drawing the card itself.
- */
-interface RendererSetLike {
-  renderShell?: "self" | "default";
-  renderCall?: RenderCallLike;
-  renderResult?: RenderResultLike;
-}
-
-type ToolRendererResolverLike = (toolName: string, next: () => RendererSetLike | undefined) => RendererSetLike | undefined;
 
 interface BridgeStoreLike {
   get<T>(key: string, fallback: T): T;
@@ -210,12 +165,32 @@ interface CardStyleLike {
 }
 
 /**
+ * What a transform receives on every frame (`src/types.ts`, `TransformContext`): the width the host
+ * rendered the conversation at, which is also the widest row it may return — the bridge clips
+ * anything wider before the frame reaches the screen.
+ */
+interface TransformContextLike {
+  width: number;
+}
+
+/**
+ * A transcript transform (`src/types.ts`, `TranscriptTransform`). It receives the rows the host (and
+ * any earlier transform) produced and returns the rows to draw; it never touches Pi, and a throw
+ * costs only this transform's frame.
+ */
+interface TransformLike {
+  id: string;
+  order?: number;
+  transform(lines: readonly string[], ctx: TransformContextLike): readonly string[];
+}
+
+/**
  * The API object `gentle-shell-bridge` publishes (`src/api.ts`, `BridgeApi`): the members this
  * example calls, structurally. Nothing here imports the package, so the shape has to be declared.
  *
- * `registerCardStyle` is OPTIONAL by contract: the published object is first-wins, so a process
- * running an older copy can hand back a v1 object without it. A consumer gates with
- * `typeof api.registerCardStyle === "function"` and keeps the other surfaces working.
+ * `registerCardStyle` and `registerTransform` are OPTIONAL by contract: the published object is
+ * first-wins, so a process running an older copy can hand back a v1 object without them. A consumer
+ * gates with `typeof api.registerTransform === "function"` and keeps the other surfaces working.
  */
 interface BridgeApiLike {
   readonly schema: string;
@@ -223,6 +198,7 @@ interface BridgeApiLike {
   registerRows(provider: RowProviderLike): () => void;
   registerSection(section: SidebarSectionLike): () => void;
   registerCardStyle?(style: CardStyleLike): () => void;
+  registerTransform?(transform: TransformLike): () => void;
   createStore(pluginId: string): BridgeStoreLike;
 }
 
@@ -239,13 +215,12 @@ interface NoticeUiLike {
 
 /** The part of `ExtensionAPI` this extension uses. */
 interface ExtensionApiLike {
-  registerToolRenderer?(resolver: ToolRendererResolverLike): void;
   /** `session_start` carries the UI context, so this is where a buffered notice is delivered. */
   on?(event: "session_start", handler: (event: unknown, ctx: SessionContextLike) => void): void;
 }
 
 // ---------------------------------------------------------------------------------------------
-// Text layout: width is the only budget a Component gets
+// Text layout: width is the only budget a frame gets
 // ---------------------------------------------------------------------------------------------
 
 const ANSI_SEQUENCE = /\u001b\[[0-9;]*m/g;
@@ -263,538 +238,13 @@ function clipLine(text: string, width: number): string {
   return `${Array.from(text).slice(0, width - 1).join("")}…`;
 }
 
-/**
- * Breaks text into rows, preferring spaces. The first row gets `firstRoom`, every later row
- * `restRoom`. Clipping a command would lose it in a narrow terminal, so the command wraps instead
- * and every column stays readable.
- */
-function flowRows(text: string, firstRoom: number, restRoom: number): string[] {
-  const rooms = [Math.max(1, firstRoom), Math.max(1, restRoom)];
-  const rows: string[] = [];
-  let atFirstRow = true;
-  for (const paragraph of text.split("\n")) {
-    let rest = paragraph;
-    if (rest === "") {
-      rows.push("");
-      atFirstRow = false;
-      continue;
-    }
-    while (visibleWidth(rest) > rooms[atFirstRow ? 0 : 1]) {
-      const room = rooms[atFirstRow ? 0 : 1];
-      const characters = Array.from(rest);
-      const slice = characters.slice(0, room).join("");
-      const space = slice.lastIndexOf(" ");
-      const cut = space > 0 ? space : room;
-      rows.push(characters.slice(0, cut).join("").replace(/\s+$/, ""));
-      rest = characters.slice(cut).join("").replace(/^\s+/, "");
-      atFirstRow = false;
-    }
-    rows.push(rest);
-    atFirstRow = false;
-  }
-  return rows;
-}
-
-/** Paint one line; a theme without the colour, or one that throws, leaves the text as it is. */
-function paint(theme: ThemeLike, color: string, text: string): string {
-  try {
-    const fg = theme?.fg;
-    return typeof fg === "function" ? fg.call(theme, color, text) : text;
-  } catch {
-    return text;
-  }
-}
-
-function emphasise(theme: ThemeLike, text: string): string {
-  try {
-    const bold = theme?.bold;
-    return typeof bold === "function" ? bold.call(theme, text) : text;
-  } catch {
-    return text;
-  }
+/** The row the user sees, without SGR: detection reads text, never paint. */
+function plainText(line: string): string {
+  return line.replace(ANSI_SEQUENCE, "");
 }
 
 // ---------------------------------------------------------------------------------------------
-// Components. Every `render` is total: a shape it cannot draw degrades to one plain line instead
-// of throwing into Pi's frame loop.
-// ---------------------------------------------------------------------------------------------
-
-/**
- * One unremarkable line, optionally painted. The degrade path for a shape this example cannot
- * draw, and an empty body for a slot with nothing safe to show.
- */
-class PlainLine implements ComponentLike {
-  private readonly text: string;
-  private readonly theme: ThemeLike;
-  private readonly color: string | undefined;
-
-  constructor(text: string, theme: ThemeLike, color?: string) {
-    this.text = text;
-    this.theme = theme;
-    this.color = color;
-  }
-
-  render(width: number): string[] {
-    try {
-      if (width <= 0 || this.text === "") return [];
-      const line = clipLine(this.text, width);
-      return [this.color === undefined ? line : paint(this.theme, this.color, line)];
-    } catch {
-      return [];
-    }
-  }
-
-  invalidate(): void {}
-}
-
-/**
- * The call slot: `bash $ <command>` on the first row, the rest of the command indented below it.
- * The frame cache is slot-local and lives on this instance, which is what the docs recommend
- * (`docs/extensions.md`: "Keep slot-local caches on the returned component instance").
- */
-class BashCallCard implements ComponentLike {
-  private command: string;
-  private theme: ThemeLike;
-  private frame: { width: number; command: string; theme: ThemeLike; lines: string[] } | undefined;
-
-  constructor(command: string, theme: ThemeLike) {
-    this.command = command;
-    this.theme = theme;
-  }
-
-  /** Update the instance Pi handed back through `context.lastComponent` instead of rebuilding it. */
-  update(command: string, theme: ThemeLike): void {
-    if (command === this.command && theme === this.theme) return;
-    this.command = command;
-    this.theme = theme;
-    this.frame = undefined;
-  }
-
-  invalidate(): void {
-    this.frame = undefined;
-  }
-
-  render(width: number): string[] {
-    try {
-      const target = Math.max(0, Math.floor(width));
-      if (target === 0) return [];
-      const cached = this.frame;
-      if (
-        cached !== undefined &&
-        cached.width === target &&
-        cached.command === this.command &&
-        cached.theme === this.theme
-      ) {
-        return cached.lines;
-      }
-      const lines = this.build(target);
-      this.frame = { width: target, command: this.command, theme: this.theme, lines };
-      return lines;
-    } catch {
-      // Never break the frame loop over a card that cannot be drawn.
-      return ["bash"];
-    }
-  }
-
-  private build(width: number): string[] {
-    const title = emphasise(this.theme, clipLine("bash", width));
-    const command = this.command.replace(/\s+$/, "");
-    if (command === "") return [title];
-
-    const head = `${title} ${paint(this.theme, "muted", "$")}`;
-    const headWidth = visibleWidth(head) + 1; // the single space before the command
-    const restRoom = Math.max(1, width - CONTINUATION_INDENT);
-    const headRoom = width - headWidth;
-    // The head row keeps the command for as long as one column of it fits there; any narrower
-    // and the prompt takes the row alone, because half a command behind it says less.
-    const shareHead = headRoom >= 1;
-
-    let rows = shareHead
-      ? flowRows(command, headRoom, restRoom)
-      : flowRows(command, restRoom, restRoom);
-    if (rows.length > COMMAND_LINE_LIMIT) {
-      const kept = rows.slice(0, COMMAND_LINE_LIMIT - 1);
-      const folded = rows.length - kept.length;
-      rows = [...kept, `… +${folded} more line${folded === 1 ? "" : "s"}`];
-    }
-
-    // Clipped, not wrapped: a continuation row is already the wrap, and the fold marker can be
-    // wider than the room it has.
-    const indent = (row: string): string => paint(this.theme, "dim", clipLine(`${" ".repeat(CONTINUATION_INDENT)}${row}`, width));
-    if (!shareHead) {
-      return [clipLine(head, width), ...rows.map(indent)];
-    }
-    const [first, ...rest] = rows;
-    if (first === "") return [clipLine(head, width), ...rest.map(indent)];
-    return [`${head} ${paint(this.theme, "toolOutput", clipLine(first, headRoom))}`, ...rest.map(indent)];
-  }
-}
-
-/**
- * The result slot: the body follows the call, width-clipped and height-capped. Collapsed keeps the
- * tail, because the end of bash output is the part that answers the command.
- */
-class BashResultCard implements ComponentLike {
-  private text: string;
-  private expanded: boolean;
-  private isPartial: boolean;
-  private isError: boolean;
-  private theme: ThemeLike;
-  private frame:
-    | { width: number; text: string; expanded: boolean; isPartial: boolean; isError: boolean; theme: ThemeLike; lines: string[] }
-    | undefined;
-
-  constructor(text: string, options: RenderOptionsLike, context: RenderContextLike | undefined, theme: ThemeLike) {
-    this.text = text;
-    this.expanded = options.expanded === true || context?.expanded === true;
-    this.isPartial = options.isPartial === true || context?.isPartial === true;
-    this.isError = context?.isError === true;
-    this.theme = theme;
-  }
-
-  update(text: string, options: RenderOptionsLike, context: RenderContextLike | undefined, theme: ThemeLike): void {
-    const expanded = options.expanded === true || context?.expanded === true;
-    const isPartial = options.isPartial === true || context?.isPartial === true;
-    const isError = context?.isError === true;
-    if (
-      text === this.text &&
-      expanded === this.expanded &&
-      isPartial === this.isPartial &&
-      isError === this.isError &&
-      theme === this.theme
-    ) {
-      return;
-    }
-    this.text = text;
-    this.expanded = expanded;
-    this.isPartial = isPartial;
-    this.isError = isError;
-    this.theme = theme;
-    this.frame = undefined;
-  }
-
-  invalidate(): void {
-    this.frame = undefined;
-  }
-
-  render(width: number): string[] {
-    try {
-      const target = Math.max(0, Math.floor(width));
-      if (target === 0) return [];
-      const cached = this.frame;
-      if (
-        cached !== undefined &&
-        cached.width === target &&
-        cached.text === this.text &&
-        cached.expanded === this.expanded &&
-        cached.isPartial === this.isPartial &&
-        cached.isError === this.isError &&
-        cached.theme === this.theme
-      ) {
-        return cached.lines;
-      }
-      const lines = this.build(target);
-      this.frame = {
-        width: target,
-        text: this.text,
-        expanded: this.expanded,
-        isPartial: this.isPartial,
-        isError: this.isError,
-        theme: this.theme,
-        lines,
-      };
-      return lines;
-    } catch {
-      // An unreadable result renders as no body at all, never as a broken frame.
-      return [];
-    }
-  }
-
-  private build(width: number): string[] {
-    const body = this.text.replace(/\s+$/, "");
-    const all = body === "" ? [] : body.split("\n");
-    const limit = this.expanded ? RESULT_EXPANDED_LINE_LIMIT : RESULT_LINE_LIMIT;
-    const markers = this.isPartial ? 1 : 0;
-    let rows = all.slice(-Math.max(1, limit - markers));
-    if (all.length > rows.length) rows = all.slice(-Math.max(1, limit - markers - 1));
-    const hidden = all.length - rows.length;
-
-    const lines: string[] = [];
-    if (this.isPartial) lines.push(paint(this.theme, "warning", clipLine("… bash", width)));
-    if (hidden > 0) {
-      const noun = hidden === 1 ? "earlier line" : "earlier lines";
-      lines.push(paint(this.theme, "dim", clipLine(`… +${hidden} ${noun}`, width)));
-    }
-    const color = this.isError ? "error" : "toolOutput";
-    for (const row of rows) lines.push(paint(this.theme, color, clipLine(row, width)));
-    return lines;
-  }
-}
-
-// ---------------------------------------------------------------------------------------------
-// The bash slot renderers
-// ---------------------------------------------------------------------------------------------
-
-/** The command a bash call carries, or `undefined` for any shape that is not a bash call. */
-function commandOf(args: unknown): string | undefined {
-  if (typeof args !== "object" || args === null) return undefined;
-  const command = (args as { command?: unknown }).command;
-  return typeof command === "string" ? command : undefined;
-}
-
-/** Text of a tool result, with SGR sequences and control bytes removed (this card paints its own). */
-function resultText(result: unknown): string {
-  if (typeof result !== "object" || result === null) return "";
-  const content = (result as { content?: unknown }).content;
-  if (!Array.isArray(content)) return "";
-  const parts: string[] = [];
-  for (const item of content) {
-    if (typeof item !== "object" || item === null) continue;
-    const record = item as { type?: unknown; text?: unknown };
-    if (record.type !== "text" || typeof record.text !== "string") continue;
-    parts.push(record.text.replace(ANSI_SEQUENCE, "").replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ""));
-  }
-  return parts.join("\n");
-}
-
-function bashRenderCall(
-  args: unknown,
-  renderTheme: ThemeLike,
-  context?: RenderContextLike,
-): ComponentLike {
-  try {
-    const command = commandOf(args);
-    // A malformed call degrades to one plain command line instead of a half-drawn card.
-    if (command === undefined) return new PlainLine("bash", renderTheme, "toolTitle");
-    const previous = context?.lastComponent;
-    if (previous instanceof BashCallCard) {
-      previous.update(command, renderTheme);
-      return previous;
-    }
-    return new BashCallCard(command, renderTheme);
-  } catch {
-    return new PlainLine("bash", renderTheme, "toolTitle");
-  }
-}
-
-function bashRenderResult(
-  result: unknown,
-  options: RenderOptionsLike,
-  renderTheme: ThemeLike,
-  context?: RenderContextLike,
-): ComponentLike {
-  try {
-    const text = resultText(result);
-    const previous = context?.lastComponent;
-    if (previous instanceof BashResultCard) {
-      previous.update(text, options, context, renderTheme);
-      return previous;
-    }
-    return new BashResultCard(text, options, context, renderTheme);
-  } catch {
-    return new PlainLine("", renderTheme);
-  }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Reading the setting: one function, so the row and the renderer can never disagree
-// ---------------------------------------------------------------------------------------------
-
-/**
- * The stored mode. Read live — by `current()` when the menu paints, and once per resolver call by
- * the bash resolver — so a toggle takes effect on the next row built with no reload. Anything
- * unreadable or unexpected reads as `default`, which never changes rendering.
- */
-function readStoredMode(store: BridgeStoreLike | undefined): BashRenderingMode {
-  if (store === undefined) return MODE_DEFAULT;
-  try {
-    return store.get<unknown>(SETTING_KEY, MODE_DEFAULT) === MODE_TOOL ? MODE_TOOL : MODE_DEFAULT;
-  } catch {
-    return MODE_DEFAULT;
-  }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Reaching gentle-shell-bridge: a runtime handshake, not a path
-// ---------------------------------------------------------------------------------------------
-//
-// A Pi extension lives outside every package, so it cannot resolve a bare specifier, and an
-// absolute path is not a contract between two independent projects: it names one checkout on one
-// machine and breaks the day either project moves. So the bridge and the plugin meet on
-// `globalThis`, the one channel Pi sanctions (`docs/extensions.md:1965-1972`), behind one stable
-// symbol:
-//
-//   Symbol.for("gentle-shell-bridge/api/v1")  → the frozen, versioned API object
-//
-// Registration happens in this file's own `session_start` handler. Pi completes every extension's
-// async initialization before firing that event (`docs/extensions.md:213`), and the bridge
-// publishes as its module loads, so the handler either finds the object or knows the bridge is not
-// installed. There is nothing to wait for and nowhere to defer a registration.
-//
-// The constant and the gate MIRROR `src/api.ts` and are inlined on purpose: this file must not
-// import the bridge, not even to say hello, and a copy-pasteable handshake is the smallest way to
-// keep that promise. Keep them in sync — a breaking change is a new `v2` key, never a mutation of
-// this one.
-
-/** The published API object's key. */
-const BRIDGE_API_KEY = Symbol.for("gentle-shell-bridge/api/v1");
-
-function bridgeHost(): Record<symbol, unknown> {
-  // SAFETY: `globalThis` accepts symbol keys; every value read through this view is gated by
-  // `isBridgeApi` before use.
-  return globalThis as unknown as Record<symbol, unknown>;
-}
-
-/**
- * The shape gate: the schema string, `version === 1` and the three members this example calls.
- * Anything else — another library's object, a future major version, a partial object — is treated
- * as ABSENT, never as an error, exactly as the bridge's own `isBridgeApi` does.
- */
-function isBridgeApi(value: unknown): value is BridgeApiLike {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as Record<string, unknown>;
-  return (
-    candidate.schema === "gentle-shell-bridge/api" &&
-    candidate.version === 1 &&
-    typeof candidate.registerRows === "function" &&
-    typeof candidate.registerSection === "function" &&
-    typeof candidate.createStore === "function"
-  );
-}
-
-/** The one notice when this load has nowhere to register: the bridge is absent, full stop. */
-const NO_BRIDGE_NOTICE =
-  "[bash-card] no compatible gentle-shell-bridge is installed, so this load adds nothing: no " +
-  "Cards toggle, no BASH CARD sidebar section and no `plain` card style. Its own bash renderer " +
-  "still works. A slot that holds another object is treated as absent, never used.";
-
-// ---------------------------------------------------------------------------------------------
-// The in-TUI diagnostics channel
-// ---------------------------------------------------------------------------------------------
-
-/**
- * Messages that must reach Pi's TUI but cannot yet: at module load no context exists. They are
- * NEVER printed — Pi renders its own diagnostics inside the TUI, and text written to the terminal
- * at startup lands outside the report the user reads.
- */
-const pendingNotices: string[] = [];
-/** How many a session already showed; a delivered message is never delivered twice. */
-let deliveredNotices = 0;
-
-function recordNotice(message: string): void {
-  if (!pendingNotices.includes(message)) pendingNotices.push(message);
-}
-
-/**
- * Deliver every pending notice through `ctx.ui.notify`. A context without a `notify` delivers
- * nothing, and a `notify` that throws leaves the remaining messages pending for the next session.
- */
-function flushNotices(ui: unknown): void {
-  const surface = typeof ui === "object" && ui !== null ? (ui as NoticeUiLike) : undefined;
-  const notify = surface?.notify;
-  if (typeof notify !== "function") return;
-  while (deliveredNotices < pendingNotices.length) {
-    try {
-      notify.call(surface, pendingNotices[deliveredNotices], "warning");
-    } catch {
-      return;
-    }
-    deliveredNotices += 1;
-  }
-}
-
-// ---------------------------------------------------------------------------------------------
-// The toggle rows
-// ---------------------------------------------------------------------------------------------
-
-/** A toggle is two CONSECUTIVE rows sharing `choice.setting`; nothing may sit between them. */
-function bashRenderingRows(store: BridgeStoreLike): CustomizeRowLike[] {
-  return [renderingRow(store, MODE_DEFAULT), renderingRow(store, MODE_TOOL)];
-}
-
-/**
- * One short line per mode. The renderer prints it as `Preview · <title>` above the sample
- * (`lib/visual-customize-view.ts:745`).
- */
-const PREVIEW_TITLE: Record<BashRenderingMode, string> = {
-  [MODE_DEFAULT]: "Host's own bash rendering",
-  [MODE_TOOL]: "Example-drawn bash card",
-};
-
-/**
- * A literal depiction of what a bash card looks like in that mode — the card, not prose about it.
- * The renderer splits `sample` on newlines and paints each line under the headline
- * (`lib/visual-customize-view.ts:747-750`), so lines stay well under 40 columns and there are only
- * a handful of them.
- */
-const PREVIEW_SAMPLE: Record<BashRenderingMode, string> = {
-  [MODE_DEFAULT]: ["$ ls -1", "README.md", "package.json"].join("\n"),
-  [MODE_TOOL]: ["bash $ ls -1", "README.md", "package.json"].join("\n"),
-};
-
-function previewFor(value: BashRenderingMode): { title: string; sample: string } {
-  return { title: PREVIEW_TITLE[value], sample: PREVIEW_SAMPLE[value] };
-}
-
-function renderingRow(store: BridgeStoreLike, value: BashRenderingMode): CustomizeRowLike {
-  return {
-    category: ROW_CATEGORY,
-    label: ROW_LABEL,
-    choice: {
-      setting: SETTING_NAME,
-      value,
-      // Live read at render time, so the bullet matches the file before the user touches it.
-      current: () => readStoredMode(store) === value,
-    },
-    // Carried by the bridge untouched; the renderer draws it below the focused choice instead of
-    // "Preview unavailable".
-    preview: () => previewFor(value),
-    // Persist first, repaint second: the view repaints after `action` returns and that repaint
-    // re-evaluates `current()`, which reads this same value (`docs/state.md`, "The correctness
-    // rule"). Painting before the write would make the bullet lie for one frame. The repaint is
-    // the menu itself: bash rows already drawn keep their old rendering, and the new mode applies
-    // to the next bash call.
-    action: () => {
-      store.set(SETTING_KEY, value);
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------------------------
-// The sidebar section
-// ---------------------------------------------------------------------------------------------
-
-/** Stable across loads, so `/reload` replaces this section instead of stacking it (S1, S2). */
-const SECTION_ID = "bash-card.status";
-/** The card heading, drawn by the host's own frame like `AGENTS` / `STATS`. */
-const SECTION_TITLE = "BASH CARD";
-
-/**
- * Live state for the card: the mode the user chose, and whether this load really wired the bash
- * renderer. Both are cheap on purpose — `lines()` runs once per rail frame, so this is one store
- * read plus one boolean, with no card built and nothing invented.
- */
-function bashCardSection(store: BridgeStoreLike, rendererRegistered: boolean): SidebarSectionLike {
-  return {
-    id: SECTION_ID,
-    title: SECTION_TITLE,
-    // The right-aligned count: the same value the `Cards` toggle writes, so the two surfaces
-    // cannot disagree.
-    meta: () => readStoredMode(store),
-    lines: () => [
-      `rendering  ${readStoredMode(store)}`,
-      `renderer   ${rendererRegistered ? "registered" : "absent"}`,
-    ],
-    // Visible on install: a section needs no extra step from the plugin or the user (S1).
-    defaultVisible: true,
-    // After any section the host or another plugin leaves unordered; the host's own parts come
-    // first regardless (S3).
-    order: 20,
-  };
-}
-
-// ---------------------------------------------------------------------------------------------
-// The card style
+// The card style: one gutter character per row, for tool cards in general
 // ---------------------------------------------------------------------------------------------
 
 /** Stable across loads and unique on the line: `/reload` replaces this value, never adds a second. */
@@ -869,72 +319,402 @@ function bashCardStyle(): CardStyleLike {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Extension entry
+// The transform: bash cards, recognised by what the host already drew
+// ---------------------------------------------------------------------------------------------
+//
+// A transform cannot ask Pi for a tool result — it is handed rows, nothing else. So it recognises
+// its target the way the bridge recognises a card: by the host's own frame. Two shapes are accepted,
+// because the pipeline runs AFTER the card-style repaint:
+//
+// 1. the host's `float` card — one-column margin, the `▎` bar, then padding / header / separator /
+//    body / padding (`docs/contract.md` §12, `src/card-styles.ts` §2), with the heading `bash`;
+// 2. this file's own `plain` frame — `▌ bash` plus `▌` rows — so `tool` still wins when `plain`
+//    is the selected card style, instead of leaving one bash card in two frames at once.
+
+/** The example's own chrome: a gutter no other surface in this file uses. */
+const BASH_GUTTER = "▸";
+/** The heading the host prints for a bash card. */
+const BASH_TITLE = "bash";
+/** Stable across loads and unique in `/bridge-status`: `/reload` replaces it in place. */
+const BASH_TRANSFORM_ID = "bash-card-example.bash-cards";
+/** The accent bar every `float` row starts with, one column in from the margin. */
+const FLOAT_BAR = "▎";
+
+/**
+ * One bash card in the frame: the rows it occupies and the body text it carried. `start` is the
+ * host's first row (or the `plain` frame's head) and `end` is one past its last row.
+ */
+interface BashCardSpan {
+  start: number;
+  end: number;
+  body: string[];
+}
+
+/** `margin ▎ space` — the float frame's first three columns on every row it draws. */
+function isFloatRow(text: string): boolean {
+  return text.length >= 3 && text.startsWith(` ${FLOAT_BAR} `);
+}
+
+/** A bar and nothing else: the opener, the separator and the closer all look like this. */
+function isFloatPadding(text: string): boolean {
+  return isFloatRow(text) && text.slice(3).trim() === "";
+}
+
+/**
+ * A float card's heading: the first word after the host's glyph. The host prints
+ * `${glyph} ${title}` and then, on the SAME row, the right-aligned hint (and a subtitle), so the
+ * heading is the first run of text — not the whole remainder.
+ */
+function headingText(text: string): string {
+  const rest = text.slice(3).trim();
+  const characters = [...rest];
+  const withoutGlyph =
+    characters.length > 2 && characters[1] === " " ? characters.slice(2).join("") : rest;
+  return withoutGlyph.trim().split(/\s+/u)[0] ?? "";
+}
+
+/** The host's `float` bash card at `start`, when one starts there. */
+function floatBashCard(stripped: readonly string[], start: number): BashCardSpan | undefined {
+  if (!isFloatPadding(stripped[start] ?? "")) return undefined;
+  const header = stripped[start + 1] ?? "";
+  if (!isFloatRow(header) || isFloatPadding(header)) return undefined;
+  if (headingText(header) !== BASH_TITLE) return undefined;
+
+  const third = stripped[start + 2] ?? "";
+  let row: number;
+  if (isFloatRow(third) && !isFloatPadding(third)) {
+    // Header straight into body, with no separator.
+    row = start + 2;
+  } else if (isFloatPadding(third)) {
+    const fourth = stripped[start + 3] ?? "";
+    // A padding row after the header is the separator when a body row follows it, and the closer
+    // when nothing does — an empty-body card is exactly three rows.
+    if (!isFloatRow(fourth) || isFloatPadding(fourth)) return { start, end: start + 3, body: [] };
+    row = start + 3;
+  } else {
+    return undefined;
+  }
+
+  const body: string[] = [];
+  while (row < stripped.length) {
+    const line = stripped[row] ?? "";
+    if (isFloatPadding(line)) break;
+    if (!isFloatRow(line)) return undefined;
+    body.push(line.slice(3).trimEnd());
+    row += 1;
+  }
+  // An unterminated card is not a card: the frame is left exactly as it is.
+  if (!isFloatPadding(stripped[row] ?? "")) return undefined;
+  return { start, end: row + 1, body };
+}
+
+/** This file's `plain` card style's bash card at `start`, when one starts there. */
+function plainBashCard(stripped: readonly string[], start: number): BashCardSpan | undefined {
+  if (!new RegExp(`^${CARD_STYLE_GUTTER} ${BASH_TITLE}(?:\\s|$)`, "u").test(stripped[start] ?? "")) {
+    return undefined;
+  }
+  const body: string[] = [];
+  let row = start + 1;
+  while (row < stripped.length) {
+    const line = stripped[row] ?? "";
+    if (line === CARD_STYLE_GUTTER) return { start, end: row + 1, body };
+    if (!line.startsWith(`${CARD_STYLE_GUTTER} `)) return undefined;
+    body.push(line.slice(CARD_STYLE_GUTTER.length + 1).trimEnd());
+    row += 1;
+  }
+  return undefined;
+}
+
+/**
+ * Every bash card in the frame, in order. Rows a card already claimed are skipped, so a body row can
+ * never be read as the head of the next card.
+ */
+function bashCardSpans(lines: readonly string[]): BashCardSpan[] {
+  const stripped = lines.map((line) => plainText(line));
+  const spans: BashCardSpan[] = [];
+  let index = 0;
+  while (index < stripped.length) {
+    const span = floatBashCard(stripped, index) ?? plainBashCard(stripped, index);
+    if (span === undefined) {
+      index += 1;
+      continue;
+    }
+    spans.push(span);
+    index = span.end;
+  }
+  return spans;
+}
+
+/** One bash card, drawn with this file's chrome. Never wider than the width it was given. */
+function restyleBashCard(span: BashCardSpan, width: number): string[] {
+  const rows = [`${BASH_GUTTER} ${BASH_TITLE}`];
+  for (const text of span.body) rows.push(text === "" ? BASH_GUTTER : `${BASH_GUTTER} ${text}`);
+  rows.push(BASH_GUTTER);
+  return rows.map((row) => clipLine(row, width));
+}
+
+/**
+ * The registration this file sends to `registerTransform`. The mode is read LIVE, once per frame, so
+ * toggling it changes the cards already on screen on the host's next repaint — which is exactly what
+ * a tool-renderer slot could never do. `default` returns the SAME array, so the bridge records the
+ * frame as a pass-through and the host's card is untouched; a throw is swallowed here as well as in
+ * the bridge, because a broken card must never cost the conversation.
+ */
+function bashCardTransform(store: BridgeStoreLike): TransformLike {
+  return {
+    id: BASH_TRANSFORM_ID,
+    // After any transform another plugin leaves unordered; `order` only decides relative position
+    // among the plugins that have one (`docs/contract.md` §13).
+    order: 10,
+    transform: (lines, ctx) => {
+      try {
+        if (readStoredMode(store) !== MODE_TOOL) return lines;
+        const spans = bashCardSpans(lines);
+        if (spans.length === 0) return lines;
+
+        const output: string[] = [];
+        let cursor = 0;
+        for (const span of spans) {
+          output.push(...lines.slice(cursor, span.start), ...restyleBashCard(span, ctx.width));
+          cursor = span.end;
+        }
+        output.push(...lines.slice(cursor));
+        return output;
+      } catch {
+        return lines;
+      }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Reading the setting: one function, so the row and the transform can never disagree
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Registers the bash renderer resolver and reports whether the slot was actually claimed. The
- * setting is read inside the resolver — once per call, never at load time — which is what lets
- * `/gentle:customize` change rendering without a reload. The return value is honest state for the
- * sidebar section, not a decoration: a Pi without `registerToolRenderer` must not claim one.
+ * The stored mode. Read live — by `current()` when the menu paints, and once per frame by the
+ * transform — so a toggle takes effect on the next repaint with no reload. Anything unreadable or
+ * unexpected reads as `default`, which never changes rendering.
  */
-function registerBashRenderer(pi: ExtensionApiLike, readMode: () => BashRenderingMode): boolean {
-  const register = pi.registerToolRenderer;
-  if (typeof register !== "function") {
-    recordNotice("[bash-card] this Pi has no pi.registerToolRenderer; bash keeps its native rendering.");
-    return false;
+function readStoredMode(store: BridgeStoreLike | undefined): BashRenderingMode {
+  if (store === undefined) return MODE_DEFAULT;
+  try {
+    return store.get<unknown>(SETTING_KEY, MODE_DEFAULT) === MODE_TOOL ? MODE_TOOL : MODE_DEFAULT;
+  } catch {
+    return MODE_DEFAULT;
   }
-
-  // `next()` is the renderer chain this resolver did not take; a host whose chain throws
-  // still must not see this extension throw.
-  const fallback = (next: () => RendererSetLike | undefined): RendererSetLike | undefined => {
-    try {
-      return next();
-    } catch {
-      return undefined;
-    }
-  };
-
-  register.call(pi, (toolName: string, next: () => RendererSetLike | undefined) => {
-    try {
-      if (toolName !== "bash") return fallback(next);
-      // One read per resolver call, not per character and not at load time.
-      if (readMode() !== MODE_TOOL) return fallback(next);
-      // No `renderShell: "self"`: Pi's default box keeps the padding and background, so this
-      // card draws content only and never a second frame.
-      return { renderCall: bashRenderCall, renderResult: bashRenderResult };
-    } catch {
-      return fallback(next);
-    }
-  });
-  return true;
 }
 
-export default function bashCardExample(pi: ExtensionApiLike): () => void {
-  // Holds the store once it exists; `undefined` means the bridge is not here yet, and every read
-  // then reports `default`, so bash rendering is untouched.
-  const state: { store?: BridgeStoreLike } = {};
+// ---------------------------------------------------------------------------------------------
+// Reaching gentle-shell-bridge: a runtime handshake, not a path
+// ---------------------------------------------------------------------------------------------
+//
+// A Pi extension lives outside every package, so it cannot resolve a bare specifier, and an
+// absolute path is not a contract between two independent projects: it names one checkout on one
+// machine and breaks the day either project moves. So the bridge and the plugin meet on
+// `globalThis`, the one channel Pi sanctions (`docs/extensions.md:1965-1972`), behind one stable
+// symbol:
+//
+//   Symbol.for("gentle-shell-bridge/api/v1")  → the frozen, versioned API object
+//
+// Registration happens in this file's own `session_start` handler. Pi completes every extension's
+// async initialization before firing that event (`docs/extensions.md:213`), and the bridge
+// publishes as its module loads, so the handler either finds the object or knows the bridge is not
+// installed. There is nothing to wait for and nowhere to defer a registration.
+//
+// The constant and the gate MIRROR `src/api.ts` and are inlined on purpose: this file must not
+// import the bridge, not even to say hello, and a copy-pasteable handshake is the smallest way to
+// keep that promise. Keep them in sync — a breaking change is a new `v2` key, never a mutation of
+// this one.
 
-  // Claimed before the bridge is reached: the sidebar section reports whether this happened.
-  const rendererRegistered = registerBashRenderer(pi, () => readStoredMode(state.store));
+/** The published API object's key. */
+const BRIDGE_API_KEY = Symbol.for("gentle-shell-bridge/api/v1");
+
+function bridgeHost(): Record<symbol, unknown> {
+  // SAFETY: `globalThis` accepts symbol keys; every value read through this view is gated by
+  // `isBridgeApi` before use.
+  return globalThis as unknown as Record<symbol, unknown>;
+}
+
+/**
+ * The shape gate: the schema string, `version === 1` and the three members this example calls.
+ * Anything else — another library's object, a future major version, a partial object — is treated
+ * as ABSENT, never as an error, exactly as the bridge's own `isBridgeApi` does.
+ */
+function isBridgeApi(value: unknown): value is BridgeApiLike {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    candidate.schema === "gentle-shell-bridge/api" &&
+    candidate.version === 1 &&
+    typeof candidate.registerRows === "function" &&
+    typeof candidate.registerSection === "function" &&
+    typeof candidate.createStore === "function"
+  );
+}
+
+/** The one notice when this load has nowhere to register: the bridge is absent, full stop. */
+const NO_BRIDGE_NOTICE =
+  "[bash-card] no compatible gentle-shell-bridge is installed, so this load adds nothing: no " +
+  "Cards toggle, no BASH CARD sidebar section, no `plain` card style and no bash transform. A " +
+  "slot that holds another object is treated as absent, never used.";
+
+// ---------------------------------------------------------------------------------------------
+// The in-TUI diagnostics channel
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Messages that must reach Pi's TUI but cannot yet: at module load no context exists. They are
+ * NEVER printed — Pi renders its own diagnostics inside the TUI, and text written to the terminal
+ * at startup lands outside the report the user reads.
+ */
+const pendingNotices: string[] = [];
+/** How many a session already showed; a delivered message is never delivered twice. */
+let deliveredNotices = 0;
+
+function recordNotice(message: string): void {
+  if (!pendingNotices.includes(message)) pendingNotices.push(message);
+}
+
+/**
+ * Deliver every pending notice through `ctx.ui.notify`. A context without a `notify` delivers
+ * nothing, and a `notify` that throws leaves the remaining messages pending for the next session.
+ */
+function flushNotices(ui: unknown): void {
+  const surface = typeof ui === "object" && ui !== null ? (ui as NoticeUiLike) : undefined;
+  const notify = surface?.notify;
+  if (typeof notify !== "function") return;
+  while (deliveredNotices < pendingNotices.length) {
+    try {
+      notify.call(surface, pendingNotices[deliveredNotices], "warning");
+    } catch {
+      return;
+    }
+    deliveredNotices += 1;
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The toggle rows
+// ---------------------------------------------------------------------------------------------
+
+/** A toggle is two CONSECUTIVE rows sharing `choice.setting`; nothing may sit between them. */
+function bashRenderingRows(store: BridgeStoreLike): CustomizeRowLike[] {
+  return [renderingRow(store, MODE_DEFAULT), renderingRow(store, MODE_TOOL)];
+}
+
+/**
+ * One short line per mode. The renderer prints it as `Preview · <title>` above the sample
+ * (`lib/visual-customize-view.ts:745`).
+ */
+const PREVIEW_TITLE: Record<BashRenderingMode, string> = {
+  [MODE_DEFAULT]: "Host's own bash rendering",
+  [MODE_TOOL]: "Example-drawn bash card",
+};
+
+/**
+ * A literal depiction of what a bash card looks like in that mode — the card, not prose about it.
+ * The renderer splits `sample` on newlines and paints each line under the headline
+ * (`lib/visual-customize-view.ts:747-750`), so lines stay well under 40 columns and there are only
+ * a handful of them.
+ */
+const PREVIEW_SAMPLE: Record<BashRenderingMode, string> = {
+  [MODE_DEFAULT]: ["$ ls -1", "README.md", "package.json"].join("\n"),
+  [MODE_TOOL]: ["▸ bash", "▸ ls -1", "▸"].join("\n"),
+};
+
+function previewFor(value: BashRenderingMode): { title: string; sample: string } {
+  return { title: PREVIEW_TITLE[value], sample: PREVIEW_SAMPLE[value] };
+}
+
+function renderingRow(store: BridgeStoreLike, value: BashRenderingMode): CustomizeRowLike {
+  return {
+    category: ROW_CATEGORY,
+    label: ROW_LABEL,
+    choice: {
+      setting: SETTING_NAME,
+      value,
+      // Live read at render time, so the bullet matches the file before the user touches it.
+      current: () => readStoredMode(store) === value,
+    },
+    // Carried by the bridge untouched; the renderer draws it below the focused choice instead of
+    // "Preview unavailable".
+    preview: () => previewFor(value),
+    // Persist first, repaint second: the view repaints after `action` returns and that repaint
+    // re-evaluates `current()`, which reads this same value (`docs/state.md`, "The correctness
+    // rule"). The transform reads the same value on the next conversation frame, which is how
+    // cards already on screen change look instead of keeping the one they were built with.
+    action: () => {
+      store.set(SETTING_KEY, value);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// The sidebar section
+// ---------------------------------------------------------------------------------------------
+
+/** Stable across loads, so `/reload` replaces this section instead of stacking it (S1, S2). */
+const SECTION_ID = "bash-card.status";
+/** The card heading, drawn by the host's own frame like `AGENTS` / `STATS`. */
+const SECTION_TITLE = "BASH CARD";
+
+/**
+ * Live state for the card: the mode the user chose, and whether this load really registered its
+ * transform. A function rather than a boolean, so the line stays honest if registration came later
+ * than this section's creation.
+ */
+function bashCardSection(
+  store: BridgeStoreLike,
+  transformRegistered: () => boolean,
+): SidebarSectionLike {
+  return {
+    id: SECTION_ID,
+    title: SECTION_TITLE,
+    // The right-aligned count: the same value the `Cards` toggle writes, so the two surfaces
+    // cannot disagree.
+    meta: () => readStoredMode(store),
+    lines: () => [
+      `rendering  ${readStoredMode(store)}`,
+      `transform  ${transformRegistered() ? "registered" : "absent"}`,
+    ],
+    // Visible on install: a section needs no extra step from the plugin or the user (S1).
+    defaultVisible: true,
+    // After any section the host or another plugin leaves unordered; the host's own parts come
+    // first regardless (S3).
+    order: 20,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Extension entry
+// ---------------------------------------------------------------------------------------------
+
+export default function bashCardExample(pi: ExtensionApiLike): () => void {
+  // Holds the store once it exists, and whether the transform surface was there at registration.
+  // `undefined`/`false` means the bridge is not (fully) here yet: every read then reports `default`,
+  // so bash rendering is untouched.
+  const state: { store?: BridgeStoreLike; transformRegistered: boolean } = {
+    transformRegistered: false,
+  };
 
   const disposers: Array<() => void> = [];
   let closed = false;
   let bridgeRegistered = false;
 
-  /** Both surfaces belong to one registration lifetime: disposing the example must not leave half. */
+  /** Every surface belongs to one registration lifetime: disposing must not leave half of them. */
   const dispose = (): void => {
     closed = true;
     for (const registered of disposers.splice(0, disposers.length)) {
       try {
         registered();
       } catch {
-        // A disposer that throws must not strand the other one.
+        // A disposer that throws must not strand the others.
       }
     }
   };
 
-  /** Register both bridge surfaces once. A stable id each, so a `/reload` replaces, not stacks. */
+  /** Register the bridge surfaces once. A stable id each, so a `/reload` replaces, not stacks. */
   const registerWithBridge = (api: BridgeApiLike): void => {
     if (closed || bridgeRegistered) return;
 
@@ -956,15 +736,21 @@ export default function bashCardExample(pi: ExtensionApiLike): () => void {
         category: ROW_CATEGORY,
         rows: () => bashRenderingRows(store),
       }),
-      api.registerSection(bashCardSection(store, rendererRegistered)),
+      api.registerSection(bashCardSection(store, () => state.transformRegistered)),
     );
 
-    // The third surface is optional by contract: an object published by an older copy passes the
-    // gate without `registerCardStyle`. Absent means "register the other two and stay quiet" — no
-    // queue, no repeated notice, and no invented fallback for a line the bridge does not have.
+    // The style and the transform are optional by contract: an object published by an older copy
+    // passes the gate without them. Absent means "register the other surfaces and stay quiet" — no
+    // queue, no repeated notice, and no invented fallback for a surface the bridge does not have.
     const registerCardStyle = api.registerCardStyle;
     if (typeof registerCardStyle === "function") {
       disposers.push(registerCardStyle.call(api, bashCardStyle()));
+    }
+
+    const registerTransform = api.registerTransform;
+    if (typeof registerTransform === "function") {
+      disposers.push(registerTransform.call(api, bashCardTransform(store)));
+      state.transformRegistered = true;
     }
 
     bridgeRegistered = true;
@@ -990,6 +776,6 @@ export default function bashCardExample(pi: ExtensionApiLike): () => void {
   if (typeof pi.on === "function") pi.on("session_start", onSessionStart);
 
   // Nothing depends on this return value — the stable ids are what make a `/reload` replace rather
-  // than stack — it exists so a programmatic caller can tear both surfaces down together.
+  // than stack — it exists so a programmatic caller can tear every surface down together.
   return dispose;
 }

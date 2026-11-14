@@ -8,7 +8,8 @@
  *
  * ```ts
  * Symbol.for("gentle-shell-bridge/api/v1") → { schema, version, VERSION, registerRows,
- *                                              registerSection, registerCardStyle, createStore }
+ *                                              registerSection, registerCardStyle,
+ *                                              registerTransform, createStore }
  * ```
  *
  * A plugin registers from its own `session_start` handler. Pi finishes loading every extension
@@ -45,12 +46,12 @@
  * lines, so README.md carries the inline copy of the gate and the symbol. Keep the two in sync.
  */
 
-import { registerCardStyle, registerRows, registerSection } from "./bus.ts";
+import { registerCardStyle, registerRows, registerSection, registerTransform } from "./bus.ts";
 import { recordNotice } from "./notices.ts";
 import { createStore } from "./store.ts";
 
 /** The release that published the object; informational, never the compatibility check. */
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 
 /** Identity of the object, so a foreign payload at the symbol is never mistaken for ours. */
 export const API_SCHEMA = "gentle-shell-bridge/api";
@@ -81,6 +82,13 @@ export interface BridgeApi {
    * every row-only plugin.
    */
   readonly registerCardStyle?: typeof registerCardStyle;
+  /**
+   * Transcript transforms (S1). Optional for the same reason as `registerCardStyle`: the slot is
+   * first-wins, so a mixed-copy process can hand back an object published before this surface. A
+   * plugin that needs the pipeline checks `typeof api.registerTransform === "function"`; demanding
+   * it in the gate would turn a working bridge into "absent" for every row-only plugin.
+   */
+  readonly registerTransform?: typeof registerTransform;
   readonly createStore: typeof createStore;
 }
 
@@ -147,6 +155,7 @@ const LOCAL_API: BridgeApi = Object.freeze({
   registerRows,
   registerSection,
   registerCardStyle,
+  registerTransform,
   createStore,
 });
 

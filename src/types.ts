@@ -151,6 +151,37 @@ export interface CardFrame {
 }
 
 /**
+ * Context handed to a transform on every frame. `width` is the width the host rendered the
+ * conversation at, which is also the hard limit on what the transform may return (S4).
+ */
+export interface TransformContext {
+  readonly width: number;
+}
+
+/**
+ * A plugin's transcript transform (S1): a function over the conversation's lines.
+ *
+ * Unlike a card style, a transform is not given a detected card — it sees the rows the host (and
+ * any earlier transform) produced and returns the rows to draw. That is the layer a rendering
+ * choice needs to apply to cards that are ALREADY on screen: a tool renderer resolves once, when a
+ * row is built, while the conversation component renders every frame.
+ *
+ * The bridge clips whatever comes back to `ctx.width`, skips the transform for the frame if it
+ * throws, and never lets a transform into Pi's render loop (S3, S4).
+ */
+export interface TranscriptTransform {
+  /** Unique and stable: the replacement key, the ordering key and the `/bridge-status` name. */
+  id: string;
+  /**
+   * Optional integer. Transforms with an `order` run first, ascending; the rest follow in
+   * registration order, so several plugins always produce one deterministic pipeline (S2).
+   */
+  order?: number;
+  /** The rows, and the width to honour. Return the rows to draw. */
+  transform(lines: readonly string[], ctx: TransformContext): readonly string[];
+}
+
+/**
  * A plugin's card style: chrome, never a parser (S1). The bridge owns detection and hands this
  * registration's `frame` the card it found; the style owns only what the card looks like.
  */

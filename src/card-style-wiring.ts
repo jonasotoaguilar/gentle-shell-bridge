@@ -23,10 +23,13 @@
  * ## What the wrapper does
  *
  * It calls the host's own `render(width)` first (the host's failure path stays the host's), and then
- * hands the rows to `transformCardLines` — which is a pass-through unless a registered style is
- * selected, and which never throws. The wrapper captures the generation it was created in: once
- * `disableCardStyleTransform()` (or a reset) bumps it, a wrapper foreign code kept a reference to is
- * a plain pass-through, not an injector.
+ * hands the rows to the pipeline: `transformCardLines` repaints the selected card style (a
+ * pass-through unless a style is selected, and it never throws), and `applyTransforms` then runs the
+ * registered transcript transforms in order over that output (`./transform-pipeline.ts`). With no
+ * style selected and no transform registered the host's own array is what the wrapper returns, so a
+ * session that uses neither is byte-identical. The wrapper captures the generation it was created
+ * in: once `disableCardStyleTransform()` (or a reset) bumps it, a wrapper foreign code kept a
+ * reference to is a plain pass-through, not an injector.
  *
  * ## Every absence is a reported state
  *
@@ -42,6 +45,7 @@
 
 import { transformCardLines } from "./card-style-transform.ts";
 import { isRecord } from "./rows.ts";
+import { applyTransforms } from "./transform-pipeline.ts";
 
 /** The layout protocol symbol, exactly as `pi-tui` defines it (`layout-node.js:1`). */
 const LAYOUT_NODE: symbol = Symbol.for("@earendil-works/pi-tui/layout-node");
@@ -222,9 +226,10 @@ function wrapConversation(component: Renderable): InstallCardStyleResult {
     const lines = current.call(component, width);
     if (wiringState().generation !== generation) return lines;
     if (!Array.isArray(lines)) return lines;
-    // SAFETY: `Array.isArray` just proved this is the host's own `string[]`; `transformCardLines`
-    // only ever reads it and returns either that instance or a new array of strings.
-    return transformCardLines(lines as string[], width);
+    // SAFETY: `Array.isArray` just proved this is the host's own `string[]`; the card-style
+    // transformer and the transform pipeline only ever read it and return either that instance or a
+    // new array of strings.
+    return applyTransforms(transformCardLines(lines as string[], width), width);
   };
 
   component.render = wrapper;

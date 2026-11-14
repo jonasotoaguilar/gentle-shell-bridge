@@ -160,6 +160,7 @@ One command, `/bridge-status`, reporting:
 | Sections | every registered section with its id, title, persisted visibility and where its position comes from (`order 3` or `registration order`); omitted when no section is registered |
 | Section failures | the most recent sidebar frame's failing sections with `id`, `phase` (`lines`/`meta`) and message |
 | Sidebar | `intercepted (rail wrapped)`, `intercepted (rail pending)`, `no-sidebar-state`, or `not armed` with the reason the wiring could not acquire a `tui` |
+| Transforms | every registered transcript transform in pipeline order (`order 3` or `registration order`) with the last frame's outcome: `applied`, `skipped`, `failed` with the message, or `not run`; omitted when no transform is registered |
 
 A menu that opened without the bridge's rows must show up here — armed-but-uncaptured,
 shape mismatch, or provider failure. A registered section that never appears must show up
@@ -185,19 +186,22 @@ genuinely not installed. That is exact: there is no third state and nothing to w
 Object.freeze({
   schema: "gentle-shell-bridge/api", // identity, so a foreign payload is never mistaken for ours
   version: 1,                        // the major; a breaking change is a NEW symbol key
-  VERSION: "0.2.0",                  // the publishing release; informational only
+  VERSION: "0.3.0",                  // the publishing release; informational only
   registerRows,
   registerSection,
   registerCardStyle,                 // since 0.2.0; optional on an older published object
+  registerTransform,                 // since 0.3.0; optional on an older published object
   createStore,
 });
 ```
 
 Publication is **first wins**: a compatible object already in the slot is kept and never replaced,
 and the slot is never reset. A consumer gates on the schema string, `version === 1` and the three
-callable members below — `registerCardStyle` is NOT part of the gate, so an object published by a
-copy older than 0.2.0 is still a usable bridge for rows, sections and the store; a plugin that needs
-card styles checks `typeof api.registerCardStyle === "function"` before calling it. Anything else — another library's payload, another major, a partial object — is
+callable members below — `registerCardStyle` and `registerTransform` are NOT part of the gate, so an
+object published by an older copy is still a usable bridge for rows, sections and the store; a plugin
+that needs a later surface checks `typeof api.registerCardStyle === "function"` (or
+`typeof api.registerTransform === "function"`) before calling it. Anything else — another library's
+payload, another major, a partial object — is
 **absent**, never an error: the object is not used, the slot is left exactly as it is (never
 overwritten, deleted or reset), and one notice per process names the mismatch. `v1` in the key is
 the major: a breaking change is a new `v2` key, never a mutation of this one.
@@ -553,11 +557,77 @@ conversation broken.
 - A style never breaks the conversation: any throw inside detection or inside a style makes that
   frame a pass-through and is reported.
 
+## 13. Transcript transforms
+
+One call adds a function that sees the conversation's rows on **every frame** and returns the rows to
+draw. It is the layer a rendering choice needs, because `pi.registerToolRenderer` resolves once, when
+a tool row is BUILT: a choice made there can only reach the NEXT row, while a transform runs inside
+the wrapper the bridge already installs on the conversation component
+([architecture.md](architecture.md) §15).
+
+```ts
+import { registerTransform } from "gentle-shell-bridge";
+
+const dispose: () => void = registerTransform({
+  id: "loon.gutter",        // unique and stable: ordering, replacement, the /bridge-status name
+  order: 10,                // optional: ordered transforms run first, ascending
+  transform: (lines, ctx) => lines.map((line) => `│ ${line}`.slice(0, ctx.width)),
+});
+```
+
+### What the transform receives
+
+`lines` is the frame's rows: the host's own output, after the card-style repaint when a style is
+selected (so a transform sees what the user would have seen), and after every transform that ran
+before it — the pipeline is ordered, and each transform receives the previous one's output.
+`ctx.width` is the width the host rendered at.
+
+A transform receives LINES and nothing else: no tool name, no arguments, no result object. A plugin
+that needs tool metadata uses `pi.registerToolRenderer` for rows yet to be built; a plugin that needs
+a rendering choice to apply to rows ALREADY on screen uses a transform.
+
+### What the bridge guarantees
+
+- **Order.** Transforms with an `order` run first, ascending, then the rest in registration order —
+the rule sections and card styles already use. The sequence is snapshotted once per frame.
+- **Width.** Whatever a transform returns is clipped to `ctx.width` with the same `clipToWidth` the
+card styles use, so it cannot make the frame wider than the terminal. A clipped styled row gets a
+reset appended; nothing is padded to fit.
+- **Isolation.** A transform that throws, or that returns something which is not an array of
+strings, loses only its own contribution for that frame: the lines in force are kept, the failure is
+recorded with its id and message, and the remaining transforms still run. Nothing a transform does
+can throw into Pi's render.
+- **Identity.** With no transform registered the wrapper returns the host's own array instance, and a
+transform that returns its input unchanged keeps it: a frame nothing changed is the same array.
+
+### What a registration must satisfy
+
+- `id`: the same rule as every other surface — a non-empty string, not `__proto__`/`constructor`/
+`prototype`, no NUL byte.
+- `transform`: a function of `(lines, ctx)`. Anything else throws **before** anything is stored.
+- Registering an existing `id` replaces that transform in place; `dispose()` removes exactly the one
+registration it created, and calling it twice is a no-op.
+
+### `/bridge-status`
+
+The block is emitted only when a transform is registered, so a session that never used the pipeline
+keeps its report byte for byte:
+
+```text
+transforms: 2 registered
+  - bash-card-example.bash-cards (order 10): applied
+  - loon.strict (registration order): failed (definitions are missing)
+```
+
+`applied` means the frame changed, `skipped` means the transform was called and left the rows as they
+were, `failed` carries its message, and `not run` means it was registered after the last frame. The
+outcome is the LAST frame's, not a history: a report is about what the user is looking at now.
+
 ## Limits
 
-- `registerRows`, `registerSection`, `registerCardStyle`, `createStore`, `bridgeApi` and
-  `isBridgeApi` are the contract; anything a plugin does inside `action()` beyond calling inline
-  helpers is the plugin's own business.
+- `registerRows`, `registerSection`, `registerCardStyle`, `registerTransform`, `createStore`,
+  `bridgeApi` and `isBridgeApi` are the contract; anything a plugin does inside `action()` beyond
+  calling inline helpers is the plugin's own business.
 - Rows can join existing categories only; `category` is typed to gentle-shell's closed
   union (`lib/visual-customize-view.ts:105`).
 - **Sections join the rail after the native cards, never between them.** The host's status
@@ -579,8 +649,10 @@ conversation broken.
 - Card styles are proven against a fake conversation component that reproduces gentle-shell's
   `float` output, never in a running Pi TUI; the downstream-override conflict above is a property of
   a real session the fake cannot reproduce.
-- `registerCardStyle` is optional on the published object: an object published by a copy older than
-  this surface passes the gate but lacks it, so a plugin that needs card styles checks
-  `typeof api.registerCardStyle === "function"`.
-- The API is released (`0.2.0`). The `v1` symbol is the compatibility boundary: a breaking
+- `registerCardStyle` and `registerTransform` are optional on the published object: an object
+  published by a copy older than that surface passes the gate but lacks it, so a plugin that needs
+  one checks `typeof api.registerCardStyle === "function"` (or `registerTransform`) first.
+- A transform is a per-frame pass, so a slow transform is a slow frame; the bridge isolates its
+  failures and clips its width, and can bound nothing else. It sees lines, never tool metadata.
+- The API is released (`0.3.0`). The `v1` symbol is the compatibility boundary: a breaking
   change takes a new key instead of mutating this one (§9).

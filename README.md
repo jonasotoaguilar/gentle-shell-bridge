@@ -6,11 +6,12 @@ and fans out to every provider, so N plugins × M gentle-shell surfaces becomes 
 and one interception. Plugins stop wrapping `ctx.ui` themselves, and stop colliding with
 each other when more than one wants to add a settings row.
 
-**Status: released as `0.2.0`.** The package exists and runs. It is a manifest-backed Pi
+**Status: released as `0.3.0`.** The package exists and runs. It is a manifest-backed Pi
 package (`pi.extensions` → `./src/extension.ts`) loaded from TypeScript sources through
 jiti, so there is no build step and no `dist/`; it registers a `bridge-status` command and
-carries a `node --test` suite of 328 tests, 26 of them end-to-end through the public API and
-the real extension entry. The capture technique was proven in the real TUI by a 76-line
+carries a `node --test` suite of 367 tests, 26 of them end-to-end through the public API and
+the real extension entry, plus 8 driving the worked example's transform through a real
+conversation wrapper. The capture technique was proven in the real TUI by a 76-line
 throwaway extension (`loon-customize-probe.ts`); the capture backend implements it, while
 the hook backend is implemented but **unverified** — no host has been observed emitting the
 registry it looks for. The sidebar surface is proven against a fake rail, not in a live TUI:
@@ -24,20 +25,26 @@ what is not proven is listed under **Limits**.
 ## Worked consumer
 
 [`examples/bash-card.ts`](examples/bash-card.ts) is a standalone Pi extension that covers every
-surface the package publishes, plus one of its own: its own bash card through
-`pi.registerToolRenderer`; a `Cards` toggle through `registerRows` + `createStore`; a **`BASH CARD`
+surface the package publishes: a `Cards` toggle through `registerRows` + `createStore`; a **`BASH CARD`
 sidebar section** through `registerSection`, toggled from **`Sections`** in `/gentle:customize` with
-no setting, row or store written by the plugin; and a third card style through
+no setting, row or store written by the plugin; a third card style through
 `registerCardStyle`, which puts `plain` next to the host's own values on the `Card style` line —
-`○ neon ○ float ○ plain`.
+`○ neon ○ float ○ plain`; and a transcript transform through `registerTransform`, which is what makes
+the `Bash rendering` toggle apply to the bash cards **already on screen**.
 
-That value is on the host's own line in the host's own position, not a second line. Choosing `plain`
-repaints every conversation card the host drew with a borderless frame (one gutter character per
-row, the heading as plain text); choosing `neon` or `float` returns to the host's rendering, because
-those values ARE the host rendering. The style is registered from the same `session_start` handler
-as the other two surfaces, through the API object, and only when the published object actually
-carries `registerCardStyle` — an older bridge keeps the row and the section and the example says
-nothing about the missing surface.
+The toggle is the single control. `default` leaves the host's bash card exactly as the host drew it;
+`tool` rewrites every bash card in the frame with the example's own chrome (`▸ bash`, its body, `▸`),
+whether it was drawn before the switch or after it. That is the difference between a transform and
+`pi.registerToolRenderer`: the renderer resolves once, when a tool row is BUILT, so it could only ever
+restyle the next card; a transform runs on every frame the conversation component renders. The
+example registers no tool renderer at all — one owner, one look, past and new byte-identical.
+
+`plain` is a style for TOOL cards in general: selecting it repaints a `read` card exactly like a
+`bash` one, so one style applies across tools. Choosing `neon` or `float` returns to the host's
+rendering, because those values ARE the host rendering. The style and the transform are registered
+from the same `session_start` handler as the other surfaces, through the API object, and only when
+the published object actually carries them — an older bridge keeps what it can and the example says
+nothing about a surface the bridge never promised.
 
 Copy the file into `~/.pi/agent/extensions/` and `/reload` to load it; the toggle defaults to
 `default`, so installing it changes no bash rendering until the row is switched, while the section
@@ -55,14 +62,9 @@ payload at the symbol — is treated as absent, never as an error: the example n
 cannot trust, says so once through `ctx.ui.notify`, and registers nothing. The bridge reports the
 version skew once per process.
 
-The choice applies to the **next bash call**: the resolver runs when a bash row is built, not per
-frame, so rows already on screen keep the rendering they were built with. Scrolling or `Esc` does
-not re-render history, and Pi has no extension API that repaints already-drawn tool rows —
-`tui.requestRender()` exists only inside a component created through `ctx.ui.custom`.
-
 ## Install
 
-The package is `0.2.0`. Load it from source as a Pi extension package alongside gentle-shell
+The package is `0.3.0`. Load it from source as a Pi extension package alongside gentle-shell
 and Pi discovers `src/extension.ts` through the `pi` manifest. The shipped files are the
 TypeScript sources: Pi loads them through jiti, so there is no build step and no `dist/` to
 publish.
@@ -74,8 +76,10 @@ import {
   bridgeApi,
   createStore,
   isBridgeApi,
+  registerCardStyle,
   registerRows,
   registerSection,
+  registerTransform,
   STORE_SCHEMA_VERSION,
   VERSION,
 } from "gentle-shell-bridge";
@@ -149,13 +153,49 @@ Rules the row cannot break: `id` and `label` are unique among the line's values 
 `neon`/`float` and the bridge's `native` are taken), and the style only ever receives text and a
 width — it parses nothing. Full contract: [docs/contract.md](docs/contract.md) §12.
 
+## Quick start: a transcript transform
+
+A tool renderer resolves once, when a row is built. A transform runs on every frame the conversation
+component renders, which is the only way a rendering choice can reach rows that were already drawn.
+
+```ts
+declare const registerTransform: (transform: {
+  id: string;
+  order?: number;
+  transform(lines: readonly string[], ctx: { width: number }): readonly string[];
+}) => () => void;
+
+const dispose = registerTransform({
+  id: "loon.gutter",   // unique: the ordering/replacement key and the /bridge-status name
+  order: 10,           // optional: ordered transforms run first, ascending
+  transform: (lines, ctx) => lines.map((line) => line.slice(0, ctx.width)),
+});
+
+// The user sees the new rendering on the NEXT FRAME, for every row — including cards drawn before
+// the choice was made. dispose() removes this transform; other plugins' transforms keep running.
+```
+
+The pipeline is what the bridge's existing conversation wrapper runs after the card-style repaint:
+`lines` is the previous transform's output, and the first transform sees the card-style repaint of
+the host's own rows. What the bridge guarantees, and what the contract is:
+
+- what a transform returns is **clipped to `ctx.width`** (the width the host rendered at), so a
+transform can never make the frame wider than the terminal;
+- a transform that **throws**, or returns anything that is not an array of strings, loses only its
+own contribution for that frame; the lines in force are kept and the remaining transforms still run;
+- a transform that returns its input **unchanged** is recorded as `skipped` and the frame keeps its
+identity — with no transform registered, the wrapper returns the host's own array instance.
+
+`/bridge-status` lists the pipeline in order with the last frame's outcome per transform. Full
+contract: [docs/contract.md](docs/contract.md) §13.
+
 ## Reaching the bridge without importing it
 
 A plugin and the bridge are two independent projects, so a path to one checkout is not a contract.
 They meet on `globalThis`, behind one stable symbol:
 
 - `Symbol.for("gentle-shell-bridge/api/v1")` holds
-  `{ schema: "gentle-shell-bridge/api", version: 1, VERSION, registerRows, registerSection, createStore }`.
+  `{ schema: "gentle-shell-bridge/api", version: 1, VERSION, registerRows, registerSection, registerCardStyle, registerTransform, createStore }`.
   It is frozen, first-wins (a valid object already there is kept, not replaced) and never reset.
 
 **Register from a `session_start` handler; then the symbol's presence is the complete answer.** Pi
@@ -196,8 +236,9 @@ Rules worth knowing: an object that fails the gate (wrong schema, `version !== 1
 is **absent**, never an error — `bridgeApi()` returns `undefined`, one warning is emitted per
 process, and the slot is left exactly as it was. A breaking change takes a new `v2` symbol key
 rather than mutating `v1`. An older bridge publishes nothing at this key, so a newer plugin sees
-"absent" instead of being deferred silently; that compatibility cliff is intentional. The full rule,
-the three surfaces and complete snippets are in [docs/contract.md](docs/contract.md) §9.
+"absent" instead of being deferred silently; that compatibility cliff is intentional. The full rule
+and complete snippets are in [docs/contract.md](docs/contract.md) §9, with the surfaces documented in
+§9 (rows, sections, store), §12 (card styles) and §13 (transcript transforms).
 
 ## Quick start: rows
 
@@ -266,6 +307,11 @@ For card styles it reports the line mode (`extended` when the host's own line wa
 failures, whether the conversation component was wrapped, and the reminder that a downstream
 post-processor can override the frame.
 
+For transcript transforms it reports the registered pipeline in order — `order 10` or `registration
+order` — and what the last frame did with each one: `applied`, `skipped`, `failed` with the message,
+or `not run` for a transform registered after that frame. The block appears only when a transform is
+registered, so a session that never used the pipeline keeps the historical report byte for byte.
+
 ## Limits
 
 - **No new categories.** gentle-shell's renderer types `category` as a closed union
@@ -288,7 +334,13 @@ post-processor can override the frame.
   says so in `/bridge-status` instead of pretending otherwise. Detection is proven against a fake
   conversation built from real `shell-card.ts` output, never in a running TUI, and a card with a
   blank body row is detected as ending at that row.
-- **Tests cover a fake host, not the real TUI.** 328 tests run under `node --test`; 26 of
+- **A transform is a per-frame pass, not a host feature either.** It runs inside the wrapper the
+  bridge already installs on the conversation component, so it depends on the same Pi tree the card
+  styles do, and a downstream post-processor can still override the frame. A transform sees lines,
+  not tool metadata: a plugin that needs the call's arguments or the result object still has to use
+  `pi.registerToolRenderer` for rows that are yet to be built. A throwing transform is isolated per
+  frame; a slow one runs on every frame, which the bridge cannot bound.
+- **Tests cover a fake host, not the real TUI.** 367 tests run under `node --test`; 26 of
   them are end-to-end through the public API and the extension entry, against a fake host
   that models `gentle-shell.ts:3550-3562` and a fake sidebar that models
   `lib/shell-sidebar.ts` and the layout's card frame. The capture technique is verified in the

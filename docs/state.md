@@ -5,7 +5,9 @@
   piece of state the bridge itself owns. **Amended** by decision 5: plugins reach the bridge
   through a published, versioned `globalThis` slot instead of a path or an environment variable.
   **Amended** by decision 6: the selected card style is bridge-owned state, and the conversation
-  frames are repainted opt-in, degrading to native.
+  frames are repainted opt-in, degrading to native. **Amended** by decision 7: the repaint wrapper
+  became a general, ordered transform pipeline, so a plugin's rendering choice reaches cards already
+  on screen instead of only the next one.
 - **Context:** [contract.md](contract.md), [architecture.md](architecture.md)
 - **Deciders:** package author and gentle-shell maintainers.
 
@@ -175,7 +177,8 @@ The bridge publishes `{ schema, version, VERSION, registerRows, registerSection,
 never reset. A plugin registers from its own `session_start` handler: Pi completes every extension
 module's async initialization before firing that event (`docs/extensions.md:213`, `:393`, `:512`),
 so the slot either holds the object or the bridge is not installed. (`registerCardStyle` joined the
-object in 0.2.0; the gate stays on the three original members, so an older object is still a usable
+object in 0.2.0 and `registerTransform` in 0.3.0; the gate stays on the three original members, so an
+older object is still a usable
 bridge for rows, sections and the store.) A consumer gates on the schema
 string, `version === 1` and the three callable members; anything else is absent, `bridgeApi()`
 returns `undefined`, and the bridge warns once per process. `bridgeApi()` and `isBridgeApi(value)`
@@ -215,6 +218,18 @@ selection is bridge-owned state in the bridge's own file (`bridge-card-style.jso
 `card-style.json`, for the same closed-key reason section visibility uses `bridge-sections.json`.
 Costs accepted and recorded: the repaint depends on the host's `float` grammar, and a downstream
 post-processor can override the frame (see [architecture.md](architecture.md) §14).
+
+**H. Chosen: the conversation wrapper runs a general, ordered transform pipeline.** Decision G
+proved that the conversation component can be repainted, but it was written as one hard-coded
+feature. A `pi.registerToolRenderer` resolver cannot apply a rendering choice to rows that are
+already drawn — it resolves when a row is BUILT — so that hook cannot serve a plugin that wants to
+restyle history. Rather than a second wrapper, the existing one became a pipeline: the card-style
+repaint runs first, then every transform registered with `registerTransform`, in order, each
+receiving the previous output. The bridge keeps what it already owed the frame — clip to the host's
+width, isolate a throw to the transform that made it, return the same array when nothing changed —
+and reports the last frame's outcome per transform in `/bridge-status`. The alternative (a renderer
+resolver plus a transform, one for new rows and one for history) was rejected because it gives one
+plugin two different pictures of the same card, which is the defect the surface exists to remove.
 
 ## Open questions
 

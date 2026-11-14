@@ -382,6 +382,71 @@ decides what to do, the bridge emits one warning per process, and the slot is le
 wrote it. A newer plugin against an older bridge therefore sees "absent" instead of being
 deferred silently; that compatibility cliff is intentional.
 
+## 14. The card-style transform
+
+The third surface. Rows and sections add something to the menu and the rail; a card style cannot be
+added at all in the way the others can — the host draws the conversation itself, `CARD_STYLE` is a
+two-member union (`lib/shell-card.ts:33-38`) read in eight places, all binary, and
+`cardStyle()` normalizes any unknown value to `float` (`:43-45`). So the bridge does the only thing
+the host allows: it lets gentle-shell draw, then repaints the frames the host already produced.
+
+### Where the conversation component is, and how that was proven
+
+The full derivation, with every citation, is the evidence block at the top of `src/card-styles.ts`
+(§1). In short, from the `tui` Pi hands a `ctx.ui.setWidget` factory (`src/extension.ts:108-109`):
+
+1. **Primary:** `tui.children[0]` → the document container → `children[2]` (the chat container).
+   `children` is a declared member of the public `TUI` interface (`pi-tui/dist/tui.d.ts:223-231`)
+   and Pi fills it in both renderer modes, document first
+   (`pi-coding-agent/dist/modes/interactive/interactive-mode.js:623-625,722-731`); the document's
+   children are `[header, loadedResources, chatContainer]` (`:404-407`).
+2. **Secondary:** `tui.layoutRoot` → its layout entries → `entries[0].component`, the primary
+   `ScrollView` (`dist/modes/interactive/chat-viewport.js:4-11,22-25`) → that view's child through
+   the layout protocol (`pi-tui/dist/components/scroll-view.d.ts:57`,
+   `layout-node.d.ts:2,36-38`) → the same document. `layoutRoot` is TypeScript-`private` and exists
+   only on the fullscreen renderer (`tui-alt-screen.d.ts:44`), which is why it is second.
+3. Anything else is reported, never guessed: `no-tui`, `no-children`, `no-document`,
+   `no-conversation`, `render-missing`, `wrong-shape` (a host accessor that throws). `/bridge-status`
+   prints the outcome, so "no repaint" is always an answer.
+
+### The transform
+
+`src/card-style-transform.ts` wraps that component's `render(width)`: the host's own render runs
+first (a host failure stays the host's), then the rows are handed to the detector. It recognises
+exactly the `float` grammar (`src/card-styles.ts` §2): a one-column margin, the `▎` bar, then
+padding / header / optional separator / body / padding, with an empty-body card folded to three rows.
+A `neon` card starts at column 0 with `╭`, `│` or `╰` and is never touched. Rows that are not cards
+come back as the same strings; with `native`, no selection, or a selection naming a style that no
+longer exists, the input array itself is returned. A style's three functions get the measured width
+and the extracted heading; anything wider than the width is clipped before it is emitted, and the
+frame is abandoned wholesale if any style call throws (a card is never half-repainted).
+
+### Wrapping once, and staying wrapped
+
+`src/card-style-wiring.ts` is armed from the same widget factory that captures the `tui` — never at
+module load — and follows the sidebar backend's discipline (`src/sidebar.ts:52-90`): an own-property
+marker certifies the exact `render` function installed, so a rebind, a second `session_start` or a
+second copy of this package reports `already-wrapped` instead of stacking wrappers. The wrapper
+captures a generation; `disableCardStyleTransform()` restores the host's own `render`, deletes the
+marker and bumps the generation, so a wrapper foreign code retained becomes a pass-through rather
+than an injector. The same rule governs a retained *style*: a disposed style resolves to `missing`,
+and `missing` is the pass-through.
+
+### The conflict that cannot be won
+
+cinlodev wraps the chat container's `render` and strips any box chrome it finds
+(`pi-cinlodev-cute/transcript-unwrap.ts:160-206`), which can erase this frame on exactly the cards it
+re-frames — bash in particular. The bridge cannot prevent that, does not try, and says so in
+`/bridge-status`:
+
+> a downstream post-processor (e.g. cinlodev) can strip or override this frame; the bridge cannot
+> prevent it.
+
+### Why not ask gentle-shell to add a style registry
+
+Rejected in [state.md](state.md) (§Alternatives rejected, F/G). The package exists because the host
+does not take every change; a design that waits for one is not a bridge.
+
 ## Limits
 
 - **Internals, not an API.** Everything here depends on one constructor line, one adapter
@@ -408,6 +473,15 @@ deferred silently; that compatibility cliff is intentional.
   §12); a request to slot one between `CHANGES` and `STATS` is not supported.
 - **The sidebar widget's visual footprint is unconfirmed** (see §12): the `tui` is acquired through
   a widget factory, and whether an empty component is invisible has not been observed.
+- **The card-style repaint is proven against a fake conversation, not a live one** (see §14). The
+  fixture rows are real `lib/shell-card.ts` output, but the component tree is Pi's documented shape,
+  and the downstream-override conflict (§14) cannot be reproduced without a second post-processor
+  running in a real session.
+- **A blank body row is byte-identical to a card's opener/closer** (`cardLine("")` is a bar and
+  spaces), so a card containing a blank body row is detected as ending at that row; the remaining
+  rows stay as the host drew them. A heading's hint is only split out when its style runs prove it,
+  and the heading glyph is stripped by a one-character rule. Both are documented in the transformer
+  and are the price of not parsing the host's intent.
 - **Async factories are reported, not supported.** `Promise.resolve(factory(...))` accepts a
   promise (`interactive-mode.ts:3136`), but the capture window closes with the synchronous
   call. A promise-returning factory is returned untouched and recorded as

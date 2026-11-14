@@ -271,15 +271,26 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
   );
 }
 
-/** The fallback provider. Its rows are rebuilt per menu build, never cached. */
+/**
+ * The fallback provider. Its rows are rebuilt per menu build, never cached.
+ *
+ * With no style registered it contributes NOTHING: a session that never installed a style plugin
+ * must not gain a `Bridge → card style` line with a single `native` value on it. The provider is
+ * still registered (arming precedes the plugins' own `session_start` handlers), so the first style
+ * to register appears on the next menu build with no re-registration.
+ */
 function fallbackProvider(): RowProvider {
   return {
     id: CARD_STYLE_ROWS_PROVIDER_ID,
     category: HOST_CARD_STYLE_CATEGORY,
-    rows: () => [
-      nativeRow(CARD_STYLE_FALLBACK_SETTING),
-      ...snapshotCardStyles().map((style) => styleRow(style, CARD_STYLE_FALLBACK_SETTING)),
-    ],
+    rows: () => {
+      const registered = snapshotCardStyles();
+      if (registered.length === 0) return [];
+      return [
+        nativeRow(CARD_STYLE_FALLBACK_SETTING),
+        ...registered.map((style) => styleRow(style, CARD_STYLE_FALLBACK_SETTING)),
+      ];
+    },
   };
 }
 

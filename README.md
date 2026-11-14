@@ -6,10 +6,10 @@ and fans out to every provider, so N plugins × M gentle-shell surfaces becomes 
 and one interception. Plugins stop wrapping `ctx.ui` themselves, and stop colliding with
 each other when more than one wants to add a settings row.
 
-**Status: released as `0.1.0`.** The package exists and runs. It is a manifest-backed Pi
+**Status: released as `0.2.0`.** The package exists and runs. It is a manifest-backed Pi
 package (`pi.extensions` → `./src/extension.ts`) loaded from TypeScript sources through
 jiti, so there is no build step and no `dist/`; it registers a `bridge-status` command and
-carries a `node --test` suite of 233 tests, 18 of them end-to-end through the public API and
+carries a `node --test` suite of 328 tests, 26 of them end-to-end through the public API and
 the real extension entry. The capture technique was proven in the real TUI by a 76-line
 throwaway extension (`loon-customize-probe.ts`); the capture backend implements it, while
 the hook backend is implemented but **unverified** — no host has been observed emitting the
@@ -51,7 +51,7 @@ not re-render history, and Pi has no extension API that repaints already-drawn t
 
 ## Install
 
-The package is `0.1.0`. Load it from source as a Pi extension package alongside gentle-shell
+The package is `0.2.0`. Load it from source as a Pi extension package alongside gentle-shell
 and Pi discovers `src/extension.ts` through the `pi` manifest. The shipped files are the
 TypeScript sources: Pi loads them through jiti, so there is no build step and no `dist/` to
 publish.
@@ -110,6 +110,33 @@ host builds its status sections in a closure. Visibility lives in
 `~/.pi/gentle-ai/gentle-shell-bridge/bridge-sections.json` as
 `{ "schemaVersion": 1, "values": { "sections": { "loon.music": true } } }`, deliberately not
 in the host's strictly validated `visual-customization.json`.
+
+## Quick start: a card style
+
+A plugin can add a third card style to gentle-shell's conversation cards, on the host's own
+`Card style` line, without touching the host. The bridge owns detection; the style owns drawing.
+
+```ts
+import { registerCardStyle } from "gentle-shell-bridge";
+
+const dispose: () => void = registerCardStyle({
+  id: "loon.cute",  // unique; the stored value and the replacement key
+  label: "cute",    // shown on the line: Card style  ○ neon ● float ○ cute
+  frame: {
+    top: (ctx) => `╭─ ${ctx.title ?? ""} ${"─".repeat(Math.max(0, ctx.width - 6))}╮`,
+    line: (ctx) => `│ ${ctx.text.padEnd(Math.max(0, ctx.width - 4))} │`,
+    bottom: (ctx) => `╰${"─".repeat(Math.max(0, ctx.width - 2))}╯`,
+  },
+  preview: () => ({ title: "Cute", sample: "╭─ read ─╮ │ config.ts │ ╰────────╯" }),
+});
+
+// The user picks `cute` on the host's own Card style line; pressing neon/float returns to the
+// host's rendering. dispose() removes the value and the chrome.
+```
+
+Rules the row cannot break: `id` and `label` are unique among the line's values (the host's
+`neon`/`float` and the bridge's `native` are taken), and the style only ever receives text and a
+width — it parses nothing. Full contract: [docs/contract.md](docs/contract.md) §12.
 
 ## Reaching the bridge without importing it
 
@@ -221,6 +248,13 @@ only when they have something to say, so a row-only install keeps the historical
 Diagnostics never run a section's `lines()`/`meta()` either. The hook backend is reported as
 `hook` only when this process pushed its fan-out provider into a host registry.
 
+For card styles it reports the line mode (`extended` when the host's own line was found,
+`separate` when the fallback line was used), the registered styles in order, the live selection
+(including a disposed one, as `missing`), what the last frame did (`transformed N cards`,
+`pass-through (native | missing | no card)`, or `failed` with the style and message), the per-style
+failures, whether the conversation component was wrapped, and the reminder that a downstream
+post-processor can override the frame.
+
 ## Limits
 
 - **No new categories.** gentle-shell's renderer types `category` as a closed union
@@ -237,7 +271,13 @@ Diagnostics never run a section's `lines()`/`meta()` either. The hook backend is
 - **The capture is heuristic.** It recognises the row array by shape; a menu that builds
   its rows differently produces no capture. That case is reported by `/bridge-status` instead of
   passing silently.
-- **Tests cover a fake host, not the real TUI.** 233 tests run under `node --test`; 18 of
+- **Card styles are a repaint, not a host feature.** The bridge rewrites the `float` frames
+  gentle-shell already drew, so it depends on that grammar, and a downstream post-processor
+  (cinlodev strips box chrome from the cards it re-frames) can override the result — the bridge
+  says so in `/bridge-status` instead of pretending otherwise. Detection is proven against a fake
+  conversation built from real `shell-card.ts` output, never in a running TUI, and a card with a
+  blank body row is detected as ending at that row.
+- **Tests cover a fake host, not the real TUI.** 328 tests run under `node --test`; 26 of
   them are end-to-end through the public API and the extension entry, against a fake host
   that models `gentle-shell.ts:3550-3562` and a fake sidebar that models
   `lib/shell-sidebar.ts` and the layout's card frame. The capture technique is verified in the

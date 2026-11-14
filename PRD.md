@@ -57,13 +57,20 @@ behind the adapter.
 | R10 | Each registered section automatically contributes two consecutive rows to `Sections` (its title, `shown`/`hidden`), reading and persisting the same value the rail renders. | Automatic toggle rows | Implemented; the menu, the persistence file and the next rail frame are asserted together — against the fake host and fake rail |
 | R11 | A hidden section is neither rendered nor built (`lines()`/`meta()` not called); a throwing section loses only its own body and is reported. | S7 failure isolation | Implemented; pinned with call counters and `/bridge-status` section failures, against the fake host |
 | R12 | Section visibility persists in the bridge's own store, not the host's `visual-customization.json`, which rejects unknown keys. | `bridge-sections.json`, [docs/state.md](docs/state.md) | Implemented; the document shape is asserted byte-for-byte, and the reason for the separate file is recorded |
+| R13 | `registerCardStyle(style)` accepts `{ id, label, frame: { top, line, bottom }, preview?, order? }`, validates id/label/frame before storing, replaces in place on the same id, and returns a disposer that removes exactly that style. | `registerCardStyle`, frame contract | Implemented; validation, ordering, replacement and disposal are unit-tested, and the published-API path is exercised end to end |
+| R14 | A registered style joins the host's own `Card style` line (spliced in place, one coalesced line, the host's values untouched), with a `Bridge → card style` fallback line only when the host's line is not reachable; the selection is bridge-owned state, pressing a host value returns to native rendering, and a disposed style degrades to `native`/`missing`. | `bridge-card-style.json`, [docs/contract.md](docs/contract.md) §12 | Implemented; one bullet at a time, the way back, the fallback line and the missing-selection degrade are pinned against the fake host and reported by `/bridge-status` |
+| R15 | When a registered style is selected, the bridge repaints the conversation frames the host already drew — detection, title/hint extraction, one style at a time, width clipping, and a pass-through for `native`, for a missing selection and for any throw — and reports the frame outcome. | [docs/architecture.md](docs/architecture.md) §14 | Implemented; proven against a fake conversation built from real `shell-card.ts` output, plus the end-to-end suite through the public API. A downstream post-processor can override the frame, which `/bridge-status` states |
 
-Twelve requirements are implemented and covered by the 233-test `node --test` suite. What is
-proven and what is not:
+Fifteen requirements are implemented and covered by the 328-test `node --test` suite, 26 of them
+end to end through the public API and the real extension entry. What is proven and what is not:
 
 - **Proven against a fake host.** The row side drives a fake menu host that models
   `gentle-shell.ts:3550-3562`: injection, ordering, toggles, failure isolation and the
   diagnostics lines.
+- **Proven against a fake conversation.** The card-style side drives a fake transcript built from
+  real `gentle-shell/lib/shell-card.ts` output at a fixed width, plus a fake `tui` that models Pi's
+  documented tree: detection, repaint, clipping, the pass-through paths, the disposal degrade, the
+  host line splice, the fallback line and the generation guard.
 - **Proven against a fake rail.** The sidebar side drives a fake terminal that models
   `lib/shell-sidebar.ts`'s state symbol and `parts` map plus the layout's card frame
   (`lib/shell-sidebar-layout.ts:35-44,392-410`): section cards, ordering, the `Sections` rows,
@@ -75,6 +82,9 @@ proven and what is not:
   that exposes the registry it looks for.
 - The capture technique itself is proven in the real TUI by the reference probe, not by these
   tests.
+- **The card-style repaint has not been seen in a live TUI.** It depends on the host's `float`
+  grammar and on Pi's component tree; both are cited, neither is observed at runtime here, and a
+  downstream post-processor (cinlodev) can erase the frame — reported, not prevented.
 
 ## Success criteria
 
@@ -85,6 +95,9 @@ proven and what is not:
 - No silent failure: an uncaptured menu, a broken provider or a duplicate `setting` is
   visible in `/bridge-status`.
 - When gentle-shell changes its menu construction, exactly one module needs repair.
+- A plugin can add a card style with one call: the value appears on the host's own `Card style`
+  line, selecting it repaints every card the host drew, and selecting a host value or losing the
+  plugin returns the conversation to the host's rendering.
 - The reference probe's observed result reproduces through the package against the fake host
   that models the real call chain: a `Cards` category showing the injected line
   `Card bash   ● activity ○ output`. It has not yet been re-run in the real TUI through the

@@ -27,6 +27,7 @@
 import { armBridge } from "./arm.ts";
 import { flushNotices } from "./notices.ts";
 import { isRecord } from "./rows.ts";
+import { installCardStyleRows } from "./card-style-rows.ts";
 import { installCardStyleTransform } from "./card-style-wiring.ts";
 import { installSectionRows } from "./sections-rows.ts";
 import { installSidebarBackend, noteSidebarUnavailable, type SidebarTuiLike } from "./sidebar.ts";
@@ -156,6 +157,10 @@ export default function gentleShellBridge(pi: BridgeExtensionApi): void {
     // reached: the user can still see and toggle a section. Re-installing is idempotent — the bus
     // replaces a provider with the same id in place.
     installSectionRows();
+    // The card-style fallback line needs no `tui`: it is the bridge's own `Bridge → card style` line,
+    // registered only while the host's own line cannot be extended (the capture decides that, and
+    // disposes this provider the moment it extends the host's line instead).
+    installCardStyleRows();
     armSidebar(ctx.ui);
   });
 

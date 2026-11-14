@@ -50,7 +50,7 @@ import { recordNotice } from "./notices.ts";
 import { createStore } from "./store.ts";
 
 /** The release that published the object; informational, never the compatibility check. */
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 
 /** Identity of the object, so a foreign payload at the symbol is never mistaken for ours. */
 export const API_SCHEMA = "gentle-shell-bridge/api";
@@ -68,7 +68,7 @@ const WARNED_KEY: symbol = Symbol.for("gentle-shell-bridge/api/v1.warned");
 export interface BridgeApi {
   readonly schema: typeof API_SCHEMA;
   readonly version: typeof API_VERSION;
-  /** The publishing release, e.g. `"0.1.0"`. Informational. */
+  /** The publishing release, e.g. `"0.2.0"`. Informational. */
   readonly VERSION: string;
   readonly registerRows: typeof registerRows;
   readonly registerSection: typeof registerSection;

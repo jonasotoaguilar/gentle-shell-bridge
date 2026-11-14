@@ -10,7 +10,11 @@
  */
 
 import { snapshotCardStyles, snapshotProviders, snapshotSections } from "./bus.ts";
-import { cardStyleRowMode, type CardStyleRowMode } from "./card-style-rows.ts";
+import {
+  CARD_STYLE_ROWS_PROVIDER_ID,
+  cardStyleRowMode,
+  type CardStyleRowMode,
+} from "./card-style-rows.ts";
 import {
   getCardStyleLastOutcome,
   getCardStyleTransformFailures,
@@ -156,11 +160,14 @@ export function collectStatus(): StatusSnapshot {
   // Diagnostics never run providers: duplicate detection comes from the rows the LAST menu build
   // actually received, and is unknown until such a build exists.
   const snapshot: StatusSnapshot = {
-    // The bridge's own `Sections` provider is plumbing, not a plugin provider: its effect is the
-    // sections table below, and listing it would make a row-only session report a provider it never
-    // registered (B3).
+    // The bridge's own `Sections` and card-style fallback providers are plumbing, not plugin
+    // providers: their effect is the tables below, and listing one would make a session report a
+    // provider its user never registered (B3).
     providers: providers
-      .filter((provider) => provider.id !== SECTION_ROWS_PROVIDER_ID)
+      .filter(
+        (provider) =>
+          provider.id !== SECTION_ROWS_PROVIDER_ID && provider.id !== CARD_STYLE_ROWS_PROVIDER_ID,
+      )
       .map((provider) => ({ id: provider.id, category: provider.category })),
     backend,
     // Report the failures and the capture outcome of the backend that is actually in use.

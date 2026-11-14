@@ -316,7 +316,7 @@ test("a throwing setWidget accessor is reported and never escapes the session ha
   const entry = armThroughEntry(host); // must not throw
   host.buildMenu();
 
-  assert.ok(host.rendered().includes("MUSIC"), "the row side still works");
+  assert.ok(host.rendered().includes("music"), "the row side still works");
   const printed = printStatus(entry);
   assert.ok(
     printed.some((line) => line.includes("sidebar: not armed") && line.includes("ui exploded")),

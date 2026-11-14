@@ -158,7 +158,7 @@ One command, `/bridge-status`, reporting:
 | Last failures | most recent provider failures: `id`, message, and whether rows were dropped |
 | Store problems | store files this process could not use, with the plugin id and the reason |
 | Duplicate settings | every `category` + `setting` pair contributed by more than one provider in the rows of the last menu build; `no build yet` before the first build |
-| Sections | every registered section with its id, title, persisted visibility and where its position comes from (`order 3` or `registration order`); omitted when no section is registered |
+| Sections | every registered section with its id, title, the `row` label the menu reads (and the collision note when two wanted the same label), persisted visibility and where its position comes from (`order 3` or `registration order`); omitted when no section is registered. Ids stay here on purpose: this report is for the plugin author, not the user picking a toggle |
 | Section failures | the most recent sidebar frame's failing sections with `id`, `phase` (`lines`/`meta`) and message |
 | Sidebar | `intercepted (rail wrapped)`, `intercepted (rail pending)`, `no-sidebar-state`, or `not armed` with the reason the wiring could not acquire a `tui` |
 | Transforms | every registered transcript transform in pipeline order (`order 3` or `registration order`) with the last frame's outcome: `applied`, `skipped`, `failed` with the message, or `not run`; omitted when no transform is registered |
@@ -333,6 +333,7 @@ value, the `Sections` category or the rail:
 const dispose = api.registerSection({
   id: "loon.music",             // unique and stable: ordering, replacement, the toggle
   title: "MUSIC",               // card heading, drawn by the host's own frame
+  rowLabel: "music",            // optional: what the Sections row reads (derived from title when absent)
   meta: () => "1 playing",      // optional right-aligned text
   lines: () => ["track  Blue in Green", "album  Kind of Blue"], // per frame, live
   defaultVisible: true,         // absent means true
@@ -340,11 +341,12 @@ const dispose = api.registerSection({
 });
 ```
 
-The bridge generates the `Sections` rows for it: two consecutive rows sharing `Section: <id>`,
-values `shown` / `hidden`, with the section title as the label, a live `current()` and a persist-
-first `action()`. A hidden section is not rendered and its `lines()`/`meta()` are not called. A
-throw loses only that section's body and is reported by `/bridge-status`. `dispose()` removes the
-card and the toggle together, leaving every other section untouched.
+The bridge generates the `Sections` rows for it: two consecutive rows sharing one label,
+values `shown` / `hidden`, with a live `current()` and a persist-first `action()`. The label — not
+the id — is the line's name: `music  ● shown  ○ hidden`, next to the host's own
+`stats  ● shown  ○ hidden`. A hidden section is not rendered and its `lines()`/`meta()` are not
+called. A throw loses only that section's body and is reported by `/bridge-status`. `dispose()`
+removes the card and the toggle together, leaving every other section untouched.
 
 ### Surface 3: the optional namespaced store
 
@@ -416,6 +418,7 @@ import { registerSection } from "gentle-shell-bridge";
 const dispose: () => void = registerSection({
   id: "loon.music",                 // unique and stable: ordering, replacement, the toggle
   title: "MUSIC",                   // card heading, drawn like AGENTS / CHANGES / STATS
+  rowLabel: "music",                // optional: the text the Sections row reads
   meta: () => "1 playing",          // optional right-aligned count; omitted when blank
   lines: (ctx) => ["track  …"],     // body, evaluated per frame
   defaultVisible: true,             // absent means true
@@ -424,9 +427,14 @@ const dispose: () => void = registerSection({
 ```
 
 - `id` — registering an existing id **replaces** the previous section in place; a second
-  card never appears. That is also the toggle's identity, so a replacement keeps the user's
-  shown/hidden choice.
+  card never appears. It is the toggle's identity (replacement, disposer and the persisted
+  visibility key), and it is **internal**: it never appears in a row.
 - `title` — the heading the host's own card frame draws. The bridge does not draw a box.
+- `rowLabel` — optional: what the `Sections` row reads, e.g. `music`. When absent the bridge
+  derives one from `title`: lowercase words joined by spaces, dots and punctuation dropped, no
+  prefix (`"BASH CARD"` → `"bash card"`, `"usageCost"` → `"usage cost"`). Two sections whose
+  labels would read the same are told apart deterministically (`music`, `music 2`, …) and
+  `/bridge-status` says which one moved. An empty `rowLabel` is rejected before anything is stored.
 - `meta(ctx)` — optional right-aligned text. A throw drops that section's body (see below).
 - `lines(ctx)` — the body. Evaluated **per frame**, so live state is honest with no redraw API.
 - `defaultVisible` — the fallback until the user toggles the section.
@@ -468,14 +476,37 @@ never coerced.
 
 ### The automatic `Sections` rows
 
-For every registered section the bridge emits **two consecutive rows** in category
-`Sections`, sharing one `choice.setting` (`Section: <id>`), with values `shown` and `hidden`:
+The host's own `Sections` rows are bare labels: `changes`, `rdd`, `agents`, `todo`,
+`usageCost`, `modelDetails`, `contextWarning`, `stats`. The bridge's rows read the same way — a
+label the user reads, never an id and never a prefix:
 
-- the label is the section title, so a user knows which line controls what;
+```text
+stats             ● shown  ○ hidden     ← the host's own row
+music             ● shown  ○ hidden     ← a plugin's section (id "loon.music", title "MUSIC")
+```
+
+For every registered section the bridge emits **two consecutive rows** in category `Sections`,
+sharing one label as their `choice.setting` (the host prints the setting as the line's name) with
+values `shown` and `hidden`:
+
+- the label is the author's `rowLabel`, or `title` made readable (lowercase, words joined, no dots,
+  no prefix); the same string is the row `label` and the line's `setting`;
 - `current()` reads the persisted value live, so the `●` never lies;
 - `action()` persists **first** and returns; the host's own repaint re-reads `current()`;
 - `preview()` returns a literal depiction of the card in that state, never the host's
   "Preview unavailable" default.
+
+**The id is internal, the label is public.** `id` keys the registry (replacement and ordering), the
+`Sections`-row disposer and `bridge-sections.json`; it is never rendered. The label is the only
+thing a user sees.
+
+**Two sections never collide.** If two labels would read the same, the bridge disambiguates in
+render order: the first keeps the label, the next gets the lowest free suffix (`music`, `music 2`,
+`music 3`, …), never the raw id. The assignment is recomputed per menu build from the live
+registry, so it is deterministic for a given set of registrations. `/bridge-status` reports the
+label in force for each section and names the collision, so the menu and the report can never
+disagree. A title with no letters or digits at all derives to `section` (the fallback word)
+rather than an empty or id-shaped label.
 
 Rows are built per menu build from the live registry: a section registered later appears
 without re-registering anything, and a disposed section's rows disappear with it.
@@ -517,11 +548,17 @@ import { registerCardStyle } from "gentle-shell-bridge";
 const dispose: () => void = registerCardStyle({
   id: "loon.cute",              // identity: replacement and ordering key, and the stored value
   label: "cute",                // what the user reads; unique among the line's values
+  rowLabel: "cute",             // optional: what this style's row reads (derived from label when absent)
   order: 10,                    // optional: ordered styles first, ascending, then registration order
   frame: { top, line, bottom }, // the three functions below; nothing else is called
   preview: () => ({ title: "Cute", sample: "○ cute  ╭─ welcome ─╮" }), // optional, literal
 });
 ```
+
+The id never appears in a row: the host's line reads `Card style  ○ neon ● float ○ cute`, and the
+style's own row is labelled `cute` (or the author's `rowLabel`), exactly like a host row's visible
+text. `label` stays the line's value — the text the host renders and the uniqueness rule applies to
+— while `rowLabel` is what the menu row reads when it is not a setting line.
 
 ### The frame contract
 
@@ -591,6 +628,9 @@ conversation broken.
 - `label`: a non-empty string, unique — case-sensitively, as the host displays it — among the
   line's values (another registered style's label or the host's own). Two values reading the same
   cannot be told apart.
+- `rowLabel`: optional; the text this style's row reads, used verbatim. Absent, it is derived from
+  `label` (lowercase words, no dots, no prefix); an empty one is rejected. The `id` is never a row
+  label.
 - `frame.top`, `frame.line`, `frame.bottom`: functions. Any failure throws **before** anything is
   stored, like the row and section id rules.
 - Registering an existing `id` replaces that style in place; `dispose()` removes exactly the one

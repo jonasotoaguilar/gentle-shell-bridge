@@ -8,11 +8,14 @@
  *
  * ## The toggle
  *
- * Two consecutive rows share one `choice.setting` (the section's identity), with values `shown` and
- * `hidden`, so the host's renderer draws one line: `MUSIC  ● shown  ○ hidden`. `current()` reads the
- * persisted value live, `action()` writes it before returning (the host repaints afterwards, and its
- * repaint re-reads `current()`), and `preview()` depicts the card literally instead of leaving the
- * host's "Preview unavailable" default.
+ * Two consecutive rows share one `choice.setting` — the line's name, which the host prints — with
+ * values `shown` and `hidden`, so the host's renderer draws one line: `music  ● shown  ○ hidden`.
+ * The setting is the row's LABEL, derived from the title (or the author's `rowLabel`): an id in
+ * that field would put `Section: bash-card.status` in front of the user (N1, N2, `./row-labels.ts`).
+ * The section id stays identity — replacement, the disposer, the visibility store — and never
+ * reaches a row. `current()` reads the persisted value live, `action()` writes it before returning
+ * (the host repaints afterwards, and its repaint re-reads `current()`), and `preview()` depicts the
+ * card literally instead of leaving the host's "Preview unavailable" default.
  *
  * ## Where the value lives
  *
@@ -28,6 +31,7 @@
  */
 
 import { registerRows, snapshotSections } from "./bus.ts";
+import { sectionRowLabels } from "./row-labels.ts";
 import type { CustomizeRow, RowPreview, SidebarSection } from "./types.ts";
 import { getSectionVisibility, isSectionVisible, setSectionVisible } from "./visibility.ts";
 
@@ -43,14 +47,6 @@ export const SECTION_HIDDEN = "hidden";
 /** One of a toggle's two values. */
 export type SectionValue = typeof SECTION_SHOWN | typeof SECTION_HIDDEN;
 
-/**
- * The setting name that makes one section's two rows share a line. Derived from the id, so a
- * replacement registration reuses the same line instead of adding a second one.
- */
-export function sectionSetting(id: string): string {
-  return `Section: ${id}`;
-}
-
 function previewFor(section: SidebarSection, shown: boolean): RowPreview {
   return shown
     ? {
@@ -63,22 +59,24 @@ function previewFor(section: SidebarSection, shown: boolean): RowPreview {
       };
 }
 
-function toggleRow(section: SidebarSection, value: SectionValue): CustomizeRow {
+function toggleRow(section: SidebarSection, label: string, value: SectionValue): CustomizeRow {
   const shown = value === SECTION_SHOWN;
   return {
     category: SECTIONS_CATEGORY,
-    // The label names the section, so a user can tell which line controls what. A function, so a
-    // replacement registration's title shows without rebuilding the provider.
-    label: () => section.title,
+    // The label names the line, so a user can tell which toggle controls what. It is the SAME string
+    // as `choice.setting`, because the host prints the setting as the line's name; the id is not a
+    // label and never appears here.
+    label: () => label,
     choice: {
-      setting: sectionSetting(section.id),
+      setting: label,
       value,
       // Live read: the bullet reflects what is on disk right now, not what was true at build time.
       current: () => isSectionVisible(getSectionVisibility(), section) === shown,
     },
     preview: () => previewFor(section, shown),
     // Persist FIRST and synchronously; the host's repaint runs after this returns and re-reads
-    // `current()`, so the bullet cannot land on a value that was never written.
+    // `current()`, so the bullet cannot land on a value that was never written. The store is keyed
+    // by the section id, never by the label.
     action: () => setSectionVisible(section.id, shown),
   };
 }
@@ -94,10 +92,16 @@ export function installSectionRows(): () => void {
     category: SECTIONS_CATEGORY,
     rows: () => {
       const rows: CustomizeRow[] = [];
-      for (const section of snapshotSections()) {
+      // Per build, from the live registry: the collision assignment depends on which sections exist
+      // right now, so it is recomputed here and reported by `/bridge-status` through the same
+      // function — the menu and the report can never disagree.
+      for (const entry of sectionRowLabels(snapshotSections())) {
         // Both values are emitted even while the section is hidden: that toggle is how a user
         // brings it back.
-        rows.push(toggleRow(section, SECTION_SHOWN), toggleRow(section, SECTION_HIDDEN));
+        rows.push(
+          toggleRow(entry.section, entry.label, SECTION_SHOWN),
+          toggleRow(entry.section, entry.label, SECTION_HIDDEN),
+        );
       }
       return rows;
     },

@@ -197,6 +197,13 @@ otherwise leaves the slot absent.
   (`lib/visual-customize-view.ts:105`); full row shape at `:107-128`, inline helpers at
   `:129-140`.
 
+The bridge's own rows obey the same rule. Its `Sections` and card-style rows put a human label in
+`choice.setting` (`music`, `plain`) and in the row's `label` — never a registration id, which would
+read as the old `Section: bash-card.status` (`src/row-labels.ts`). Identity stays in the registry, so
+replacement, disposal and the stored visibility key remain keyed by id while nothing id-shaped is
+rendered. Two sections whose labels would read the same are disambiguated in render order
+(`music`, `music 2`, …) and `/bridge-status` reports the assignment in force.
+
 The bridge ships no renderer. Every visual behaviour above belongs to gentle-shell, which
 is why the contract can promise row kinds without promising pixels.
 
@@ -245,6 +252,7 @@ diagnostics stop reporting `hook`.
 | `src/sidebar.ts` | the rail interception: the state symbol, the patched `parts` map, the rail wrapper |
 | `src/sidebar-render.ts` | the section renderer: card rows and groups per frame, clipping, failures |
 | `src/sections-rows.ts` | the bridge's own `Sections` toggle rows |
+| `src/row-labels.ts` | the visible label for those rows: `rowLabel` or a derived one, plus the deterministic collision assignment (never an id) |
 | `src/visibility.ts` | bridge-owned section visibility in the namespaced store |
 | `src/store.ts` | `createStore`, the namespaced path and the atomic write |
 | `src/status.ts` | the `/bridge-status` text |
@@ -295,6 +303,18 @@ loses only that section's body and is recorded for `/bridge-status`. Rows are cl
 the host passes and the body is capped at 8 rows with a visible `… +N more` marker. Width is
 measured in **UTF-16 code units**, not terminal columns, and a plugin that emits ANSI owns its own
 width — the bridge does not parse or strip escape sequences.
+
+### The `Sections` toggle names
+
+`src/sections-rows.ts` builds the toggle from the live registry on every menu build, and
+`src/row-labels.ts` decides what it reads: the author's `rowLabel`, else the title made readable
+(lowercase words, dots and punctuation dropped). The label is BOTH the row's `label` and the line's
+`choice.setting`, because the host prints the setting as the line's name
+(`lib/visual-customize-view.ts:583-595`); the section id never reaches either. Equal labels are
+resolved in render order with the lowest free ordinal suffix, and `collectStatus()` uses the SAME
+function, so the menu and `/bridge-status` cannot disagree about which section reads `music 2`.
+Status output keeps the ids on purpose: it is read by the plugin author diagnosing a registration,
+not by the user picking a toggle.
 
 ### Acquiring a `tui` — and what is unconfirmed
 

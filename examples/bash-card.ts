@@ -136,6 +136,11 @@ interface RowProviderLike {
 interface SidebarSectionLike {
   id: string;
   title: string;
+  /**
+   * What the `Sections` row reads. Optional: the bridge derives one from `title` when it is absent.
+   * The example passes it explicitly so a reader copies the right shape — a label, never the id.
+   */
+  rowLabel?: string;
   meta?(ctx: { theme: unknown; configHome: string }): string | undefined;
   lines(ctx: { theme: unknown; configHome: string }): string[];
   defaultVisible?: boolean;
@@ -164,6 +169,8 @@ interface CardFrameBottomContextLike {
 interface CardStyleLike {
   id: string;
   label: string;
+  /** What the style's row reads; optional, derived from `label` when absent. Never the id. */
+  rowLabel?: string;
   order?: number;
   frame: {
     top(ctx: CardFrameTopContextLike): string;
@@ -276,6 +283,11 @@ const CARD_STYLE_ID = "bash-card.plain";
  * rejects a duplicate label at registration (`docs/contract.md` §12).
  */
 const CARD_STYLE_LABEL = "plain";
+/**
+ * What the style's row reads in `/gentle:customize`. Its id (`bash-card.plain`) stays internal: it
+ * is the replacement and selection key, and it would read as a dotted key in the menu.
+ */
+const CARD_STYLE_ROW_LABEL = "plain";
 
 /** One character of gutter per row: no box, no border glyphs, cheap to read. */
 const CARD_STYLE_GUTTER = "▌";
@@ -331,6 +343,9 @@ function bashCardStyle(): CardStyleLike {
   return {
     id: CARD_STYLE_ID,
     label: CARD_STYLE_LABEL,
+    // A label a user reads, passed explicitly so a reader copies the shape; the bridge would derive
+    // `plain` from the label anyway, and the id never appears in a row.
+    rowLabel: CARD_STYLE_ROW_LABEL,
     // After any style the host or another plugin leaves unordered; the host's own values come
     // first regardless (`docs/contract.md` §12).
     order: 30,
@@ -752,6 +767,11 @@ function renderingRow(store: BridgeStoreLike, value: BashRenderingMode): Customi
 const SECTION_ID = "bash-card.status";
 /** The card heading, drawn by the host's own frame like `AGENTS` / `STATS`. */
 const SECTION_TITLE = "BASH CARD";
+/**
+ * What the `Sections` toggle reads. Passed explicitly: the bridge derives `bash card` from the title
+ * anyway, but a reader should copy a label, never the dotted id above.
+ */
+const SECTION_ROW_LABEL = "bash card";
 
 /**
  * Live state for the card: the mode the user chose, and whether this load really registered its
@@ -765,6 +785,9 @@ function bashCardSection(
   return {
     id: SECTION_ID,
     title: SECTION_TITLE,
+    // The row label, not the id: the menu reads `bash card  ● shown  ○ hidden`, next to the host's
+    // own `stats` / `agents` lines.
+    rowLabel: SECTION_ROW_LABEL,
     // The right-aligned count: the same value the `Cards` toggle writes, so the two surfaces
     // cannot disagree.
     meta: () => readStoredMode(store),

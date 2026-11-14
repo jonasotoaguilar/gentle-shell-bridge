@@ -20,9 +20,14 @@ import {
   publishBridgeApi,
   resetBridgeApiForTests,
 } from "../src/api.ts";
+import { armBridge } from "../src/arm.ts";
+import { installCardStyleRows } from "../src/card-style-rows.ts";
+import { HOST_CARD_STYLE_SETTING } from "../src/card-style-line.ts";
 import { resetBusForTests, resetSectionsForTests, snapshotProviders, snapshotSections, snapshotTransforms } from "../src/bus.ts";
+import { installSectionRows } from "../src/sections-rows.ts";
 import { resetStoreStateForTests } from "../src/store.ts";
 import type { CustomizeRow, InlineHelpers } from "../src/types.ts";
+import { createFakeHost } from "./fake-host.ts";
 
 const hostSlot = (): Record<symbol, unknown> => globalThis as unknown as Record<symbol, unknown>;
 
@@ -388,6 +393,60 @@ test("the example's runtime path resolves no module of the bridge", () => {
     "and a bridge that loads later is heard on the announcement channel",
   );
   assert.match(source, /pi\.events/u, "the channel comes from Pi's own bus, not a module");
+});
+
+test("the example's rows read like host rows, and its ids stay internal", async () => {
+  publishBridgeApi();
+  const { pi, sessionHandlers } = recordingPi();
+  const init = await loadExample("row-labels");
+  init(pi);
+  const { ui } = notifySurface();
+  sessionHandlers[0]({}, { hasUI: true, ui });
+
+  installSectionRows();
+  installCardStyleRows();
+  const host = createFakeHost({
+    rows: [
+      { category: "Cards", label: "Card bash: builtin", action: () => {} },
+      { category: "Cards", label: "Card output: builtin", action: () => {} },
+      {
+        category: "Cards",
+        label: () => "Card style: neon",
+        choice: { setting: HOST_CARD_STYLE_SETTING, value: "neon", current: () => false },
+        action: async () => {},
+      },
+      {
+        category: "Cards",
+        label: () => "Card style: float",
+        choice: { setting: HOST_CARD_STYLE_SETTING, value: "float", current: () => true },
+        action: async () => {},
+      },
+    ],
+  });
+  armBridge(host.ui);
+  host.buildMenu();
+
+  assert.ok(
+    host.toggleLines().includes("bash card ● shown ○ hidden"),
+    `the section reads as a label, not \`Section: bash-card.status\` (${host.toggleLines().join(" | ")})`,
+  );
+  assert.ok(
+    host.toggleLines().includes("Card style ○ neon ● float ○ plain"),
+    "the style's value is its human label",
+  );
+
+  const labelOf = (row: CustomizeRow): string => {
+    const label = row.label;
+    return typeof label === "function" ? label() : (label ?? "");
+  };
+  const sectionRow = host.liveRows().find((row) => row.category === "Sections");
+  assert.equal(labelOf(sectionRow as CustomizeRow), "bash card");
+  const cardStyleRow = host.liveRows().find((row) => row.choice?.value === "plain");
+  assert.equal(labelOf(cardStyleRow as CustomizeRow), "plain");
+
+  const rendered = [...host.rendered(), ...host.toggleLines()].join("\n");
+  assert.equal(/bash-card\./u.test(rendered), false, "no dotted id reaches a row");
+  assert.equal(/Section:/u.test(rendered), false, "no `Section: ` prefix survives");
 });
 
 test("the absent case writes zero bytes to stdout and stderr", () => {

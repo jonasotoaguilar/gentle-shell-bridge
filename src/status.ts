@@ -35,6 +35,7 @@ import {
 } from "./sidebar.ts";
 import { getSectionFailures, type SectionRenderFailure } from "./sidebar-render.ts";
 import { SECTION_ROWS_PROVIDER_ID } from "./sections-rows.ts";
+import { sectionRowLabels } from "./row-labels.ts";
 import { getStoreDiagnostics, type StoreProblem } from "./store.ts";
 import type { CustomizeRow, RowContext, RowProvider } from "./types.ts";
 import { getSectionVisibility, isSectionVisible } from "./visibility.ts";
@@ -67,6 +68,10 @@ export interface StatusSectionEntry {
   visible: boolean;
   /** The render position's source: an explicit integer, or registration order when absent. */
   order: number | "registration";
+  /** The label the section's `Sections` row reads (N2). The id stays in `id`, never in a row. */
+  rowLabel: string;
+  /** Present when two sections wanted the same label: the label this one had to move away from. */
+  rowLabelCollision?: string;
 }
 
 /** One buffered notice, as `/bridge-status` lists it: still pending, or already delivered. */
@@ -203,10 +208,16 @@ export function collectStatus(): StatusSnapshot {
   // The sidebar surface. Nothing here runs a section: the table reports registrations and the
   // persisted visibility, and the failures are the ones the last frame already recorded — `lines()`
   // and `meta()` are never called by a diagnostics report.
+  //
+  // Ids belong in THIS report (N4): it is read by the plugin author diagnosing a registration, not by
+  // the user picking a toggle. The rows the user sees show labels only (`./row-labels.ts`), so these
+  // ids exist precisely to be found here. The label column is the same assignment the rows use,
+  // including collision disambiguation, so the report explains what the menu shows instead of
+  // recomputing it differently.
   const sections = snapshotSections();
   if (sections.length > 0) {
     const visibility = getSectionVisibility();
-    snapshot.sections = sections.map((section) => ({
+    snapshot.sections = sectionRowLabels(sections).map(({ section, label, collision }) => ({
       id: section.id,
       title: section.title,
       visible: isSectionVisible(visibility, section),
@@ -214,6 +225,8 @@ export function collectStatus(): StatusSnapshot {
         typeof section.order === "number" && Number.isFinite(section.order)
           ? section.order
           : "registration",
+      rowLabel: label,
+      ...(collision === undefined ? {} : { rowLabelCollision: collision }),
     }));
   }
   const sectionFailures = getSectionFailures();
@@ -500,7 +513,13 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
       const order =
         section.order === "registration" ? "registration order" : `order ${section.order}`;
       const visibility = section.visible ? "visible" : "hidden";
-      lines.push(`  - ${section.id} "${section.title}": ${visibility}, ${order}`);
+      // The id and the title are diagnostics; `row` is what the menu actually reads, and the
+      // collision note says why two equal titles did not produce two equal lines (N2, N4).
+      const row =
+        section.rowLabelCollision === undefined
+          ? `, row "${section.rowLabel}"`
+          : `, row "${section.rowLabel}" (label collision with "${section.rowLabelCollision}")`;
+      lines.push(`  - ${section.id} "${section.title}": ${visibility}, ${order}${row}`);
     }
   }
 

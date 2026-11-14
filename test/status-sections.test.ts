@@ -81,13 +81,13 @@ test("the sections table reports id, title, visibility and where the order comes
   const snapshot = collectStatus();
 
   assert.deepEqual(snapshot.sections, [
-    { id: "first", title: "FIRST", visible: true, order: 1 },
-    { id: "late", title: "LATE", visible: true, order: 5 },
-    { id: "plain", title: "PLAIN", visible: true, order: "registration" },
+    { id: "first", title: "FIRST", visible: true, order: 1, rowLabel: "first" },
+    { id: "late", title: "LATE", visible: true, order: 5, rowLabel: "late" },
+    { id: "plain", title: "PLAIN", visible: true, order: "registration", rowLabel: "plain" },
   ]);
   assert.deepEqual(statusLines().filter((line) => line.includes("FIRST") || line.includes("PLAIN")), [
-    '  - first "FIRST": visible, order 1',
-    '  - plain "PLAIN": visible, registration order',
+    '  - first "FIRST": visible, order 1, row "first"',
+    '  - plain "PLAIN": visible, registration order, row "plain"',
   ]);
   assert.ok(statusLines().includes("sections: 3"));
 });

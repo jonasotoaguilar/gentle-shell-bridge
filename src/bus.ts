@@ -182,8 +182,24 @@ function assertSectionId(id: unknown): asserts id is string {
   assertRegistrationId("section", id);
 }
 
+/**
+ * `rowLabel`, when present, is text a human reads in the menu, so an empty one is a plugin bug and
+ * is rejected before anything is stored — the same discipline as the id.
+ */
+function assertRowLabel(kind: string, id: string, rowLabel: unknown): void {
+  if (rowLabel === undefined) return;
+  if (typeof rowLabel !== "string" || rowLabel.trim() === "") {
+    throw new Error(
+      `gentle-shell-bridge: invalid ${kind} rowLabel for ${JSON.stringify(id)}: it must be a ` +
+        "non-empty string. It is the text a user reads in the menu; the id stays internal. Omit it " +
+        "to let the bridge derive a label from the visible text instead.",
+    );
+  }
+}
+
 export function registerSection(section: SidebarSection): () => void {
   assertSectionId(section.id);
+  assertRowLabel("section", section.id, section.rowLabel);
   const state = bus();
   const entry: SectionEntry = { section };
   const index = state.sections.findIndex((candidate) => candidate.section.id === section.id);
@@ -328,6 +344,7 @@ export function registerCardStyle(style: CardStyleRegistration): () => void {
   }
   assertCardStyleLabel(style.id, style.label);
   assertCardStyleLabelIsDistinct(style);
+  assertRowLabel("card style", style.id, style.rowLabel);
   assertCardFrame(style.id, style.frame);
 
   const state = bus();

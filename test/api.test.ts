@@ -355,7 +355,7 @@ test("a plugin that registers from session_start renders its section and its Sec
 
   assert.deepEqual(cardTitles(), ["FOOTER", "MUSIC"], "the registered section reached the rail");
   assert.deepEqual(cardBody("MUSIC"), ["track  one"]);
-  const toggle = host.toggleLines().find((line) => line.startsWith("Section: loon.music"));
+  const toggle = host.toggleLines().find((line) => line.startsWith("music "));
   assert.ok(toggle !== undefined, "and its toggle reached Sections");
   assert.ok(toggle.includes("● shown") && toggle.includes("○ hidden"));
   assert.ok(

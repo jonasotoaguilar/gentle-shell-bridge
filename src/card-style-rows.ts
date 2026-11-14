@@ -45,6 +45,7 @@ import {
   setCardStyleSelection,
 } from "./card-styles.ts";
 import { recordNotice } from "./notices.ts";
+import { cardStyleRowLabelText } from "./row-labels.ts";
 import { isRecord } from "./rows.ts";
 import type { CardStyleRegistration, CustomizeRow, RowPreview, RowProvider } from "./types.ts";
 
@@ -143,9 +144,11 @@ function previewFor(style: CardStyleRegistration): RowPreview {
  *
  * `choice.value` is the style's short `label`, not its namespaced id, because the host renders
  * `value` and nothing else on a setting line (`lib/visual-customize-view.ts:583-595`) — the id would
- * put `loon.cute` in front of the user. Identity is carried by the closures below, never by the
- * displayed text: `current()` compares the stored selection with the style's id, and `action()`
- * persists that id, so renaming a label cannot lose a user's choice.
+ * put `loon.cute` in front of the user. The row's own `label` is the visible text too, derived from
+ * that `label` (or the author's `rowLabel`, N1/N3): the id stays internal here as well. Identity is
+ * carried by the closures below, never by the displayed text: `current()` compares the stored
+ * selection with the style's id, and `action()` persists that id, so renaming a label cannot lose a
+ * user's choice.
  *
  * `current()` reads the persisted selection live (so the bullet cannot lie), `action()` persists
  * FIRST and lets the host's repaint follow, and `preview()` is literal.
@@ -153,7 +156,7 @@ function previewFor(style: CardStyleRegistration): RowPreview {
 function styleRow(style: CardStyleRegistration, setting: string): CustomizeRow {
   return {
     category: HOST_CARD_STYLE_CATEGORY,
-    label: () => style.label,
+    label: () => cardStyleRowLabelText(style),
     choice: {
       setting,
       value: style.label,

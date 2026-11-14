@@ -481,7 +481,7 @@ test("a tui without a conversation is reported, and rows and sections still work
     "the row provider reached the menu",
   );
   assert.ok(
-    host.toggleLines().some((line) => line.startsWith("Section: loon.music ")),
+    host.toggleLines().some((line) => line.startsWith("music ")),
     "and the section toggle is there too",
   );
   assert.ok(snapshotProviders().some((registered) => registered.id === "loon.banner-source"));

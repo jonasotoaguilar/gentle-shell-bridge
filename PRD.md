@@ -54,7 +54,7 @@ behind the adapter.
 | R7 | A diagnostics command reports providers, active backend, last capture outcome and last failures. | `/bridge-status` | Implemented as `/bridge-status`; formatter and entry tested, including store problems and duplicate settings from the last menu build |
 | R8 | Composition is stateless; persistence is the plugin's, with an optional namespaced store helper. | `createStore`, [docs/state.md](docs/state.md) | Implemented; `createStore` tested against temporary directories. One documented exception: a sidebar section's visibility is bridge-owned (see R12) |
 | R9 | `registerSection(section)` adds a card to gentle-shell's sidebar and returns a disposer that removes it, with no extra step from the plugin. | `registerSection`, section shape | Implemented; end-to-end over the public API against the fake rail, never in a real TUI |
-| R10 | Each registered section automatically contributes two consecutive rows to `Sections` (its title, `shown`/`hidden`), reading and persisting the same value the rail renders. | Automatic toggle rows | Implemented; the menu, the persistence file and the next rail frame are asserted together — against the fake host and fake rail |
+| R10 | Each registered section automatically contributes two consecutive rows to `Sections` (a readable label derived from its title or an explicit `rowLabel`, plus `shown`/`hidden`), reading and persisting the same value the rail renders; the id stays internal and never appears in a row. | Automatic toggle rows | Implemented; the menu, the persistence file and the next rail frame are asserted together — against the fake host and fake rail — including the label derivation and the collision rule |
 | R11 | A hidden section is neither rendered nor built (`lines()`/`meta()` not called); a throwing section loses only its own body and is reported. | S7 failure isolation | Implemented; pinned with call counters and `/bridge-status` section failures, against the fake host |
 | R12 | Section visibility persists in the bridge's own store, not the host's `visual-customization.json`, which rejects unknown keys. | `bridge-sections.json`, [docs/state.md](docs/state.md) | Implemented; the document shape is asserted byte-for-byte, and the reason for the separate file is recorded |
 | R13 | `registerCardStyle(style)` accepts `{ id, label, frame: { top, line, bottom }, preview?, order? }`, validates id/label/frame before storing, replaces in place on the same id, and returns a disposer that removes exactly that style. | `registerCardStyle`, frame contract | Implemented; validation, ordering, replacement and disposal are unit-tested, and the published-API path is exercised end to end |
@@ -88,7 +88,7 @@ end to end through the public API and the real extension entry. What is proven a
   tests.
 - **The card-style repaint has not been seen in a live TUI.** It depends on the host's `float`
   grammar and on Pi's component tree; both are cited, neither is observed at runtime here, and a
-  downstream post-processor (cinlodev) can erase the frame — reported, not prevented.
+  downstream post-processor can erase the frame — reported, not prevented.
 
 ## Success criteria
 

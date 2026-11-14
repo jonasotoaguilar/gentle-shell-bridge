@@ -112,8 +112,9 @@ adds the card to the sidebar and its show/hide toggle to `/gentle:customize` →
 import { registerSection } from "gentle-shell-bridge";
 
 const dispose = registerSection({
-  id: "loon.music",             // unique and stable: ordering, replacement, the toggle
+  id: "loon.music",             // unique and stable: ordering, replacement, the toggle; internal
   title: "MUSIC",               // card heading, framed by the host like AGENTS / STATS
+  rowLabel: "music",            // optional: the text the Sections row reads (derived from title)
   meta: () => "1 playing",      // optional right-aligned count
   lines: () => ["track  Blue in Green", "album  Kind of Blue"], // per frame, live
   defaultVisible: true,
@@ -122,6 +123,20 @@ const dispose = registerSection({
 
 // dispose() removes the card and its toggle; other sections are untouched.
 ```
+
+The row is a **label**, never the id and never a prefix. The host's own `Sections` rows read
+`changes`, `stats`, `usageCost`; a plugin's section reads the same way:
+
+```text
+stats             ● shown  ○ hidden     ← the host's own row
+music             ● shown  ○ hidden     ← this plugin's section
+```
+
+`id` stays internal: it is the replacement, disposer and stored-visibility key, and it never
+appears in a row. With no `rowLabel`, the bridge derives one from `title` — lowercase words joined
+by spaces, dots and punctuation dropped (`"BASH CARD"` → `"bash card"`). Two sections whose labels
+would read the same are told apart deterministically (`music`, `music 2`, …) and `/bridge-status`
+says which one moved; the raw id is never the suffix.
 
 What the bridge does with those fields, and what it will not do: the card is drawn by the
 host's own frame code, the body is clipped to the rail width and capped at 8 rows (with a
@@ -144,8 +159,9 @@ A plugin can add a third card style to gentle-shell's conversation cards, on the
 import { registerCardStyle } from "gentle-shell-bridge";
 
 const dispose: () => void = registerCardStyle({
-  id: "loon.cute",  // unique; the stored value and the replacement key
-  label: "cute",    // shown on the line: Card style  ○ neon ● float ○ cute
+  id: "loon.cute",  // unique; the stored value and the replacement key — internal, never a row
+  label: "cute",    // the line's value: Card style  ○ neon ● float ○ cute
+  rowLabel: "cute", // optional: what this style's row reads (derived from label when absent)
   frame: {
     top: (ctx) => `╭─ ${ctx.title ?? ""} ${"─".repeat(Math.max(0, ctx.width - 6))}╮`,
     line: (ctx) => `│ ${ctx.text.padEnd(Math.max(0, ctx.width - 4))} │`,
@@ -159,8 +175,9 @@ const dispose: () => void = registerCardStyle({
 ```
 
 Rules the row cannot break: `id` and `label` are unique among the line's values (the host's
-`neon`/`float` and the bridge's `native` are taken), and the style only ever receives text and a
-width — it parses nothing. Full contract: [docs/contract.md](docs/contract.md) §12.
+`neon`/`float` and the bridge's `native` are taken), the visible text is a label (`label` on the
+line, `rowLabel` — or `label` made readable — for the row), the id never appears in a row, and the
+style only ever receives text and a width — it parses nothing. Full contract: [docs/contract.md](docs/contract.md) §12.
 
 ## Quick start: a transcript transform
 
@@ -323,13 +340,16 @@ a silent no-op. Duplicates are computed from the rows the last menu build actual
 received, so before any build the report says `duplicate settings: no build yet` instead of
 claiming there are none. Diagnostics never run a provider's `rows()`.
 
-It also answers the sidebar question: a `sections` table (id, title, persisted visibility and
-where the position comes from), the most recent frame's `section failures`, and a `sidebar`
-line — `intercepted (rail wrapped)`, `intercepted (rail pending)`, `no-sidebar-state`, or
+It also answers the sidebar question: a `sections` table (id, title, the `row` label the menu
+reads plus a collision note when two labels wanted the same text, persisted visibility and where
+the position comes from), the most recent frame's `section failures`, and a `sidebar` line —
+`intercepted (rail wrapped)`, `intercepted (rail pending)`, `no-sidebar-state`, or
 `not armed` with the reason the wiring could not acquire a `tui`. Those three blocks appear
 only when they have something to say, so a row-only install keeps the historical output.
 Diagnostics never run a section's `lines()`/`meta()` either. The hook backend is reported as
-`hook` only when this process pushed its fan-out provider into a host registry.
+`hook` only when this process pushed its fan-out provider into a host registry. Ids stay in this
+report on purpose: it is for the plugin author diagnosing a registration, not for the user picking
+a toggle.
 
 For card styles it reports the line mode (`extended` when the host's own line was found,
 `separate` when the fallback line was used), the registered styles in order, the live selection

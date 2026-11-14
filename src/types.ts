@@ -88,6 +88,12 @@ export interface SidebarSection {
   id: string;
   /** The section heading, drawn like the host's own `AGENTS`/`CHANGES`/`STATS` titles. */
   title: string;
+  /**
+   * What the `Sections` rows read, e.g. `"music"`. Optional: when absent the bridge derives it from
+   * `title` (lowercase words, no dots, no prefix), and two sections whose labels read the same are
+   * disambiguated deterministically and reported by `/bridge-status`. The `id` is never shown.
+   */
+  rowLabel?: string;
   /** Optional right-aligned text, the analogue of `idle` / `clean` / `3`. */
   meta?(ctx: SectionContext): string | undefined;
   /**
@@ -194,6 +200,12 @@ export interface CardStyleRegistration {
   id: string;
   /** The short text shown on the `Card style` line for this value. */
   label: string;
+  /**
+   * What this style's row reads in the menu, e.g. `"plain"`. Optional: when absent the bridge
+   * derives it from `label` (lowercase words, no dots, no prefix). `label` stays the line's value and
+   * the `id` stays internal; the row never shows the id.
+   */
+  rowLabel?: string;
   frame: CardFrame;
   /** Optional literal depiction of the style, drawn in the customize preview. */
   preview?(): RowPreview;

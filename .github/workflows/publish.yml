@@ -1,0 +1,190 @@
+name: Publish to npm
+
+# Tag-only release: `git tag -a vX.Y.Z` and push it. Preflight runs first,
+# then the publication, then a verification of what the registry serves.
+#
+# Credentials: NO npm token exists in this repository or in any environment.
+# The publish job holds `id-token: write` and npm exchanges that OIDC
+# assertion for a short-lived registry token (Trusted Publishing). A missing or
+# broken trusted-publisher binding fails loudly instead of falling back to a
+# long-lived secret, which is the failure mode this shape exists to prevent.
+#
+# Bootstrap: npm cannot publish the FIRST version of a package through OIDC —
+# the trusted-publisher page only exists once the package does. Publish 0.3.0
+# once by hand (`npm login`, then `npm publish --access public`, no token), then
+# cut the next version through this workflow: a version the registry already has
+# is skipped and its GitHub Release is still created, so re-running is safe.
+#
+# If the trusted publisher in npm's settings names an environment, add
+# `environment: <that name>` to the publish job and create it here; the two must
+# match or the OIDC exchange is refused.
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "!v*-*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Setup Node.js
+        # setup-node v4.2.0
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a
+        with:
+          node-version: 22
+
+      # The tag is the release's authority, so it must BE the version in the
+      # manifest: a `v0.4.0` tag on a tree that still says 0.3.0 would publish
+      # the wrong artifact under an immutable version number.
+      - name: Tag matches the manifest
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          if [[ "v${version}" != "${RELEASE_TAG}" ]]; then
+            echo "::error::tag ${RELEASE_TAG} is not version ${version}"
+            exit 1
+          fi
+          echo "::notice::tag ${RELEASE_TAG} matches package.json"
+
+      - name: Install
+        run: npm install --no-audit --no-fund
+
+      - name: Test
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # What ships is part of the contract: `files` decides it, and this prints
+      # the exact tarball contents before anything is immutable.
+      - name: Confirm the tarball
+        run: npm pack --dry-run
+
+  publish:
+    name: Publish
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      # Trusted publishing: grant the OIDC assertion here and nowhere else.
+      id-token: write
+    env:
+      GITHUB_TOKEN: ""
+    steps:
+      - name: Checkout exact tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Setup Node.js
+        # setup-node v4.2.0
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm >= 11.5.1; Node 22 bundles npm 10.
+      - name: Install a current npm (trusted publishing requirement)
+        run: npm install -g npm@12
+
+      # Idempotent per version: a published version can never be replaced, so a
+      # tag whose version the registry already has is reported and the release
+      # below still happens. Provenance needs a PUBLIC repository source, so a
+      # private one publishes without the attestation and says so.
+      - name: Publish to npm
+        env:
+          REPO_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          set -euo pipefail
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          if npm view "${name}@${version}" version >/dev/null 2>&1; then
+            echo "::notice::npm already has ${name}@${version}"
+            echo "::notice::publish skipped; the release is still created"
+            exit 0
+          fi
+          if [[ "${REPO_PRIVATE}" == "true" ]]; then
+            echo "::warning::private repository: no provenance attestation"
+            npm publish --access public
+          else
+            npm publish --access public --provenance
+          fi
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "::notice::release ${RELEASE_TAG} already exists"
+          else
+            gh release create "${RELEASE_TAG}" \
+              --generate-notes --title "${RELEASE_TAG}" --verify-tag
+          fi
+
+  verify:
+    name: Verify
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Setup Node.js
+        # setup-node v4.2.0
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Read from the registry, outside the publish job: the artifact is what
+      # counts, not the step that produced it.
+      - name: Registry serves this version
+        run: |
+          set -euo pipefail
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          published=$(npm view "${name}@${version}" version)
+          if [[ "${published}" != "${version}" ]]; then
+            echo "::error::registry reports ${published}, expected ${version}"
+            exit 1
+          fi
+          latest=$(npm view "${name}" dist-tags.latest)
+          if [[ "${latest}" != "${version}" ]]; then
+            echo "::error::dist-tag latest is ${latest}, expected ${version}"
+            exit 1
+          fi
+          echo "::notice::npm serves ${name}@${version} (latest)"

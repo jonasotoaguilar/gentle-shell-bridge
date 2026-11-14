@@ -88,3 +88,18 @@ test("test and typecheck scripts are declared", () => {
   assert.equal(manifest.scripts?.test, "node --test");
   assert.equal(manifest.scripts?.typecheck, "tsc --noEmit");
 });
+
+test("the released version and the public VERSION agree", async () => {
+  const entry = await import("../src/index.ts");
+  assert.equal(typeof manifest.version, "string");
+  assert.match(
+    manifest.version,
+    /^\d+\.\d+\.\d+$/u,
+    `the manifest version must be a plain release version, got ${String(manifest.version)}`,
+  );
+  assert.equal(
+    entry.VERSION,
+    manifest.version,
+    "package.json and src/index.ts must never drift: one of them is what a consumer reads",
+  );
+});

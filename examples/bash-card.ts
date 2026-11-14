@@ -11,9 +11,26 @@
  *    sharing one `choice.setting`, and `createStore("bash-card-example")` persists the choice, so
  *    the row and the renderer read the same value.
  *
+ * C. The sidebar section — through the bridge too. `registerSection` adds a `BASH CARD` card to
+ *    gentle-shell's fullscreen sidebar, drawn by the host's own frame, whose body reports the mode
+ *    and whether this load actually wired the bash renderer. The same registration gives it a
+ *    `Sections` toggle in `/gentle:customize`, so the card can be hidden without the plugin writing
+ *    a row, a setting or a store for it. A bridge that publishes an incompatible API is treated as
+ *    absent: B and C register nothing and the example says so once through `ctx.ui.notify`.
+ *
  * Loading: copy this file into `~/.pi/agent/extensions/` (or point Pi's `packages` entry at this
  * repository) and `/reload`. The toggle defaults to `default`, so installing the example changes
  * no rendering until the user asks for it.
+ *
+ * Reaching the bridge needs no path, no environment variable and no import: the file and the
+ * bridge meet on `globalThis` behind one `Symbol.for` key (see "Reaching gentle-shell-bridge"
+ * below). The example registers inside its own `pi.on("session_start", ...)` handler, which is the
+ * moment the symbol's presence is the complete answer: Pi finishes loading every module before it
+ * fires that event, so the bridge either published already or is not installed.
+ *
+ * Diagnostics stay inside Pi: nothing here writes to stdout/stderr. A message (no bridge, no
+ * renderer slot) is buffered and delivered through `ctx.ui.notify` on `session_start`, which is
+ * the only channel Pi renders in its own report.
  *
  * Stale rows: the choice is read when a bash row is BUILT, not per frame, so switching it applies
  * to the next bash call. Rows already on screen keep the rendering they were built with; `Esc` or
@@ -26,9 +43,6 @@
  * below, the way `src/extension.ts` declares the extension API it uses. The renderer returns plain
  * strings, which is all a `Component` is required to do.
  */
-
-import { homedir } from "node:os";
-import { resolve } from "node:path";
 
 // ---------------------------------------------------------------------------------------------
 // The one value both surfaces agree on
@@ -138,15 +152,47 @@ interface RowProviderLike {
   rows(ctx: { theme: unknown; configHome: string }): CustomizeRowLike[];
 }
 
-/** The two exports of `gentle-shell-bridge` this example uses (`docs/contract.md`, Limits). */
-interface BridgeModuleLike {
+/**
+ * The section contract (`docs/contract.md` §11), structural like every host shape here. A section
+ * writes content only: no `choice`, no `action`, no `preview` — the bridge contributes the toggle.
+ */
+interface SidebarSectionLike {
+  id: string;
+  title: string;
+  meta?(ctx: { theme: unknown; configHome: string }): string | undefined;
+  lines(ctx: { theme: unknown; configHome: string }): string[];
+  defaultVisible?: boolean;
+  order?: number;
+}
+
+/**
+ * The API object `gentle-shell-bridge` publishes (`src/api.ts`, `BridgeApi`): the members this
+ * example calls, structurally. Nothing here imports the package, so the shape has to be declared.
+ */
+interface BridgeApiLike {
+  readonly schema: string;
+  readonly version: number;
   registerRows(provider: RowProviderLike): () => void;
+  registerSection(section: SidebarSectionLike): () => void;
   createStore(pluginId: string): BridgeStoreLike;
+}
+
+/** The part of Pi's `session_start` context this file reads. */
+interface SessionContextLike {
+  hasUI?: boolean;
+  ui?: unknown;
+}
+
+/** The one channel Pi gives an extension for text that is not a row: the in-TUI notification. */
+interface NoticeUiLike {
+  notify?: (message: string, level?: "info" | "warning" | "error") => void;
 }
 
 /** The part of `ExtensionAPI` this extension uses. */
 interface ExtensionApiLike {
   registerToolRenderer?(resolver: ToolRendererResolverLike): void;
+  /** `session_start` carries the UI context, so this is where a buffered notice is delivered. */
+  on?(event: "session_start", handler: (event: unknown, ctx: SessionContextLike) => void): void;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -520,54 +566,92 @@ function readStoredMode(store: BridgeStoreLike | undefined): BashRenderingMode {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Resolving `gentle-shell-bridge`. An extension file lives outside the package, so probe it.
+// Reaching gentle-shell-bridge: a runtime handshake, not a path
+// ---------------------------------------------------------------------------------------------
+//
+// A Pi extension lives outside every package, so it cannot resolve a bare specifier, and an
+// absolute path is not a contract between two independent projects: it names one checkout on one
+// machine and breaks the day either project moves. So the bridge and the plugin meet on
+// `globalThis`, the one channel Pi sanctions (`docs/extensions.md:1965-1972`), behind one stable
+// symbol:
+//
+//   Symbol.for("gentle-shell-bridge/api/v1")  → the frozen, versioned API object
+//
+// Registration happens in this file's own `session_start` handler. Pi completes every extension's
+// async initialization before firing that event (`docs/extensions.md:213`), and the bridge
+// publishes as its module loads, so the handler either finds the object or knows the bridge is not
+// installed. There is nothing to wait for and nowhere to defer a registration.
+//
+// The constant and the gate MIRROR `src/api.ts` and are inlined on purpose: this file must not
+// import the bridge, not even to say hello, and a copy-pasteable handshake is the smallest way to
+// keep that promise. Keep them in sync — a breaking change is a new `v2` key, never a mutation of
+// this one.
+
+/** The published API object's key. */
+const BRIDGE_API_KEY = Symbol.for("gentle-shell-bridge/api/v1");
+
+function bridgeHost(): Record<symbol, unknown> {
+  // SAFETY: `globalThis` accepts symbol keys; every value read through this view is gated by
+  // `isBridgeApi` before use.
+  return globalThis as unknown as Record<symbol, unknown>;
+}
+
+/**
+ * The shape gate: the schema string, `version === 1` and the three members this example calls.
+ * Anything else — another library's object, a future major version, a partial object — is treated
+ * as ABSENT, never as an error, exactly as the bridge's own `isBridgeApi` does.
+ */
+function isBridgeApi(value: unknown): value is BridgeApiLike {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    candidate.schema === "gentle-shell-bridge/api" &&
+    candidate.version === 1 &&
+    typeof candidate.registerRows === "function" &&
+    typeof candidate.registerSection === "function" &&
+    typeof candidate.createStore === "function"
+  );
+}
+
+/** The one notice when this load has nowhere to register: the bridge is absent, full stop. */
+const NO_BRIDGE_NOTICE =
+  "[bash-card] no compatible gentle-shell-bridge is installed, so this load adds nothing: no " +
+  "Cards toggle and no BASH CARD sidebar section. Its own bash renderer still works. A slot that " +
+  "holds another object is treated as absent, never used.";
+
+// ---------------------------------------------------------------------------------------------
+// The in-TUI diagnostics channel
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Specifiers to try, most portable first. Proven on this machine: the bare specifier does NOT
- * resolve from `~/.pi/agent/extensions/` (no node_modules on that path), while the package's
- * absolute `src/index.ts` does, through jiti and through Node's own loader.
+ * Messages that must reach Pi's TUI but cannot yet: at module load no context exists. They are
+ * NEVER printed — Pi renders its own diagnostics inside the TUI, and text written to the terminal
+ * at startup lands outside the report the user reads.
  */
-function bridgeCandidates(): string[] {
-  const candidates: string[] = [];
-  const override = process.env.GENTLE_SHELL_BRIDGE_MODULE;
-  if (typeof override === "string" && override.trim() !== "") candidates.push(override.trim());
-  candidates.push("gentle-shell-bridge");
-  candidates.push(resolve(homedir(), "dev/projects/gentle-shell-bridge-worktrees/row-bridge-package/src/index.ts"));
-  candidates.push(resolve(homedir(), ".pi/agent/npm/node_modules/gentle-shell-bridge/src/index.ts"));
-  return candidates;
-}
+const pendingNotices: string[] = [];
+/** How many a session already showed; a delivered message is never delivered twice. */
+let deliveredNotices = 0;
 
-function isBridgeModule(value: unknown): value is BridgeModuleLike {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as { registerRows?: unknown; createStore?: unknown };
-  return typeof candidate.registerRows === "function" && typeof candidate.createStore === "function";
+function recordNotice(message: string): void {
+  if (!pendingNotices.includes(message)) pendingNotices.push(message);
 }
 
 /**
- * Load the package, or report why it could not be loaded and let the extension keep running:
- * without the bridge there is no toggle, so `default` is the only reachable mode and bash keeps
- * its native rendering.
+ * Deliver every pending notice through `ctx.ui.notify`. A context without a `notify` delivers
+ * nothing, and a `notify` that throws leaves the remaining messages pending for the next session.
  */
-async function loadBridge(): Promise<BridgeModuleLike | undefined> {
-  const tried: string[] = [];
-  for (const specifier of bridgeCandidates()) {
+function flushNotices(ui: unknown): void {
+  const surface = typeof ui === "object" && ui !== null ? (ui as NoticeUiLike) : undefined;
+  const notify = surface?.notify;
+  if (typeof notify !== "function") return;
+  while (deliveredNotices < pendingNotices.length) {
     try {
-      // A non-literal specifier: the host runtime resolves it against the extension's own
-      // location, which is exactly the question this example has to answer empirically.
-      const loaded: unknown = await import(specifier);
-      if (isBridgeModule(loaded)) return loaded;
-      tried.push(`${specifier} — loaded, but it exports no registerRows/createStore`);
-    } catch (error) {
-      tried.push(`${specifier} — ${error instanceof Error ? error.message : String(error)}`);
+      notify.call(surface, pendingNotices[deliveredNotices], "warning");
+    } catch {
+      return;
     }
+    deliveredNotices += 1;
   }
-  console.warn(
-    "[bash-card] gentle-shell-bridge could not be imported, so this example adds no toggle row " +
-      "and leaves bash rendering alone. Point GENTLE_SHELL_BRIDGE_MODULE at the package's " +
-      `src/index.ts to use a checkout. Tried:\n  ${tried.join("\n  ")}`,
-  );
-  return undefined;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -628,18 +712,53 @@ function renderingRow(store: BridgeStoreLike, value: BashRenderingMode): Customi
 }
 
 // ---------------------------------------------------------------------------------------------
+// The sidebar section
+// ---------------------------------------------------------------------------------------------
+
+/** Stable across loads, so `/reload` replaces this section instead of stacking it (S1, S2). */
+const SECTION_ID = "bash-card.status";
+/** The card heading, drawn by the host's own frame like `AGENTS` / `STATS`. */
+const SECTION_TITLE = "BASH CARD";
+
+/**
+ * Live state for the card: the mode the user chose, and whether this load really wired the bash
+ * renderer. Both are cheap on purpose — `lines()` runs once per rail frame, so this is one store
+ * read plus one boolean, with no card built and nothing invented.
+ */
+function bashCardSection(store: BridgeStoreLike, rendererRegistered: boolean): SidebarSectionLike {
+  return {
+    id: SECTION_ID,
+    title: SECTION_TITLE,
+    // The right-aligned count: the same value the `Cards` toggle writes, so the two surfaces
+    // cannot disagree.
+    meta: () => readStoredMode(store),
+    lines: () => [
+      `rendering  ${readStoredMode(store)}`,
+      `renderer   ${rendererRegistered ? "registered" : "absent"}`,
+    ],
+    // Visible on install: a section needs no extra step from the plugin or the user (S1).
+    defaultVisible: true,
+    // After any section the host or another plugin leaves unordered; the host's own parts come
+    // first regardless (S3).
+    order: 20,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
 // Extension entry
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Registers the bash renderer resolver. The setting is read inside the resolver — once per call,
- * never at load time — which is what lets `/gentle:customize` change rendering without a reload.
+ * Registers the bash renderer resolver and reports whether the slot was actually claimed. The
+ * setting is read inside the resolver — once per call, never at load time — which is what lets
+ * `/gentle:customize` change rendering without a reload. The return value is honest state for the
+ * sidebar section, not a decoration: a Pi without `registerToolRenderer` must not claim one.
  */
-function registerBashRenderer(pi: ExtensionApiLike, readMode: () => BashRenderingMode): void {
+function registerBashRenderer(pi: ExtensionApiLike, readMode: () => BashRenderingMode): boolean {
   const register = pi.registerToolRenderer;
   if (typeof register !== "function") {
-    console.warn("[bash-card] this Pi has no pi.registerToolRenderer; bash keeps its native rendering.");
-    return;
+    recordNotice("[bash-card] this Pi has no pi.registerToolRenderer; bash keeps its native rendering.");
+    return false;
   }
 
   // `next()` is the renderer chain this resolver did not take; a host whose chain throws
@@ -664,34 +783,80 @@ function registerBashRenderer(pi: ExtensionApiLike, readMode: () => BashRenderin
       return fallback(next);
     }
   });
+  return true;
 }
 
-export default async function bashCardExample(pi: ExtensionApiLike): Promise<void> {
-  // Holds the store once it exists; `undefined` means the bridge has not loaded (or failed), and
-  // every read then reports `default`, so bash rendering is untouched.
+export default function bashCardExample(pi: ExtensionApiLike): () => void {
+  // Holds the store once it exists; `undefined` means the bridge is not here yet, and every read
+  // then reports `default`, so bash rendering is untouched.
   const state: { store?: BridgeStoreLike } = {};
 
-  registerBashRenderer(pi, () => readStoredMode(state.store));
+  // Claimed before the bridge is reached: the sidebar section reports whether this happened.
+  const rendererRegistered = registerBashRenderer(pi, () => readStoredMode(state.store));
 
-  const bridge = await loadBridge();
-  if (bridge === undefined) return;
+  const disposers: Array<() => void> = [];
+  let closed = false;
+  let bridgeRegistered = false;
 
-  let store: BridgeStoreLike;
-  try {
-    store = bridge.createStore(PLUGIN_ID);
-  } catch (error) {
-    console.warn(
-      `[bash-card] could not open the bridge store for "${PLUGIN_ID}": ` +
-        `${error instanceof Error ? error.message : String(error)}`,
+  /** Both surfaces belong to one registration lifetime: disposing the example must not leave half. */
+  const dispose = (): void => {
+    closed = true;
+    for (const registered of disposers.splice(0, disposers.length)) {
+      try {
+        registered();
+      } catch {
+        // A disposer that throws must not strand the other one.
+      }
+    }
+  };
+
+  /** Register both bridge surfaces once. A stable id each, so a `/reload` replaces, not stacks. */
+  const registerWithBridge = (api: BridgeApiLike): void => {
+    if (closed || bridgeRegistered) return;
+
+    let store: BridgeStoreLike;
+    try {
+      store = api.createStore(PLUGIN_ID);
+    } catch (error) {
+      recordNotice(
+        `[bash-card] could not open the bridge store for "${PLUGIN_ID}": ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
+    state.store = store;
+
+    disposers.push(
+      api.registerRows({
+        id: "bash-card-example.rendering",
+        category: ROW_CATEGORY,
+        rows: () => bashRenderingRows(store),
+      }),
+      api.registerSection(bashCardSection(store, rendererRegistered)),
     );
-    return;
-  }
-  state.store = store;
+    bridgeRegistered = true;
+  };
 
-  // Same provider id on every load, so a `/reload` replaces these rows instead of stacking them.
-  bridge.registerRows({
-    id: "bash-card-example.rendering",
-    category: ROW_CATEGORY,
-    rows: () => bashRenderingRows(store),
-  });
+  // Pi renders diagnostics inside the TUI, so every message this example produces is delivered
+  // there — never on stdout/stderr — and the handler does nothing when the context has no UI.
+  //
+  // Registration happens here, not at module load: by `session_start` every extension module has
+  // loaded, so the symbol's presence is the complete answer. Absent means "not installed" (or an
+  // incompatible version); there is nothing to wait for, so the example says so once and returns.
+  const onSessionStart = (_event: unknown, ctx: SessionContextLike): void => {
+    if (closed || ctx.hasUI !== true) return;
+
+    if (!bridgeRegistered) {
+      const published = bridgeHost()[BRIDGE_API_KEY];
+      if (isBridgeApi(published)) registerWithBridge(published);
+      else recordNotice(NO_BRIDGE_NOTICE);
+    }
+
+    flushNotices(ctx.ui);
+  };
+  if (typeof pi.on === "function") pi.on("session_start", onSessionStart);
+
+  // Nothing depends on this return value — the stable ids are what make a `/reload` replace rather
+  // than stack — it exists so a programmatic caller can tear both surfaces down together.
+  return dispose;
 }

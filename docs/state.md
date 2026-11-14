@@ -1,7 +1,9 @@
 # ADR 0001 — Stateless composition, with an optional per-plugin store
 
 - **Status:** accepted for the extraction; implemented in `src/store.ts` and exercised by the
-  test suite.
+  test suite. **Amended** by decision 4: a registered sidebar section's visibility is the one
+  piece of state the bridge itself owns. **Amended** by decision 5: plugins reach the bridge
+  through a published, versioned `globalThis` slot instead of a path or an environment variable.
 - **Context:** [contract.md](contract.md), [architecture.md](architecture.md)
 - **Deciders:** package author and gentle-shell maintainers.
 
@@ -52,6 +54,25 @@ zero boilerplate gets:
 `loon-tui.json`. The bridge never reads or writes a plugin's own file. `createStore` is a
 convenience for plugins that have no file yet, not a migration target for plugins that do.
 
+**4. One exception, and only one: a sidebar section's visibility is bridge-owned state.**
+`registerSection` makes the bridge create the show/hide toggle, so the value behind that toggle
+cannot belong to the plugin: there is no plugin row, no plugin-chosen setting name and no plugin
+store in the flow. The bridge persists it in its own namespaced file,
+`<gentle config home>/gentle-shell-bridge/bridge-sections.json`, as
+
+```json
+{ "schemaVersion": 1, "values": { "sections": { "loon.music": false } } }
+```
+
+one key (`sections`) mapping section id → boolean, defaults taken from the section's
+`defaultVisible`, non-boolean values ignored rather than coerced.
+
+Why not the host's `visual-customization.json`: gentle-shell validates that file against a closed
+`VISUAL_SECTION_KEYS` list (`lib/visual-customization-policy.ts:82`, `keysMatch` ~:112-130) and
+rejects unknown keys, so a third-party section key cannot live there. The user experience is the
+native one; the file deliberately is not, and that difference is documented in
+[contract.md](contract.md) §11 rather than hidden.
+
 ## Consequences
 
 ### The correctness rule
@@ -69,6 +90,30 @@ action: () => store.set("bannerSource", value), // persist; repaint follows
 
 The bridge cannot enforce this. It can only document the rule; a plugin that caches a value
 at registration produces a stale `●` and the diagnostics command will not detect it.
+
+### Bridge-owned section visibility
+
+This is the one place the bridge is not stateless, and the reason is structural: the bridge
+generates the toggle, so only the bridge can know which value it points at. The plugin still owns
+nothing — it never sees this file, never picks a key, and its section appears or disappears from
+the same user gesture as a native one.
+
+- The blast radius stays per surface: one corrupt `bridge-sections.json` disables section
+  visibility only. It reads as empty (defaults apply), is reported by `/bridge-status` as a store
+  problem, and is rewritten as a valid document by the next toggle — the same rules
+  `createStore` already follows for plugin files.
+- A plugin that also keeps its own state is unaffected: this file is keyed by section id and the
+  bridge never reads anything else from it.
+- The cost is honest: the bridge now owns one preference. It is a preference about the bridge's
+  own surface, which is why it belongs here and not in a plugin's namespace.
+
+### Reads, cost and limits of bridge-owned visibility
+
+- Visibility is read once per frame by the renderer and once per `current()` call by the rows, so a
+  toggle shows up on the sidebar's next frame (pinned by a test), at the cost of a small file read
+  per read. A cache would need to be invalidated by the toggle's own write.
+- There is no migration path from a future `visual-customization.json` section key; if the host ever
+  opens `VISUAL_SECTION_KEYS`, this file becomes redundant and can be migrated in one place.
 
 ### Other consequences
 
@@ -111,6 +156,41 @@ is why the optional helper wins over pure minimalism.
 **C. Chosen: stateless composition plus optional namespaced store.** Keeps the blast radius
 per plugin (A's failure mode), keeps a fixable default for the write path (B's gap), and
 leaves existing plugin files untouched.
+
+**D. Rejected: the plugin imports the bridge by path, or the user sets
+`GENTLE_SHELL_BRIDGE_MODULE`.** The worked example used to resolve the package by trying a
+dynamic `import()` of candidate `src/index.ts` paths. Rejected: a path is not a contract between
+two independent projects — it names one checkout on one machine, reaches into another package's
+files, and breaks silently the day either repository moves. An environment variable moves the
+same path into every user's shell setup, so the feature does nothing until someone is told to set
+it, which contradicts "one call, zero extra steps". Neither channel carries a version gate, so
+either can hand a plugin an object it cannot use with no way to notice. Removed from the example
+in `f0f30fe`.
+
+**E. Chosen: publish a frozen, versioned object on `globalThis`; consume it at `session_start`.**
+The bridge publishes `{ schema, version, VERSION, registerRows, registerSection, createStore }` at
+`Symbol.for("gentle-shell-bridge/api/v1")` when its module loads — first-wins, never overwritten,
+never reset. A plugin registers from its own `session_start` handler: Pi completes every extension
+module's async initialization before firing that event (`docs/extensions.md:213`, `:393`, `:512`),
+so the slot either holds the object or the bridge is not installed. A consumer gates on the schema
+string, `version === 1` and the three callable members; anything else is absent, `bridgeApi()`
+returns `undefined`, and the bridge warns once per process. `bridgeApi()` and `isBridgeApi(value)`
+are the same handshake for a plugin that does import the package, and the exact form is quoted in
+[contract.md](contract.md) §9. It follows the `pi-lens` bridge convention (stable symbol, versioned,
+first-wins frozen, new major = new key) and gentle-shell's schema-string plus shape gate.
+
+**History: a deferred-registration slot was removed.** An earlier revision of this decision added
+a second `Symbol.for` slot holding initialisation callbacks, run at publish time and on every
+`session_start`. It existed only to let a plugin register at module load — the one moment where
+"not yet" and "never" are indistinguishable — and `session_start` already fires after every module
+has loaded, so that path was redundant. Removing it also removed the only path that could defer a
+plugin silently: a newer plugin against an older bridge now sees "absent", which is the intended
+answer.
+
+The cost is real and accepted: every plugin repeats the same handful of lines — a symbol lookup
+and a shape gate — and copies them into its own file, because the whole point is that it cannot
+import the bridge. That boilerplate lasts until Pi ships a real cross-extension registry; on that
+day the inline block in each plugin becomes one call and this decision is superseded, not extended.
 
 ## Open questions
 

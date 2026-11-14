@@ -68,6 +68,42 @@ export interface CustomizeRow {
   action?: (inline: InlineHelpers) => void | Promise<void>;
 }
 
+/**
+ * Context handed to a section's `lines(ctx)` and `meta(ctx)` on every frame.
+ *
+ * The same shape as `RowContext` — the host's theme, passed through untouched, and the resolved
+ * gentle-shell config home — so a plugin that already builds rows uses one context type for both
+ * surfaces and never re-derives the path. Aliased rather than duplicated: two identical interfaces
+ * would drift.
+ */
+export type SectionContext = RowContext;
+
+/**
+ * A plugin's sidebar section: the analogue of `RowProvider` for the rail, mirroring the sidebar
+ * spec's S2. The plugin writes content only — it never names a `setting`, a rail key or a card
+ * frame; the bridge frames the section and contributes its visibility toggle.
+ */
+export interface SidebarSection {
+  /** Unique and stable: the key for ordering, replacement and the persisted visibility toggle. */
+  id: string;
+  /** The section heading, drawn like the host's own `AGENTS`/`CHANGES`/`STATS` titles. */
+  title: string;
+  /** Optional right-aligned text, the analogue of `idle` / `clean` / `3`. */
+  meta?(ctx: SectionContext): string | undefined;
+  /**
+   * The body, evaluated per frame, so live state is honest without a redraw API. A throw drops
+   * this section's body, and only this section's.
+   */
+  lines(ctx: SectionContext): string[];
+  /** Visible unless the user (or the plugin) says otherwise; defaults to `true`. */
+  defaultVisible?: boolean;
+  /**
+   * Optional integer. Sections with an `order` render first, ascending; sections without one
+   * follow in registration order.
+   */
+  order?: number;
+}
+
 /** A plugin's contribution: rows for one category, built lazily per menu build. */
 export interface RowProvider {
   /** Unique and stable, e.g. `"loon.banner-source"`; the key for ordering and replacement. */

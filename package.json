@@ -1,6 +1,6 @@
 {
   "name": "gentle-shell-bridge",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Shared provider bus for gentle-shell's /gentle:customize settings rows: plugins register rows, the bridge owns the single interception layer.",
   "type": "module",
   "keywords": [

@@ -9,12 +9,21 @@
  * fixed (docs/contract.md §6).
  */
 
-import { snapshotProviders } from "./bus.ts";
+import { snapshotProviders, snapshotSections } from "./bus.ts";
 import { getCaptureDiagnostics, type CaptureOutcome } from "./capture.ts";
 import { getHookDiagnostics } from "./hook.ts";
+import { snapshotNotices, type NoticeLevel } from "./notices.ts";
 import { getLastRowBuild, type RowBuildRecord } from "./rows.ts";
+import {
+  getSidebarDiagnostics,
+  type SidebarDiagnostics,
+  type SidebarFailure,
+} from "./sidebar.ts";
+import { getSectionFailures, type SectionRenderFailure } from "./sidebar-render.ts";
+import { SECTION_ROWS_PROVIDER_ID } from "./sections-rows.ts";
 import { getStoreDiagnostics, type StoreProblem } from "./store.ts";
 import type { CustomizeRow, RowContext, RowProvider } from "./types.ts";
+import { getSectionVisibility, isSectionVisible } from "./visibility.ts";
 
 export type StatusBackend = "hook" | "capture" | "none";
 
@@ -36,6 +45,34 @@ export interface StatusFailure {
   rowsDropped: boolean;
 }
 
+/** One registered sidebar section, as `/bridge-status` lists it. */
+export interface StatusSectionEntry {
+  id: string;
+  title: string;
+  /** The persisted (or default) visibility right now. */
+  visible: boolean;
+  /** The render position's source: an explicit integer, or registration order when absent. */
+  order: number | "registration";
+}
+
+/** One buffered notice, as `/bridge-status` lists it: still pending, or already delivered. */
+export interface StatusNoticeEntry {
+  level: NoticeLevel;
+  message: string;
+  delivered: boolean;
+}
+
+/** Where the sidebar interception stands, so a missing section has an answer. */
+export type StatusSidebarState = "intercepted" | "no-sidebar-state" | "unarmed";
+
+export interface StatusSidebarEntry {
+  state: StatusSidebarState;
+  /** Only for `no-sidebar-state`: why nothing could be intercepted. */
+  reason?: string;
+  /** Only when intercepted: whether the part we append to is in the host's map already. */
+  rail?: "wrapped" | "pending";
+}
+
 export interface StatusSnapshot {
   providers: StatusProviderEntry[];
   backend: StatusBackend;
@@ -44,6 +81,24 @@ export interface StatusSnapshot {
   storeProblems: StoreProblem[];
   /** Absent until a menu build has happened: duplicates cannot be computed without rows. */
   duplicates?: StatusDuplicate[];
+  /** Absent when no section is registered, so a row-only run keeps its historical output. */
+  sections?: StatusSectionEntry[];
+  /** Absent when the most recent sidebar frame had no section failure. */
+  sectionFailures?: SectionRenderFailure[];
+  /**
+   * Failures the RAIL BACKEND recorded in the most recent frame (a throwing host `render`, a
+   * throwing contributor, a failed card-group call). Absent when there were none.
+   */
+  sidebarFailures?: SidebarFailure[];
+  /** Absent when the sidebar backend was never installed (reported as "not armed"). */
+  sidebar?: StatusSidebarEntry;
+  /**
+   * Every buffered bridge notice, delivered or still pending. Absent when there is none, so the
+   * report for a clean session keeps its historical output exactly.
+   */
+  notices?: StatusNoticeEntry[];
+  /** Messages the bounded buffer evicted before they could be shown. Absent when none were. */
+  noticesDropped?: number;
 }
 
 /**
@@ -61,7 +116,12 @@ export function collectStatus(): StatusSnapshot {
   // Diagnostics never run providers: duplicate detection comes from the rows the LAST menu build
   // actually received, and is unknown until such a build exists.
   const snapshot: StatusSnapshot = {
-    providers: providers.map((provider) => ({ id: provider.id, category: provider.category })),
+    // The bridge's own `Sections` provider is plumbing, not a plugin provider: its effect is the
+    // sections table below, and listing it would make a row-only session report a provider it never
+    // registered (B3).
+    providers: providers
+      .filter((provider) => provider.id !== SECTION_ROWS_PROVIDER_ID)
+      .map((provider) => ({ id: provider.id, category: provider.category })),
     backend,
     // Report the failures and the capture outcome of the backend that is actually in use.
     failures:
@@ -74,7 +134,85 @@ export function collectStatus(): StatusSnapshot {
   if (duplicates !== undefined) snapshot.duplicates = duplicates;
   const lastCapture = backend === "hook" ? hook.lastCapture : capture.lastOutcome;
   if (lastCapture !== undefined) snapshot.lastCapture = lastCapture;
+
+  // The sidebar surface. Nothing here runs a section: the table reports registrations and the
+  // persisted visibility, and the failures are the ones the last frame already recorded — `lines()`
+  // and `meta()` are never called by a diagnostics report.
+  const sections = snapshotSections();
+  if (sections.length > 0) {
+    const visibility = getSectionVisibility();
+    snapshot.sections = sections.map((section) => ({
+      id: section.id,
+      title: section.title,
+      visible: isSectionVisible(visibility, section),
+      order:
+        typeof section.order === "number" && Number.isFinite(section.order)
+          ? section.order
+          : "registration",
+    }));
+  }
+  const sectionFailures = getSectionFailures();
+  if (sectionFailures.length > 0) snapshot.sectionFailures = sectionFailures;
+  const sidebarDiagnostics = getSidebarDiagnostics();
+  if (sidebarDiagnostics.lastFailures.length > 0) {
+    // The rail backend's own failures are a separate class: a throwing host render, a throwing
+    // contributor. Without them, a frame that lost every section would report nothing (B1).
+    snapshot.sidebarFailures = sidebarDiagnostics.lastFailures;
+  }
+  // The notices the bridge had to report out of band (an incompatible API object). They are listed
+  // here so removing them from the terminal never made them invisible: after the one-time notify,
+  // this is where they stay.
+  const notices = snapshotNotices();
+  if (notices.entries.length > 0) {
+    snapshot.notices = notices.entries.map((entry) => ({
+      level: entry.level,
+      message: entry.message,
+      delivered: entry.emitted,
+    }));
+    if (notices.dropped > 0) snapshot.noticesDropped = notices.dropped;
+  }
+  const sidebarEntry = describeSidebar(sidebarDiagnostics);
+  // The sidebar line is worth a line only when it explains something: a registered section that may
+  // not be appearing, or a rail that IS intercepted. A row-only session with no rail keeps the
+  // pre-feature output exactly (B3).
+  if (
+    sidebarEntry !== undefined &&
+    (snapshot.sections !== undefined || sidebarEntry.state === "intercepted")
+  ) {
+    snapshot.sidebar = sidebarEntry;
+  }
+
   return snapshot;
+}
+
+/**
+ * Map the backend's diagnostics onto the three states a user needs: intercepted, present-but-nothing
+ * to intercept, or previously installed and now off. Never-installed is `undefined` ("not armed").
+ */
+function describeSidebar(diagnostics: SidebarDiagnostics): StatusSidebarEntry | undefined {
+  if (diagnostics.interceptedMaps > 0) {
+    return {
+      state: "intercepted",
+      rail: diagnostics.wrappedRails > 0 ? "wrapped" : "pending",
+    };
+  }
+  if (
+    diagnostics.lastOutcome === "no-sidebar-state" ||
+    diagnostics.lastOutcome === "resolver-threw"
+  ) {
+    return {
+      state: "no-sidebar-state",
+      ...(diagnostics.lastReason === undefined ? {} : { reason: diagnostics.lastReason }),
+    };
+  }
+  if (diagnostics.lastOutcome === "no-widget-surface") {
+    return {
+      state: "unarmed",
+      ...(diagnostics.lastReason === undefined ? {} : { reason: diagnostics.lastReason }),
+    };
+  }
+  if (diagnostics.lastOutcome !== undefined) return { state: "unarmed" };
+  return undefined;
 }
 
 /**
@@ -183,6 +321,58 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
         `  - ${duplicate.category} / "${duplicate.setting}": ${duplicate.providerIds.join(", ")}`,
       );
     }
+  }
+
+  // These blocks are emitted only when they have something to say. What is guaranteed: a session
+  // that registers no section and never intercepts a rail prints exactly the pre-feature output
+  // (proved through the real entry, not just this formatter). The sections table appears once a
+  // section is registered; the sidebar line appears when a section is registered — so an
+  // unreachable rail is an answer — or when a rail is actually intercepted.
+  if (snapshot.sections !== undefined) {
+    lines.push(`sections: ${snapshot.sections.length}`);
+    for (const section of snapshot.sections) {
+      const order =
+        section.order === "registration" ? "registration order" : `order ${section.order}`;
+      const visibility = section.visible ? "visible" : "hidden";
+      lines.push(`  - ${section.id} "${section.title}": ${visibility}, ${order}`);
+    }
+  }
+
+  if (snapshot.sectionFailures !== undefined) {
+    lines.push(`section failures: ${snapshot.sectionFailures.length}`);
+    for (const failure of snapshot.sectionFailures) {
+      lines.push(`  - ${failure.sectionId} (${failure.phase}): ${failure.message}`);
+    }
+  }
+
+  if (snapshot.sidebarFailures !== undefined) {
+    lines.push(`sidebar failures: ${snapshot.sidebarFailures.length}`);
+    for (const failure of snapshot.sidebarFailures) {
+      lines.push(`  - ${failure.key} (${failure.phase}): ${failure.message}`);
+    }
+  }
+
+  if (snapshot.sidebar === undefined) {
+    if (snapshot.sections !== undefined) lines.push("sidebar: not armed");
+  } else if (snapshot.sidebar.state === "intercepted") {
+    lines.push(`sidebar: intercepted (rail ${snapshot.sidebar.rail})`);
+  } else if (snapshot.sidebar.state === "no-sidebar-state") {
+    const reason = snapshot.sidebar.reason === undefined ? "" : ` (${snapshot.sidebar.reason})`;
+    lines.push(`sidebar: no-sidebar-state${reason}`);
+  } else {
+    const reason = snapshot.sidebar.reason === undefined ? "" : ` (${snapshot.sidebar.reason})`;
+    lines.push(`sidebar: not armed${reason}`);
+  }
+
+  if (snapshot.notices !== undefined) {
+    lines.push(`notices: ${snapshot.notices.length}`);
+    for (const notice of snapshot.notices) {
+      const state = notice.delivered ? "delivered" : "pending";
+      lines.push(`  - ${notice.level} (${state}): ${notice.message}`);
+    }
+  }
+  if (snapshot.noticesDropped !== undefined) {
+    lines.push(`notices dropped: ${snapshot.noticesDropped}`);
   }
 
   return lines;

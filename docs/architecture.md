@@ -234,13 +234,18 @@ diagnostics stop reporting `hook`.
 
 | Module | Owns |
 | --- | --- |
-| `src/index.ts` | the plugin-facing API: `registerRows`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, types |
-| `src/extension.ts` | the Pi entry from `pi.extensions`: `session_start` arming and the `/bridge-status` command |
+| `src/index.ts` | the plugin-facing API: `registerRows`, `registerSection`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, `bridgeApi`, `isBridgeApi`, types; importing it also publishes the handshake through `./api.ts` |
+| `src/api.ts` | the runtime handshake: the one `Symbol.for` slot, the frozen published object, the shape gate, `bridgeApi()` and publication |
+| `src/extension.ts` | the Pi entry from `pi.extensions`: `session_start` arming (rows + sidebar widget), the `Sections` provider, and the `/bridge-status` command |
 | `src/arm.ts` | backend selection and the arm result |
 | `src/capture.ts` | the single `Array.prototype.map` patch and the captured array |
 | `src/hook.ts` | the host-registry probe and the one fan-out provider |
-| `src/bus.ts` | the `globalThis` provider list and its ordered snapshot |
+| `src/bus.ts` | the `globalThis` provider list and its ordered snapshot, plus the section registry |
 | `src/rows.ts` | the one row builder both backends call, with per-provider isolation |
+| `src/sidebar.ts` | the rail interception: the state symbol, the patched `parts` map, the rail wrapper |
+| `src/sidebar-render.ts` | the section renderer: card rows and groups per frame, clipping, failures |
+| `src/sections-rows.ts` | the bridge's own `Sections` toggle rows |
+| `src/visibility.ts` | bridge-owned section visibility in the namespaced store |
 | `src/store.ts` | `createStore`, the namespaced path and the atomic write |
 | `src/status.ts` | the `/bridge-status` text |
 | `src/config.ts`, `src/types.ts` | config-home resolution; the row, provider and context types |
@@ -248,6 +253,134 @@ diagnostics stop reporting `hook`.
 Because both backends call `src/rows.ts`, a plugin sees the same `registerRows` semantics on
 either one. Because the arming markers live on the target objects and the state slots live on
 `globalThis`, a second copy of the package arms nothing new and reads the same diagnostics.
+
+## 12. The sidebar surface
+
+The second surface a plugin can publish to. Same shape as the rows: one process-global registry,
+one interception, one place that reports why nothing appeared.
+
+### Where the rail lives, verified
+
+- Rail state hangs on the **terminal** behind
+  `Symbol.for("gentle-pi.experimental-sidebar.state")`, not in module scope
+  (`lib/shell-sidebar.ts:6,78-80`), so separately loaded extensions share one rail.
+- `sidebarPart` writes the part into `state.parts` (`:88`) and deletes it on dispose (`:92-95`).
+- The layout paints a hard-coded key order — `["todo","jobs","agents","footer"]`
+  (`lib/shell-sidebar-layout.ts:344`) — so an unknown key never renders: appending to an
+existing part is the only way in, and the `footer` part is painted last.
+- A part's cards come from `cardGroups` (`:392-410`) fed into `sectionCardRows` (`:35-44`), which
+  is why a wrapped rail can look native: the host draws the frame, we supply rows and ranges.
+- The status sections (`CHANGES`, `STATS`, `INTEGRATIONS`) are built inline in a closure
+  (`lib/shell-bar.ts:247,251-316`): unreachable, so no interleaving is possible.
+- The host's own `footer` part is registered at `extensions/gentle-shell.ts:2681`; readers reach
+  another part's `spend` through `parts.get("agents").spend()` (`:2652`), which is why every field
+  of the wrapped part is forwarded untouched, `digest` included (the layout memo keys on it).
+
+### The interception
+
+`src/sidebar.ts` patches the **map instance's own** `set` and `get` instead of replacing the map or
+subclassing it: every holder keeps the map it already has, so a part registered after our arm is
+still captured, and a part registered before it is wrapped on install. Two markers keep it
+idempotent across arms, rebinds and package copies: the map's own property holds the exact `set`
+function installed, and the wrapper rail holds the exact rail it wraps. A foreign wrapper already
+on the part is wrapped around, never replaced; `disableSidebarBackend()` restores the host's part
+and leaves any retained wrapper as a pass-through (a generation guard).
+
+### The renderer
+
+`src/sidebar-render.ts` contributes the section rows and their card groups per frame. A hidden
+section is not built at all; a throwing `lines()`/`meta()`, a sparse array or a non-string row
+loses only that section's body and is recorded for `/bridge-status`. Rows are clipped to the width
+the host passes and the body is capped at 8 rows with a visible `… +N more` marker. Width is
+measured in **UTF-16 code units**, not terminal columns, and a plugin that emits ANSI owns its own
+width — the bridge does not parse or strip escape sequences.
+
+### Acquiring a `tui` — and what is unconfirmed
+
+A rail state is reached through a `tui` (`sidebarState(tui)` reads `tui.terminal`). Pi exposes
+**no `tui` getter**: `ExtensionUIContext` in `dist/core/extensions/types.d.ts` mentions `TUI` only
+as a factory parameter. The only surfaces that hand an extension's factory the real TUI are
+`ctx.ui.setWidget(key, (tui, theme) => Component)` — `interactive-mode.js:1998`,
+`content(this.ui, theme)` — plus `setFooter` (`:2084`), `setHeader`, `custom` and
+`setEditorComponent`, and each installs a rendered component. gentle-shell itself gets its `tui`
+this way (`extensions/gentle-agents.ts:2165-2175`).
+
+So `src/extension.ts` installs a widget factory that keeps the `tui` it receives and returns a
+component whose `render()` is `[]`. A missing `setWidget`, or a factory the host has not run yet, is
+recorded as `no-widget-surface` and reported as `sidebar: not armed (reason)`.
+
+**UNCONFIRMED:** whether a widget component that renders zero rows leaves the editor area visually
+untouched has not been observed in a running Pi TUI. Nothing in the docs says either way; the
+empty component is the minimal guess, and it is listed here rather than claimed.
+
+## 13. Runtime discovery: a frozen object, not a path
+
+How a plugin that does not depend on this package reaches it. Everything above assumes the plugin
+already holds `registerRows` / `registerSection`; this section is how it gets them with nothing
+installed, configured or imported.
+
+### What Pi does and does not offer
+
+- **No service registry.** Pi's extension API (`docs/extensions.md`) exposes registration calls
+  (commands, tools, providers, MCP servers, handlers) but no lookup that returns another
+  extension's live object. There is nothing a plugin could call to ask "is gentle-shell-bridge
+  loaded?".
+- **`pi.events` is the only sanctioned cross-extension channel** (`docs/extensions.md:1965-1972`,
+  "Shared event bus for communication between extensions"), and it is a notification bus:
+  `emit`/`on` delivers values to listeners at emit time. It is not a registry the host reads
+  synchronously while it builds the menu. gentle-shell builds its rows inside the `ctx.ui.custom`
+  factory (§5) and reads the rail map at render time (§12), so a plugin reachable only through an
+  event handler cannot put rows into either. Events are not the seam.
+- **`globalThis` is the one object two separately loaded extensions already share** in one
+  process, and gentle-shell already relies on it: one stable `Symbol.for` key per piece of
+  process-global state (`lib/shell-card.ts:40-41`, `lib/card-content-policy.ts:78`,
+  `lib/shell-sidebar.ts:6`), because Pi loads every extension through its own jiti module
+  instance (§7).
+
+### The convention this follows
+
+- `pi-lens` mounts its IO bridge at a stable `Symbol.for` key with a version constant, first-wins
+  and frozen, and a breaking major takes a **new** symbol key instead of mutating the old slot
+  (`clients/io-bridge-contract.ts:25-32`, `clients/process-bridge.ts:48-81`).
+- gentle-shell names its shared payloads with a `schema` string and gates on the exact shape
+  before using them (`lib/card-content-policy.ts:11,40`, `lib/card-style-policy.ts:29`).
+
+The bridge combines the two. `Symbol.for("gentle-shell-bridge/api/v1")` holds a frozen object
+carrying the schema string, the major version and the three callable members, and the consumer
+checks all of them with `isBridgeApi` (`src/api.ts`). `v1` in the key is the major: `v2` is a new
+key and `v1` is never mutated.
+
+### First wins, and consumption at `session_start`
+
+`src/api.ts` publishes at module load — importing `./extension.ts` or `./index.ts` loads it — so
+the API exists before any `session_start`. A compatible object already in the slot is kept and
+returned untouched. An incompatible one is left exactly where it is (never overwritten, deleted
+or reset); this copy's own object still works for registration and operates on the same
+process-global bus (§7).
+
+A plugin registers from its own `session_start` handler. Pi completes every extension module's
+async initialization before firing that event (`docs/extensions.md:213`), so the handler either
+finds the object or learns the bridge is not installed. The symbol's presence is the complete
+answer: there is no deferred path and no second publication point. `bridgeApi()` returns the
+object or `undefined`, and registration is idempotent because it is by stable id.
+
+### Why a path, and why an environment variable, were rejected
+
+A path is not a contract between two independent projects: it names one checkout on one machine,
+reaches into another package's files, and breaks silently the day either repository moves. An
+environment variable is the same problem plus a per-user setup step, so the feature stops working
+until someone is told to set it — not "zero extra steps". Both were in the worked example
+(`bridgeCandidates()`, a dynamic `import()`, `GENTLE_SHELL_BRIDGE_MODULE`) and both are gone: the
+example now inlines the symbol and the gate (`examples/bash-card.ts`) and registers from
+`session_start`.
+
+### Version skew
+
+An object that fails the gate — another library's payload, another major, a partial object — is
+**absent**, never an error and never half-used: `bridgeApi()` returns `undefined`, the plugin
+decides what to do, the bridge emits one warning per process, and the slot is left for whoever
+wrote it. A newer plugin against an older bridge therefore sees "absent" instead of being
+deferred silently; that compatibility cliff is intentional.
 
 ## Limits
 
@@ -266,10 +399,21 @@ either one. Because the arming markers live on the target objects and the state 
 - **No new categories.** The renderer's `category` is a closed union of existing categories
   (`lib/visual-customize-view.ts:105`) while the bridge's `CustomizeRow.category` is a
   `string`, so a category gentle-shell does not already render renders nothing.
-- **Tests exercise a fake host, not the TUI.** 115 tests run under `node --test`; the
-  end-to-end ones drive a fake host that models `gentle-shell.ts:3550-3562`. The technique
-  itself is verified in the real TUI only by the reference probe.
+- **Tests exercise a fake host, not the TUI.** The suite runs under `node --test`; the end-to-end
+  ones drive a fake host that models `gentle-shell.ts:3550-3562` and a fake sidebar that models
+  `lib/shell-sidebar.ts` + `lib/shell-sidebar-layout.ts`'s card frame. The capture technique itself
+  is verified in the real TUI only by the reference probe; the sidebar section surface has never
+  been seen in one.
+- **Sections cannot be interleaved.** They render after every native card, by construction (see
+  §12); a request to slot one between `CHANGES` and `STATS` is not supported.
+- **The sidebar widget's visual footprint is unconfirmed** (see §12): the `tui` is acquired through
+  a widget factory, and whether an empty component is invisible has not been observed.
 - **Async factories are reported, not supported.** `Promise.resolve(factory(...))` accepts a
   promise (`interactive-mode.ts:3136`), but the capture window closes with the synchronous
   call. A promise-returning factory is returned untouched and recorded as
   `uncaptured (async-factory)`, so no rows are injected; this is a test case, not a fix.
+- **The runtime handshake is proven in-process.** The suite resets `globalThis`, simulates an
+  early loader and loads the real example more than once under `node --test`; two live Pi
+  extensions loading in either order inside one running session have not been observed, and
+  neither has a real second major version at the slot (the skew branch is driven by a fake
+  object).

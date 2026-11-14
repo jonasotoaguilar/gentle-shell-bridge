@@ -6,15 +6,17 @@
  * plugin that contributes ten rows, sections, styles and transforms still gets ONE line here — this
  * module owns that line, and the plugin never writes one.
  *
- * ## Attribution without configuration (I2)
+ * ## Attribution without configuration (I2, I8, I11)
  *
  * A registration arrives through `./bus.ts`, which captures the calling module from the stack ONCE
  * per registration: the first frame outside this package's `src/`. That module is then resolved to
  * its owning package by walking up from its directory to the nearest `package.json` with a non-empty
- * `name`, and the answer is cached per module — a plugin's second registration costs one map lookup,
- * never another stack walk or disk read.
+ * `name`, and BOTH that answer and the plugin IDENTITY it implies are cached per module — a
+ * plugin's second registration costs one map lookup, never another stack walk or disk read. The
+ * identity is the package root, or the registering module when no package owns it (I8); the record,
+ * and the footer key, are keyed from it, never from a display name (I10).
  *
- * Three outcomes:
+ * Four outcomes:
  *
  * - **a package** other than this one: a plugin. Its display name is derived from the package name.
  * - **this package**: plumbing, not a plugin. The bridge's own providers, sections and fallbacks
@@ -22,8 +24,12 @@
  * - **no owning package** (a single copied file, e.g. `~/.pi/agent/extensions/foo.ts`): FAIL CLOSED.
  *   No line is set, and `/bridge-status` says why. The only way such a module gets a line is the
  *   author naming it explicitly, which is not an invented name.
+ * - **the Pi distribution** (I11): the package that owns the running `pi` entry point, or one whose
+ *   manifest declares the `pi` executable, is never a plugin identity. A shared extensions
+ *   directory inside the Pi installation therefore fails closed exactly like an unattributable
+ *   module, and only an explicit name gives it a row.
  *
- * ## The name (I3)
+ * ## The name (I3, I9)
  *
  * The name obeys the same shape rule as every other row name (`./row-names.ts`): one to three plain
  * words with no arrow, colon, dot, pipe, slash or bracket. A derived name is cleaned from the
@@ -31,6 +37,12 @@
  * clamped to three words — so a derived name can never break the rule; when nothing usable is left,
  * the plugin gets no line. An EXPLICIT name is validated, never rewritten: a rejected name produces
  * no line at all, never a rejected name in the footer.
+ *
+ * An explicit name is STICKY for the identity: the first registration that declares one fixes the
+ * name for the identity's single row, and later registrations inherit it whether or not they repeat
+ * it. A later DIFFERENT name never creates a second row and never renames: the first name stands and
+ * the conflict is reported in `/bridge-status`. That is deliberate — a name is attribution, not
+ * mutable state, and a rename ships as an edit plus `/reload`, a new registration lifetime.
  *
  * ## The state (I4)
  *
@@ -56,7 +68,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -95,6 +107,16 @@ export interface PluginRejection {
   reason: string;
 }
 
+/** A later registration that declared a different name for an identity whose name was fixed (I9). */
+export interface PluginNameConflict {
+  surface: PluginSurface;
+  id: string;
+  /** The later declaration; reported, never applied. */
+  name: string;
+  /** The name the identity already had, kept for the whole registration lifetime. */
+  kept: string;
+}
+
 /** One plugin, as `/bridge-status` lists it and as the footer line holds it. */
 export interface PluginLineRecord {
   /** The footer key: stable for the plugin's lifetime, never shown to the user. */
@@ -109,6 +131,8 @@ export interface PluginLineRecord {
   status: "ready" | "degraded";
   accepted: number;
   rejected: PluginRejection[];
+  /** Later registrations that declared a different name; the first name was kept (I9). */
+  nameConflicts: PluginNameConflict[];
   /** What the bridge last did with the key: painted, cleared with `undefined`, or never set. */
   line: "set" | "not-set" | "cleared";
   /** Only when `line` is not `set`: why the row is absent. */
@@ -122,15 +146,39 @@ export interface PluginLineReport {
   plugins: PluginLineRecord[];
 }
 
-type Attribution =
+type Owner =
   | { kind: "package"; root: string; name: string; modulePath: string }
+  | { kind: "pi"; root: string; name: string; modulePath: string }
   | { kind: "module"; modulePath: string }
   | { kind: "bridge" };
+
+type Attribution =
+  | (Extract<Owner, { kind: "package" | "pi" | "module" }> & { identity: PluginIdentity })
+  | Extract<Owner, { kind: "bridge" }>;
+
+/**
+ * What a plugin IS (I8, I10): its owning package root, or the registering module when no package
+ * owns it. Resolved once per module and cached with the attribution; the row key hashes THIS, never
+ * the display name, so renaming never produces a second key.
+ */
+interface PluginIdentity {
+  /** `pkg:<root>` or `mod:<module>`: the record a registration joins. */
+  id: string;
+  /** The raw seed the key is hashed from: the package root or the module path. */
+  seed: string;
+}
+
+/** The parts of a `package.json` attribution needs. */
+interface PackageManifest {
+  name: string;
+  /** `bin`, as declared; a `pi` executable means this package provides Pi (I11). */
+  bin?: unknown;
+}
 
 interface PluginRecordInternal extends PluginLineRecord {
   /** Package root or module path: two registrations of one plugin share it. */
   identity: string;
-  /** A name is honoured on the plugin's FIRST registration only (I2). */
+  /** A name is sticky: the first usable explicit declaration fixes it for the identity (I9). */
   seenRegistration: boolean;
   /** Why no usable name exists; formatted for the report, never used as a name. */
   nameProblem?: string;
@@ -150,6 +198,8 @@ interface PluginLinesState {
   unavailableReason?: string;
   /** Keys this module painted, so shutdown clears exactly them. */
   painted: Set<string>;
+  /** The package that owns the running `pi` entry point, resolved once (`root` undefined = none). */
+  entryPackage?: { root?: string };
 }
 
 /**
@@ -214,21 +264,26 @@ export function derivePluginName(packageName: string): string | undefined {
 }
 
 /**
- * The footer key for an owner: the plugin's package (or module) identity hashed in, so two packages
- * with the same derived name still get two rows and one plugin keeps the same key forever (I5).
+ * The footer key for an identity: the package root (or module path) is hashed in, so two packages
+ * with the same derived name still get two rows and one plugin keeps the same key forever — a
+ * rename, of the package or of an explicit name, repaints THIS key (I10).
  */
-function pluginLineKey(attribution: Attribution, modulePath: string): string {
-  const isPackage = attribution.kind === "package";
-  const seed = isPackage ? attribution.root : modulePath;
-  const stem = isPackage
-    ? slug(attribution.name)
-    : slug(basename(modulePath, extname(modulePath)));
-  const digest = createHash("sha1").update(seed).digest("hex").slice(0, 8);
+function pluginLineKey(identity: PluginIdentity): string {
+  const stem = slug(basename(identity.seed, extname(identity.seed)));
+  const digest = createHash("sha1").update(identity.id).digest("hex").slice(0, 8);
   return `${PLUGIN_LINE_PREFIX}${stem}.${digest}`;
 }
 
-/** `package.json`'s `name` in one directory, or `undefined` when there is none to read. */
-function packageNameAt(dir: string): string | undefined {
+function packageIdentity(root: string): PluginIdentity {
+  return { id: `pkg:${root}`, seed: root };
+}
+
+function moduleIdentity(modulePath: string): PluginIdentity {
+  return { id: `mod:${modulePath}`, seed: modulePath };
+}
+
+/** `package.json`'s name and bin in one directory, or `undefined` when there is none to read. */
+function readPackageManifest(dir: string): PackageManifest | undefined {
   let raw: string;
   try {
     raw = readFileSync(join(dir, "package.json"), "utf8");
@@ -241,25 +296,103 @@ function packageNameAt(dir: string): string | undefined {
     const name = (parsed as { name?: unknown }).name;
     if (typeof name !== "string") return undefined;
     const trimmed = name.trim();
-    return trimmed === "" ? undefined : trimmed;
+    if (trimmed === "") return undefined;
+    return { name: trimmed, bin: (parsed as { bin?: unknown }).bin };
   } catch {
     return undefined;
   }
 }
 
-/** Walk up from the module to its owning package (I2). No manifest means no owner: fail closed. */
-function resolveOwner(modulePath: string): Attribution {
+/** The nearest directory above `from` (inclusive of its directory) that holds a named manifest. */
+function nearestPackageRoot(from: string): string | undefined {
+  let dir = dirname(from);
+  for (;;) {
+    if (readPackageManifest(dir) !== undefined) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+/** Whether two paths name the same directory; symlinks are compared by their target. */
+function sameDirectory(a: string, b: string): boolean {
+  if (a === b) return true;
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return false;
+  }
+}
+
+/** Whether a `bin` declaration provides the `pi` executable (I11) — a declaration, not a name guess. */
+function declaresPiBinary(bin: unknown): boolean {
+  if (typeof bin === "string") {
+    const file = basename(bin);
+    const ext = extname(file);
+    return (ext === "" ? file : basename(file, ext)) === "pi";
+  }
+  if (typeof bin !== "object" || bin === null) return false;
+  const entries = bin as Record<string, unknown>;
+  return Object.prototype.hasOwnProperty.call(entries, "pi") && typeof entries.pi === "string";
+}
+
+/**
+ * The package that provides the RUNNING `pi`: the one that owns `process.argv[1]` (the CLI entry),
+ * resolved through symlinks and remembered once. A process with no such entry has none.
+ */
+function piEntryPackageRoot(): string | undefined {
+  const state = pluginLinesState();
+  if (state.entryPackage !== undefined) return state.entryPackage.root;
+  let root: string | undefined;
+  const entry = process.argv[1];
+  if (typeof entry === "string" && entry !== "" && isAbsolute(entry)) {
+    try {
+      root = nearestPackageRoot(realpathSync(entry));
+    } catch {
+      root = undefined;
+    }
+  }
+  state.entryPackage = { root };
+  return root;
+}
+
+/**
+ * The Pi distribution is the package that owns the running `pi` entry point, or one whose manifest
+ * declares the `pi` executable. Recognised from those declarations, never from a package NAME: a
+ * plugin may legitimately be called anything.
+ */
+function isPiDistribution(root: string, manifest: PackageManifest): boolean {
+  const entryRoot = piEntryPackageRoot();
+  if (entryRoot !== undefined && sameDirectory(entryRoot, root)) return true;
+  return declaresPiBinary(manifest.bin);
+}
+
+/** Walk up from the module to its owning package (I8). No manifest means no owner: fail closed. */
+function resolveOwner(modulePath: string): Owner {
   let dir = dirname(modulePath);
   for (;;) {
-    const name = packageNameAt(dir);
-    if (name !== undefined) {
+    const manifest = readPackageManifest(dir);
+    if (manifest !== undefined) {
       if (dir === BRIDGE_ROOT) return { kind: "bridge" };
-      return { kind: "package", root: dir, name, modulePath };
+      if (isPiDistribution(dir, manifest)) {
+        return { kind: "pi", root: dir, name: manifest.name, modulePath };
+      }
+      return { kind: "package", root: dir, name: manifest.name, modulePath };
     }
     const parent = dirname(dir);
     if (parent === dir) return { kind: "module", modulePath };
     dir = parent;
   }
+}
+
+/** Resolve the whole answer ONCE per module: owner, identity and (for a plugin) its record seed. */
+function resolveAttribution(modulePath: string): Attribution {
+  const owner = resolveOwner(modulePath);
+  if (owner.kind === "bridge") return owner;
+  if (owner.kind === "package") return { ...owner, identity: packageIdentity(owner.root) };
+  // A Pi-owned module fails closed exactly like an unattributable one (I11), so its plugin is the
+  // module itself, never the Pi distribution's package root.
+  return { ...owner, identity: moduleIdentity(modulePath) };
 }
 
 /** The absolute file path in one stack frame, or `undefined` for an internal/native frame. */
@@ -317,9 +450,9 @@ function attributionOfCaller(): Attribution {
 
   let resolved: Attribution;
   try {
-    resolved = resolveOwner(modulePath);
+    resolved = resolveAttribution(modulePath);
   } catch {
-    resolved = { kind: "module", modulePath };
+    resolved = { kind: "module", modulePath, identity: moduleIdentity(modulePath) };
   }
   state.modules.set(modulePath, resolved);
   return resolved;
@@ -381,19 +514,19 @@ function rowNameRejectionFor(
   );
 }
 
-function ensureRecord(attribution: Attribution, modulePath: string): PluginRecordInternal {
+function ensureRecord(attribution: Exclude<Attribution, { kind: "bridge" }>): PluginRecordInternal {
   const state = pluginLinesState();
-  const identity =
-    attribution.kind === "package" ? `pkg:${attribution.root}` : `mod:${modulePath}`;
-  const existing = state.plugins.find((record) => record.identity === identity);
+  const identity = attribution.identity;
+  const existing = state.plugins.find((record) => record.identity === identity.id);
   if (existing !== undefined) return existing;
 
   const record: PluginRecordInternal = {
-    identity,
-    key: pluginLineKey(attribution, modulePath),
-    modulePath,
+    identity: identity.id,
+    key: pluginLineKey(identity),
+    modulePath: attribution.modulePath,
     accepted: 0,
     rejected: [],
+    nameConflicts: [],
     status: "ready",
     line: "not-set",
     seenRegistration: false,
@@ -410,38 +543,92 @@ function ensureRecord(attribution: Attribution, modulePath: string): PluginRecor
       record.name = derived;
       record.nameSource = "derived";
     }
+  } else if (attribution.kind === "pi") {
+    // I11: the Pi installation is not a plugin. Its name is not a row name and nothing is derived
+    // from it; only an explicit `name` from the module itself can give the row one.
+    record.packageName = attribution.name;
+    record.nameProblem =
+      `the module is attributed to the Pi installation ${JSON.stringify(attribution.name)}, the ` +
+      "package that provides `pi`; the Pi distribution is never a plugin identity, so no row is " +
+      "derived from it. Pass `name` on a registration to name the plugin explicitly";
   } else {
     // Fail closed (I2): a copied single file has no owning package, so there is no name to derive
     // and nothing is invented. Only an explicit `name` can name it.
     record.nameProblem =
       "no package.json was found above the module, so there is no owning package name; pass " +
-      "`name` on the plugin's first registration to name it";
+      "`name` on a registration to name it";
   }
 
   state.plugins.push(record);
   return record;
 }
 
-/** Honour an explicit `name` on the first registration only; validate it, never rewrite it (I3). */
+/**
+ * Honour an explicit `name` for the identity, whichever registration declares it first (I9). The
+ * first usable declaration fixes the name for the identity's single row; a repeat inherits it, and
+ * a DIFFERENT later name never renames — it is reported as a conflict and the first name stands.
+ */
 function applyExplicitName(
   record: PluginRecordInternal,
   surface: PluginSurface,
   id: string,
   name: ExplicitName,
 ): void {
-  if (record.seenRegistration || name.kind === "absent") return;
-  if (name.kind === "text") {
-    const problem = rowNameProblem(name.value);
-    if (problem === undefined) {
-      record.name = name.value;
-      record.nameSource = "explicit";
-      record.nameProblem = undefined;
+  if (name.kind === "absent") return;
+
+  if (name.kind === "invalid") {
+    // The first registration's invalid name withholds the line (existing behaviour); a later one is
+    // reported without discarding a name the identity already has.
+    if (record.seenRegistration) {
+      record.rejected.push({
+        surface,
+        id,
+        reason: "the explicit name was rejected: it is not a string",
+      });
       return;
     }
+    rejectExplicitName(record, surface, id, "not a string", "it is not a string");
+    return;
+  }
+
+  if (record.nameSource === "explicit") {
+    if (record.name === name.value) return;
+    recordConflict(record, surface, id, name.value);
+    return;
+  }
+
+  const problem = rowNameProblem(name.value);
+  if (problem === undefined) {
+    record.name = name.value;
+    record.nameSource = "explicit";
+    record.nameProblem = undefined;
+    return;
+  }
+  if (!record.seenRegistration) {
     rejectExplicitName(record, surface, id, name.value, problem.reason);
     return;
   }
-  rejectExplicitName(record, surface, id, "not a string", "it is not a string");
+  record.rejected.push({
+    surface,
+    id,
+    reason: `the explicit name ${JSON.stringify(name.value)} was rejected: ${problem.reason}`,
+  });
+}
+
+/** Report a name that was declared too late to apply, once per (surface, id, name) (I9). */
+function recordConflict(
+  record: PluginRecordInternal,
+  surface: PluginSurface,
+  id: string,
+  name: string,
+): void {
+  const kept = record.name ?? "";
+  const duplicate = record.nameConflicts.some(
+    (conflict) =>
+      conflict.surface === surface && conflict.id === id && conflict.name === name,
+  );
+  if (duplicate) return;
+  record.nameConflicts.push({ surface, id, name, kept });
 }
 
 /** A rejected explicit name is reported, and produces NO line — never a rejected name (I3). */
@@ -608,6 +795,7 @@ export function getPluginLineReport(): PluginLineReport {
         status: record.rejected.length === 0 ? "ready" : "degraded",
         accepted: record.accepted,
         rejected: record.rejected.map((rejection) => ({ ...rejection })),
+        nameConflicts: record.nameConflicts.map((conflict) => ({ ...conflict })),
         line: record.line,
         ...(reasonNow === undefined ? {} : { reason: reasonNow }),
       };
@@ -633,7 +821,7 @@ export function attributeRegistration(
   // The bridge's own package is plumbing, and an unattributable internal helper claims nothing.
   if (attribution.kind === "bridge") return store();
 
-  const record = ensureRecord(attribution, attribution.modulePath);
+  const record = ensureRecord(attribution);
   const id = registrationId(registration);
   applyExplicitName(record, surface, id, explicitNameOf(registration));
 
@@ -673,4 +861,5 @@ export function resetPluginLinesForTests(): void {
   state.painted.clear();
   state.ui = undefined;
   state.unavailableReason = undefined;
+  state.entryPackage = undefined;
 }

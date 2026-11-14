@@ -473,10 +473,17 @@ host's `setStatus` is unavailable at all. The rules that line obeys:
   one row; later changes repaint the same key in place, and `session_shutdown` clears it with
   `undefined`.
 - **The name is derived, or given once.** The bridge resolves the module that registered to its
-  owning `package.json` and derives one to three plain words (`@acme/loon-kit` → `Loon kit`); an
-  optional `name` on the plugin's first registration overrides it. A single copied file with no
-  owning package gets **no row** (fail closed, the reason is in `/bridge-status`) unless it passes
-  that `name`. A rejected name is never shown.
+  owning `package.json` and derives one to three plain words (`@acme/loon-kit` → `Loon kit`); any
+  registration may pass `name`, and the first usable declaration fixes it for the plugin.
+- **Identity is the plugin; the name is sticky.** A plugin is its owning package root (or the module
+  when no package owns it), resolved once and keyed from that identity — never from the display
+  name, so a rename repaints the same row and never adds one. A single copied file with no owning
+  package gets **no row** (fail closed, the reason is in `/bridge-status`) unless it passes that
+  `name`. The Pi installation is never a plugin identity: a module owned by the package that
+  provides `pi` fails closed the same way, so its shared extensions directory cannot add a
+  `Pi coding agent` row. A later registration that declares a different name never renames the
+  row — the first name stays and `/bridge-status` reports the conflict. A rejected name is never
+  shown.
 - **`ready` is derived, never promised.** One rejected registration — an invalid id, a row label that
   broke the shape rule — makes the same key read `degraded`, and the report names the rejected
   items.

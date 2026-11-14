@@ -196,7 +196,7 @@ One command, `/bridge-status`, reporting:
 | Card style surfaces | per surface (`conversation`, `rail`): whether the selected style reached it and what its last frame did there (`transformed N cards`, `pass-through (native / missing / no card)`, `failed` with the style and message); `not reached` carries the attach outcome (`no-layout-root`, `no-sidebar`, `no-rail`, …). Emitted with the card-style block |
 | Last repaint | the most recent repaint a bridge-owned write requested: the surfaces, the cause (`section "loon.music" → hidden`, `card style → loon.cute`) and `repainted` or `unavailable` with the reason. Omitted until such a write happens |
 | Row name rejections | every line name and row label the bridge refused (`rows`, `section` or `card style`), with the surface, the registration `id`, the field (`line name`/`row label`), the offending string VERBATIM and the rule it broke; omitted when nothing was rejected |
-| Plugin lines | one entry per plugin that registered (`rows`, `section`, `card style` or `transform`): its row name and whether it was `derived from package "@acme/loon-kit"` or an `explicit name`, the registrations `accepted` and `rejected`, and whether the line is `set` or, with the reason, `no line set`. The header also says when the host's `setStatus` was unavailable. Omitted when no plugin registered so far |
+| Plugin lines | one entry per plugin that registered (`rows`, `section`, `card style` or `transform`): its row name and whether it was `derived from package "@acme/loon-kit"` or an `explicit name`, the registrations `accepted` and `rejected`, any later `name conflict` that declared a different name for the same plugin (with the name kept), and whether the line is `set` or, with the reason, `no line set`. The header also says when the host's `setStatus` was unavailable. Omitted when no plugin registered so far |
 
 A menu that opened without the bridge's rows must show up here — armed-but-uncaptured,
 shape mismatch, or provider failure. A registered section that never appears must show up
@@ -216,15 +216,26 @@ card styles or transforms that plugin registers (one plugin, one line).
   glyph must be part of the text itself (the host's own fixture row is `🧠 gentle-pi · ready`).
 - **Colour belongs to the host.** Every entry is painted with one shared status role. A plugin
   cannot choose a colour; it can only choose a glyph.
-- **The name is derived, not configured.** The bridge captures the module that registered, resolves
+- **The name is derived, or given once.** The bridge captures the module that registered, resolves
   it to its owning `package.json` and derives one to three plain words from its `name`
   (`@acme/loon-kit` → `Loon kit`). The answer is cached per module. A module with no owning package
-  (a single copied file) gets NO row, and `/bridge-status` says why. Any registration kind accepts an
-  optional `name`, honoured on the plugin's **first** registration only, which overrides the derived
-  name; that is how a single-file extension names itself.
+  (a single copied file) gets NO row, and `/bridge-status` says why. The Pi installation itself is
+  never a plugin identity: a module owned by the package that provides `pi` (the package that owns
+  the running `pi` entry point, or one whose manifest declares the `pi` executable) fails closed the
+  same way, so a shared extensions directory cannot produce a `Pi coding agent` row.
+- **Identity is the plugin, and the name is sticky.** A plugin identity is its owning package root
+  (every module in that package is the same plugin), or the registering module when no package owns
+  it. It is resolved once and cached; the footer key is hashed from that identity, never from the
+  display name, so a rename — of the package or of the name — repaints the SAME key and leaves no
+  orphan row. Any registration kind accepts an optional `name`: the first registration that declares
+  a usable one fixes the name for the identity, and later registrations inherit it whether or not
+  they repeat it. A later DIFFERENT name does not rename and never adds a row; the first name is
+  kept and the conflict is reported in `/bridge-status`. A name is attribution, not mutable state;
+  a deliberate rename ships as an edit plus `/reload`, a new registration lifetime.
 - **The name obeys the row-name shape** (§4, Row names). A derived name is cleaned; when nothing
   usable is left there is no row. An explicit name is validated, never rewritten: a rejected name
-  produces no row at all.
+  produces no row at all (when it is the first registration's), and a later rejected name is
+  reported without discarding the name the plugin already has.
 - **The state is derived, never promised.** `ready` means every registration the bridge accepted;
   one rejected registration (an invalid id, a row label that broke the shape rule) repaints the same
   key as `degraded`, and this report names the rejected items.

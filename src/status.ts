@@ -887,6 +887,12 @@ function formatPluginLines(report: PluginLineReport): string[] {
     for (const rejection of plugin.rejected) {
       lines.push(`    - ${rejection.surface} ${JSON.stringify(rejection.id)}: ${rejection.reason}`);
     }
+    for (const conflict of plugin.nameConflicts) {
+      lines.push(
+        `    - name conflict on ${conflict.surface} ${JSON.stringify(conflict.id)}: declared ` +
+          `${JSON.stringify(conflict.name)}, kept ${JSON.stringify(conflict.kept)}`,
+      );
+    }
   }
   return lines;
 }

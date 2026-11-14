@@ -1033,8 +1033,10 @@ export default function bashCardExample(pi: ExtensionApiLike): () => void {
         id: "bash-card-example.rendering",
         category: ROW_CATEGORY,
         // The first registration names the plugin, so its one INTEGRATIONS row reads `Bash card`
-        // even when this file is a copied single extension with no `package.json` above it. Later
-        // registrations do not need it: the bridge honours the first one only.
+        // even when this file is a copied single extension with no `package.json` above it. The
+        // name is STICKY for this plugin's identity: the section, style and transform below inherit
+        // it, and none of them can rename the row (a different name would be reported as a
+        // conflict).
         name: "Bash card",
         rows: () => bashRenderingRows(store),
       }),

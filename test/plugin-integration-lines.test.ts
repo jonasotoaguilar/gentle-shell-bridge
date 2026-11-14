@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 
-import { bridgeApi } from "../src/api.ts";
+import { bridgeApi, publishBridgeApi } from "../src/api.ts";
 import {
   registerRows,
   resetBusForTests,
@@ -29,6 +29,7 @@ import {
 } from "../src/plugin-lines.ts";
 import { rowNameProblem } from "../src/row-names.ts";
 import { collectStatus, formatStatus } from "../src/status.ts";
+import { resetStoreStateForTests } from "../src/store.ts";
 
 /**
  * The integration line is proven against a FAKE footer: an object with `setStatus(key, text)` that
@@ -43,7 +44,7 @@ import { collectStatus, formatStatus } from "../src/status.ts";
  */
 
 interface FakeFooter {
-  ui: { setStatus(key: string, text?: string): void };
+  ui: { setStatus(key: string, text?: string): void; notify(): void };
   statuses: Map<string, string>;
   calls: Array<{ key: string; text?: string }>;
 }
@@ -59,6 +60,9 @@ const createFakeFooter = (initial: Record<string, string> = {}): FakeFooter => {
         calls.push({ key, text });
         if (text === undefined) statuses.delete(key);
         else statuses.set(key, text);
+      },
+      notify() {
+        // A plugin may deliver notices through the same ui; this footer only records rows.
       },
     },
   };
@@ -119,6 +123,29 @@ const loadPlugin = async (file: string): Promise<void> => {
   await import(`${pathToFileURL(file).href}?load=${String(Date.now())}-${String(fixtureCount)}`);
 };
 
+/** One temporary package root, with the manifest (and any extra fields) a real one would have. */
+const writePackageRoot = (
+  packageName: string,
+  manifestExtra: Record<string, unknown> = {},
+): string => {
+  const root = mkdtempSync(join(tmpdir(), "gsb-plugin-identity-"));
+  scratchDirs.push(root);
+  writeFileSync(
+    join(root, "package.json"),
+    JSON.stringify({ name: packageName, type: "module", ...manifestExtra }),
+  );
+  return root;
+};
+
+/** A plugin module at a relative path inside an existing package root (no new identity). */
+const writeModuleAt = (root: string, relative: string, body: string): string => {
+  fixtureCount += 1;
+  const file = join(root, relative);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${PLUGIN_SOURCE_HEAD}${body}\n`);
+  return file;
+};
+
 /** Four registrations, four surfaces, one plugin: the I1 case in its strongest form. */
 const FOUR_SURFACES = `
 api.registerRows({ id: "loon.rows", category: "Banner", rows: () => [] });
@@ -133,6 +160,7 @@ test.beforeEach(() => {
   resetCardStylesForTests();
   resetTransformsForTests();
   resetPluginLinesForTests();
+  resetStoreStateForTests();
 });
 
 test.after(() => {
@@ -484,4 +512,313 @@ test("the status command prints the per-plugin list and every existing block", a
 
 test("bridgeApi() is what the fixture plugins read", () => {
   assert.ok(bridgeApi() !== undefined);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Plugin identity (I8–I11): one identity, one row, whatever names the registrations carry
+// ---------------------------------------------------------------------------------------------
+
+test("a later registration names an identity its first registration left unnamed", async () => {
+  const footer = createFakeFooter();
+  installPluginStatus(footer.ui);
+
+  await loadPlugin(
+    writePlugin(
+      "@acme/loon-kit",
+      `
+api.registerRows({ id: "loon.rows", category: "Banner", rows: () => [] });
+api.registerSection({ id: "loon.section", title: "Loon", name: "Bash card", lines: () => [] });
+`,
+    ),
+  );
+
+  assert.deepEqual([...footer.statuses.values()], ["Bash card · ready"]);
+  assert.equal(footer.statuses.size, 1, "one identity still means one row");
+  const report = getPluginLineReport();
+  assert.equal(report.plugins.length, 1);
+  assert.equal(report.plugins[0].name, "Bash card");
+  assert.equal(report.plugins[0].nameSource, "explicit");
+  assert.equal(report.plugins[0].accepted, 2);
+  assert.equal(report.plugins[0].nameConflicts.length, 0);
+});
+
+test("one named registration and one unnamed from the same module keep the explicit name", async () => {
+  const footer = createFakeFooter();
+  installPluginStatus(footer.ui);
+
+  await loadPlugin(
+    writePlugin(
+      "@acme/loon-kit",
+      `
+api.registerRows({ id: "loon.rows", category: "Banner", name: "Bash card", rows: () => [] });
+api.registerSection({ id: "loon.section", title: "Loon", lines: () => [] });
+`,
+    ),
+  );
+
+  assert.deepEqual([...footer.statuses.values()], ["Bash card · ready"]);
+  assert.equal(new Set(footer.calls.map((entry) => entry.key)).size, 1);
+  const report = getPluginLineReport();
+  assert.equal(report.plugins.length, 1);
+  assert.equal(report.plugins[0].nameSource, "explicit");
+  assert.equal(report.plugins[0].accepted, 2);
+});
+
+test("repeating the same explicit name is inheritance, not a conflict", async () => {
+  const footer = createFakeFooter();
+  installPluginStatus(footer.ui);
+
+  await loadPlugin(
+    writePlugin(
+      "@acme/loon-kit",
+      `
+api.registerRows({ id: "loon.rows", category: "Banner", name: "Bash card", rows: () => [] });
+api.registerSection({ id: "loon.section", title: "Loon", name: "Bash card", lines: () => [] });
+`,
+    ),
+  );
+
+  assert.deepEqual([...footer.statuses.values()], ["Bash card · ready"]);
+  const record = getPluginLineReport().plugins[0];
+  assert.equal(record.nameConflicts.length, 0);
+  assert.equal(record.rejected.length, 0);
+  assert.equal(record.accepted, 2);
+});
+
+test("a different name from the same identity keeps one row and reports the conflict", async () => {
+  const footer = createFakeFooter();
+  installPluginStatus(footer.ui);
+
+  const root = writePackageRoot("@acme/loon-kit");
+  const first = writeModuleAt(
+    root,
+    "src/first.mjs",
+    `api.registerRows({ id: "loon.rows", category: "Banner", name: "Bash card", rows: () => [] });`,
+  );
+  await loadPlugin(first);
+
+  assert.deepEqual([...footer.statuses.values()], ["Bash card · ready"], "the first name stays");
+  assert.equal(footer.statuses.size, 1, "a conflicting name adds no second row");
+  assert.deepEqual(
+    footer.calls.map((entry) => entry.text),
+    ["Bash card · ready"],
+    "the row is never repainted under the conflicting name",
+  );
+
+  const second = writeModuleAt(
+    root,
+    "src/second.mjs",
+    `api.registerSection({ id: "loon.section", title: "Loon", name: "Loon kit", lines: () => [] });`,
+  );
+  await loadPlugin(second);
+
+  assert.deepEqual([...footer.statuses.values()], ["Bash card · ready"]);
+  assert.equal(footer.statuses.size, 1);
+  const record = getPluginLineReport().plugins[0];
+  assert.equal(record.name, "Bash card");
+  assert.deepEqual(record.nameConflicts, [
+    { surface: "section", id: "loon.section", name: "Loon kit", kept: "Bash card" },
+  ]);
+  assert.equal(record.rejected.length, 0, "the registration itself was accepted");
+  assert.equal(record.accepted, 2);
+  assert.equal(record.status, "ready");
+
+  const printed = formatStatus(collectStatus()).join("\n");
+  assert.match(
+    printed,
+    /name conflict on section "loon\.section": declared "Loon kit", kept "Bash card"/u,
+    "the conflict is reported where the author looks",
+  );
+
+  // Registering the same conflicting declaration again reports it once, not once per call.
+  const third = writeModuleAt(
+    root,
+    "src/third.mjs",
+    `api.registerSection({ id: "loon.section", title: "Loon", name: "Loon kit", lines: () => [] });`,
+  );
+  await loadPlugin(third);
+  assert.equal(
+    getPluginLineReport().plugins.length,
+    1,
+    "a third module in the same package is the same plugin",
+  );
+  assert.equal(getPluginLineReport().plugins[0].nameConflicts.length, 1);
+});
+
+test("one identity survives another module in the same package, and a package rename keeps its key", async () => {
+  const root = writePackageRoot("acme-loon");
+  const footer = createFakeFooter();
+  installPluginStatus(footer.ui);
+
+  const first = writeModuleAt(
+    root,
+    "src/first.mjs",
+    `api.registerRows({ id: "loon.rows", category: "Banner", rows: () => [] });`,
+  );
+  await loadPlugin(first);
+
+  assert.deepEqual([...footer.statuses.values()], ["Acme loon · ready"]);
+  const keyBefore = getPluginLineReport().plugins[0].key;
+
+  // A second module in the same package is the same plugin (I8), and it may name it (I9).
+  const second = writeModuleAt(
+    root,
+    "src/second.mjs",
+    `api.registerSection({ id: "loon.section", title: "Loon", name: "Bash card", lines: () => [] });`,
+  );
+  await loadPlugin(second);
+
+  const afterName = getPluginLineReport();
+  assert.equal(afterName.plugins.length, 1);
+  assert.equal(afterName.plugins[0].key, keyBefore, "an explicit name never changes the key");
+  assert.equal(afterName.plugins[0].name, "Bash card");
+  assert.deepEqual([...footer.statuses.values()], ["Bash card · ready"]);
+
+  // Renaming the PACKAGE is the same identity at the same root: same key, no orphan (I10).
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "acme-falcon", type: "module" }));
+  resetPluginLinesForTests();
+  const renamedFooter = createFakeFooter();
+  installPluginStatus(renamedFooter.ui);
+  const third = writeModuleAt(
+    root,
+    "src/third.mjs",
+    `api.registerRows({ id: "loon.reloaded", category: "Banner", rows: () => [] });`,
+  );
+  await loadPlugin(third);
+
+  const afterRename = getPluginLineReport();
+  assert.equal(afterRename.plugins[0].key, keyBefore, "the key is the identity, not the package name");
+  assert.equal(afterRename.plugins[0].name, "Acme falcon", "the derived label follows the new package name");
+  assert.deepEqual([...renamedFooter.statuses.values()], ["Acme falcon · ready"]);
+});
+
+test("a module owned by the Pi distribution gets no row, and says why", async () => {
+  const root = writePackageRoot("@acme/pi-coding-agent", { bin: { pi: "./dist/cli.js" } });
+  const file = writeModuleAt(
+    root,
+    "extensions/bash-card.mjs",
+    `api.registerRows({ id: "loon.rows", category: "Banner", rows: () => [] });`,
+  );
+  const footer = createFakeFooter();
+  installPluginStatus(footer.ui);
+
+  await loadPlugin(file);
+
+  assert.equal(footer.statuses.size, 0, "the Pi distribution is never a plugin identity");
+  const record = getPluginLineReport().plugins[0];
+  assert.equal(record.name, undefined);
+  assert.equal(record.accepted, 1, "the registration itself still happened");
+  assert.match(record.reason ?? "", /Pi installation/u);
+
+  const printed = formatStatus(collectStatus()).join("\n");
+  assert.match(printed, /\(no line\)/u);
+  assert.match(printed, /Pi installation/u);
+  assert.ok(printed.includes(file), "the module is named as a diagnostic, never as a row");
+});
+
+test("a Pi-owned module can still name itself explicitly, and gets exactly one row", async () => {
+  const root = writePackageRoot("@acme/pi-coding-agent", { bin: { pi: "./dist/cli.js" } });
+  const file = writeModuleAt(
+    root,
+    "extensions/bash-card.mjs",
+    `
+api.registerRows({ id: "loon.rows", category: "Banner", name: "Bash card", rows: () => [] });
+api.registerSection({ id: "loon.section", title: "Loon", lines: () => [] });
+`,
+  );
+  const footer = createFakeFooter();
+  installPluginStatus(footer.ui);
+
+  await loadPlugin(file);
+
+  assert.deepEqual([...footer.statuses.values()], ["Bash card · ready"]);
+  assert.equal(new Set(footer.calls.map((entry) => entry.key)).size, 1);
+  const record = getPluginLineReport().plugins[0];
+  assert.equal(record.nameSource, "explicit");
+  assert.equal(record.accepted, 2);
+});
+
+test("the package that owns the running entry point is recognised as the Pi distribution", async () => {
+  const root = writePackageRoot("acme-pi-runtime");
+  const cli = writeModuleAt(root, "dist/cli.mjs", "");
+  const file = writeModuleAt(
+    root,
+    "extensions/other.mjs",
+    `api.registerRows({ id: "loon.rows", category: "Banner", rows: () => [] });`,
+  );
+  const footer = createFakeFooter();
+  installPluginStatus(footer.ui);
+
+  const previous = process.argv[1];
+  (process.argv as string[])[1] = cli;
+  try {
+    await loadPlugin(file);
+  } finally {
+    (process.argv as string[])[1] = previous;
+  }
+
+  assert.equal(footer.statuses.size, 0, "recognised as the running pi installation, not derived");
+  assert.match(getPluginLineReport().plugins[0].reason ?? "", /Pi installation/u);
+});
+
+test("the example installed under the Pi distribution registers one identity and one row", async () => {
+  const distRoot = writePackageRoot("@acme/pi-coding-agent", { bin: { pi: "./dist/cli.js" } });
+  const extensions = join(distRoot, "extensions");
+  mkdirSync(extensions, { recursive: true });
+  const installed = join(extensions, "bash-card.ts");
+  writeFileSync(
+    installed,
+    readFileSync(new URL("../examples/bash-card.ts", import.meta.url), "utf8"),
+  );
+  const configHome = mkdtempSync(join(tmpdir(), "gsb-example-config-"));
+  scratchDirs.push(configHome);
+  const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+  process.env.GENTLE_PI_CONFIG_HOME = configHome;
+  publishBridgeApi();
+
+  const footer = createFakeFooter();
+  installPluginStatus(footer.ui);
+  const sessionHandlers: Array<
+    (event: unknown, ctx: { hasUI?: boolean; ui?: unknown }) => void
+  > = [];
+  try {
+    const loaded = (await import(`${pathToFileURL(installed).href}?load=${String(Date.now())}`)) as {
+      default: (pi: {
+        on?: (event: string, handler: (event: unknown, ctx: { hasUI?: boolean; ui?: unknown }) => void) => void;
+      }) => () => void;
+    };
+    const dispose = loaded.default({
+      on(_event, handler) {
+        sessionHandlers.push(handler);
+      },
+    });
+    try {
+      assert.equal(sessionHandlers.length, 1, "the example registers from its session_start handler");
+      sessionHandlers[0]({}, { hasUI: true, ui: footer.ui });
+    } finally {
+      dispose();
+    }
+  } finally {
+    if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+    else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+  }
+
+  assert.deepEqual(
+    [...footer.statuses.values()],
+    ["Bash card · ready"],
+    "four surfaces, one identity, one row — and no `Pi coding agent` row",
+  );
+  assert.equal(footer.statuses.size, 1);
+  assert.equal(new Set(footer.calls.map((entry) => entry.key)).size, 1);
+  const report = getPluginLineReport();
+  assert.equal(report.plugins.length, 1);
+  assert.equal(report.plugins[0].name, "Bash card");
+  assert.equal(report.plugins[0].nameSource, "explicit");
+  assert.ok(
+    report.plugins[0].key.startsWith(`${PLUGIN_LINE_PREFIX}bash-card.`),
+    "the key names the plugin module, never the Pi distribution (I10, I11)",
+  );
+  assert.equal(report.plugins[0].accepted, 4, "rows, section, card style and transform");
+  assert.equal(report.plugins[0].rejected.length, 0);
+  assert.equal(report.plugins[0].nameConflicts.length, 0);
 });

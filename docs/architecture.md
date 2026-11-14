@@ -239,15 +239,30 @@ Because the host has no notion of "a plugin", the bridge owns exactly one key pe
 (`src/plugin-lines.ts`). Attribution needs no configuration from the author: every registration in
 `src/bus.ts` goes through `attributeRegistration`, which reads the calling module from the stack
 once per registration (the first frame outside this package's `src/`), walks up from it to the
-nearest `package.json` with a non-empty `name`, and caches that answer per module. Three outcomes:
-another package (a plugin, whose display name is derived from the package name), this package
-(plumbing — the bridge's own providers and fallbacks never claim a row), and no owning package (a
-single copied file: fail closed, no row, reason in `/bridge-status`). An optional `name` on the
-plugin's first registration overrides the derived name and is the documented way for such a file to
-name itself; it is validated against the row-name shape, never rewritten.
+nearest `package.json` with a non-empty `name`, and caches BOTH the answer and the plugin identity it
+implies per module. The identity is the package root — so every module in that package is the same
+plugin — or the registering module when no package owns it. Four outcomes: another package (a
+plugin, whose display name is derived from the package name), this package (plumbing — the bridge's
+own providers and fallbacks never claim a row), no owning package (a single copied file: fail
+closed, no row, reason in `/bridge-status`), and the Pi distribution (below). An optional `name` on
+any registration is the documented way for an unattributable file to name itself; it is validated
+against the row-name shape, never rewritten.
 
-One key per plugin is hashed from the package root (or the module path when it has no owner), so a
-plugin's ten registrations update one row in place instead of adding ten. The text is
+The Pi distribution is never a plugin identity (I11): a module attributed to the package that owns
+the running `pi` entry point (`process.argv[1]`, realpath resolved) or to a package whose manifest
+declares the `pi` executable (`bin.pi`) fails closed exactly like an unattributable module. A shared
+extensions directory inside the Pi installation therefore cannot produce a second `Pi coding agent`
+row; a plugin that must be named from such a location names itself explicitly. Recognition is by
+declaration, not by matching a package name.
+
+One key per identity is hashed from the package root (or the module path when it has no owner) and
+NEVER from the display name, so a plugin's ten registrations update one row in place instead of
+adding ten, and a rename of the package or of the explicit name repaints the same key without
+leaving an orphan (I10). An explicit name is sticky for the identity (I9): the first registration
+that declares a usable one fixes it, later registrations inherit it whether or not they repeat it,
+and a later DIFFERENT name never creates a row and never renames — the first name is kept and the
+conflict is reported in `/bridge-status`. A name is attribution, not mutable state, so a deliberate
+rename ships as an edit plus `/reload`, a new registration lifetime. The text is
 `<name> · <ready|degraded>`: `ready` is derived — one rejected registration (an invalid id, a row
 label that broke the shape rule) repaints the same key as `degraded`. `installPluginStatus` runs on
 `session_start` (for plugins that registered before any `ctx.ui` existed) and paints or repaints;

@@ -166,6 +166,44 @@ const DEMO_BUTTON_LABEL = "Demo button";
 const DEMO_TOGGLE_KEY = "demoToggle";
 const DEMO_PRESSES_KEY = "demoPresses";
 
+/**
+ * The two surfaces that turn this example into a plugin's own quick action: one keymapped action the
+ * user rebinds in `/gentle:customize` → Keymaps, and one command-palette item in a section of the
+ * example's own. Both name the SAME command, so neither can point at something that is not there.
+ */
+const BASH_CARD_COMMAND = "bash-card:state";
+const BASH_CARD_KEYMAP: KeymapRegistrationLike = {
+  id: "bash-card.state",
+  label: "Bash card: report state",
+  defaultKey: "alt+b",
+  command: BASH_CARD_COMMAND,
+};
+/**
+ * The palette section this example opens. A section the host's catalog does not already have is
+ * added after the catalog's own groups, which is what "a new category in Commands" means here: the
+ * host keeps its order and this file only names the page.
+ */
+const BASH_CARD_PALETTE_SECTION = "Panel";
+const BASH_CARD_PALETTE_ITEM: CommandContributionLike = {
+  id: "bash-card.state",
+  label: "Bash card · report state",
+  command: BASH_CARD_COMMAND,
+  section: BASH_CARD_PALETTE_SECTION,
+};
+
+/**
+ * The OTHER shape of the same registration: an item that joins a section the host already has.
+ * `Diagnostics` is one of the catalog's own pages, so this proves both cases at once — the example's
+ * own page (Panel) and an existing one — with a second real command behind it.
+ */
+const BASH_CARD_KEY_COMMAND = "bash-card:key";
+const BASH_CARD_DIAGNOSTICS_ITEM: CommandContributionLike = {
+  id: "bash-card.key",
+  label: "Bash card · key and surfaces",
+  command: BASH_CARD_KEY_COMMAND,
+  section: "Diagnostics",
+};
+
 // ---------------------------------------------------------------------------------------------
 // Host shapes, declared structurally
 // ---------------------------------------------------------------------------------------------
@@ -317,8 +355,27 @@ interface BridgeApiLike {
   registerToolDesign?(design: ToolDesignLike): () => void;
   registerCardStyle?(style: CardStyleLike): () => void;
   registerRows?(provider: RowProviderLike): () => void;
+  registerKeymap?(registration: KeymapRegistrationLike): () => void;
+  registerCommands?(contribution: CommandContributionLike | readonly CommandContributionLike[]): () => void;
+  resolveKeymap?(id: string): { key?: string; unavailable?: string };
   requestRepaint?(): void;
   createStore(pluginId: string): BridgeStoreLike;
+}
+
+/** One action for the host's Keymaps page: the row is the bridge's, the binding is ours. */
+interface KeymapRegistrationLike {
+  id: string;
+  label: string;
+  defaultKey?: string;
+  command?: string;
+}
+
+/** One item for the host's command palette; `section` names an existing section or opens one. */
+interface CommandContributionLike {
+  id: string;
+  label: string;
+  command: string;
+  section?: string;
 }
 
 /** The part of Pi's `session_start` context this file reads. */
@@ -336,6 +393,10 @@ interface NoticeUiLike {
 interface ExtensionApiLike {
   /** `session_start` carries the UI context, so this is where a buffered notice is delivered. */
   on?(event: "session_start", handler: (event: unknown, ctx: SessionContextLike) => void): void;
+  /** A real command is what makes the palette item and the keymap row honest. */
+  registerCommand?(name: string, spec: { description?: string; handler: (args: unknown, ctx: SessionContextLike) => void | Promise<void> }): void;
+  /** Pi reads extension shortcuts at startup and on `/reload`; the plugin owns its own binding. */
+  registerShortcut?(key: string, spec: { description?: string; handler: (ctx: SessionContextLike) => void | Promise<void> }): void;
   /** Pi's cross-extension bus (`docs/extensions.md:1965-1972`); absent on a bare harness. */
   events?: unknown;
 }
@@ -1326,9 +1387,16 @@ function flushNotices(ui: unknown, settled: boolean): void {
 export default function bashCardExample(pi: ExtensionApiLike): () => void {
   // Holds whether each optional surface was there at registration. `false` means the bridge is
   // older than that surface: the section still registers and states which one is absent.
-  const state: { designRegistered: boolean; cardStyleRegistered: boolean } = {
+  const state: {
+    designRegistered: boolean;
+    cardStyleRegistered: boolean;
+    keymapRegistered: boolean;
+    paletteRegistered: boolean;
+  } = {
     designRegistered: false,
     cardStyleRegistered: false,
+    keymapRegistered: false,
+    paletteRegistered: false,
   };
 
   const disposers: Array<() => void> = [];
@@ -1441,6 +1509,40 @@ export default function bashCardExample(pi: ExtensionApiLike): () => void {
       }
     }
 
+    // The keymap: one action the user rebinds in `/gentle:customize` → Keymaps. The bridge publishes
+    // the row; THIS file owns the binding, because Pi reads extension shortcuts at startup and on
+    // `/reload`. The key comes from the shell through `resolveKeymap`, so the row and the real
+    // binding cannot disagree — a row claiming `alt+b` while nothing listens is worse than no row.
+    const registerKeymap = api.registerKeymap;
+    if (typeof registerKeymap === "function") {
+      try {
+        disposers.push(registerKeymap.call(api, BASH_CARD_KEYMAP));
+        state.keymapRegistered = true;
+      } catch (error) {
+        recordNotice(
+          `[bash-card] the bridge refused the keymap action: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    // The palette: a section of this example's own, listed only while the command is registered —
+    // the host filters on that, so a missing command never leaves a dead row in the menu.
+    const registerCommands = api.registerCommands;
+    if (typeof registerCommands === "function") {
+      try {
+        disposers.push(registerCommands.call(api, [BASH_CARD_PALETTE_ITEM, BASH_CARD_DIAGNOSTICS_ITEM]));
+        state.paletteRegistered = true;
+      } catch (error) {
+        recordNotice(
+          `[bash-card] the bridge refused the palette item: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    bindKeymapShortcut(api);
+
     disposers.push(
       api.registerSection(
         bashDesignSection(
@@ -1454,6 +1556,75 @@ export default function bashCardExample(pi: ExtensionApiLike): () => void {
     );
     bridgeRegistered = true;
   };
+
+  /** The key this extension last bound, so a second `session_start` never stacks a handler. */
+  let boundKey: string | undefined;
+
+  /** What the command prints, the palette item runs and the shortcut triggers: one honest report. */
+  const reportState = (ctx: SessionContextLike): void => {
+    const ui = ctx?.ui as NoticeUiLike | undefined;
+    if (typeof ui?.notify !== "function") return;
+    const facts = [
+      `design ${state.designRegistered ? "ready" : "absent"}`,
+      `card style ${state.cardStyleRegistered ? "ready" : "absent"}`,
+      `keymap ${state.keymapRegistered ? "ready" : "absent"}`,
+      `palette ${state.paletteRegistered ? "ready" : "absent"}`,
+      `key ${boundKey ?? "none"}`,
+    ];
+    ui.notify(`[bash-card] ${facts.join(" · ")}`, "info");
+  };
+
+  /**
+   * Bind the key the shell says this action uses, with this extension's own `registerShortcut` — the
+   * bridge never binds for a plugin. Re-binding is skipped when the key did not move, and the
+   * `unavailable` reason (an older shell) is reported once instead of a shortcut that silently is not
+   * there.
+   */
+  const bindKeymapShortcut = (api: BridgeApiLike): void => {
+    if (typeof pi.registerShortcut !== "function") return;
+    const resolved = typeof api.resolveKeymap === "function" ? api.resolveKeymap.call(api, BASH_CARD_KEYMAP.id) : undefined;
+    const key = resolved?.key;
+    if (key === undefined) {
+      if (resolved?.unavailable !== undefined) recordNotice(`[bash-card] no key bound: ${resolved.unavailable}`);
+      return;
+    }
+    if (key === boundKey) return;
+    try {
+      pi.registerShortcut(key, {
+        description: BASH_CARD_KEYMAP.label,
+        handler: (ctx: SessionContextLike) => reportState(ctx),
+      });
+      boundKey = key;
+    } catch (error) {
+      recordNotice(
+        `[bash-card] ${key} was refused by Pi: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+
+  // The command is the anchor of both surfaces: the palette item names it and the keymap action runs
+  // it, so neither can survive the other's absence as a row that does nothing.
+  if (typeof pi.registerCommand === "function") {
+    pi.registerCommand(BASH_CARD_COMMAND, {
+      description: "Report what the bash-card example registered, and the key bound to its action.",
+      handler: async (_args: unknown, ctx: SessionContextLike) => reportState(ctx),
+    });
+    // The second command exists to prove the OTHER palette shape: an item that joins a section the
+    // host already owns. It says where the key comes from, which is the one thing a row cannot show.
+    pi.registerCommand(BASH_CARD_KEY_COMMAND, {
+      description: "Report the key bound to the bash-card action and where to rebind it.",
+      handler: async (_args: unknown, ctx: SessionContextLike) => {
+        const ui = ctx?.ui as NoticeUiLike | undefined;
+        if (typeof ui?.notify !== "function") return;
+        ui.notify(
+          boundKey === undefined
+            ? `[bash-card] no key bound. ${state.keymapRegistered ? "Open /gentle:customize → Keymaps and assign one." : "This shell does not read plugin keymaps."}`
+            : `[bash-card] ${boundKey} → ${BASH_CARD_KEYMAP.label}. Rebind it in /gentle:customize → Keymaps.`,
+          "info",
+        );
+      },
+    });
+  }
 
   /**
    * Register through the published object, if there is one. Three outcomes, because "absent" and

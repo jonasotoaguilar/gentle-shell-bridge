@@ -71,11 +71,13 @@ import {
   BASH_DEFAULT_RESULT_EXPANDED,
   BASH_DEFAULT_RESULT_PROMPT,
   BASH_MINIMAL_FLOAT_CALL,
+  BASH_MINIMAL_FLOAT_CALL_LONG,
   BASH_MINIMAL_FLOAT_CALL_RUNNING,
   BASH_MINIMAL_FLOAT_RESULT,
   BASH_MINIMAL_FLOAT_RESULT_EMPTY,
   BASH_MINIMAL_FLOAT_RESULT_PROMPT,
   BASH_MINIMAL_NEON_CALL,
+  BASH_MINIMAL_NEON_CALL_LONG,
   BASH_MINIMAL_NEON_CALL_RUNNING,
   BASH_MINIMAL_NEON_RESULT,
   BASH_MINIMAL_NEON_RESULT_EMPTY,
@@ -198,7 +200,7 @@ interface World {
   readonly resolver: Resolver;
   rows(): CustomizeRow[];
   pick(value: string): Promise<void>;
-  /** The example's BASH CARD section, live. */
+  /** The example's CARD BASH section, live. */
   section(): SidebarSection;
   /** What the example asked Pi's TUI to tell the user, in order. */
   notices(): string[];
@@ -248,7 +250,7 @@ async function startWorld(tag: string): Promise<World> {
   const rows = (): CustomizeRow[] => buildRows({ theme: undefined, configHome }).rows;
   const section = (): SidebarSection => {
     const found = snapshotSections().find((candidate) => candidate.id === "bash-card.status");
-    assert.ok(found !== undefined, "the example registers its BASH CARD section");
+    assert.ok(found !== undefined, "the example registers its CARD BASH section");
     return found;
   };
 
@@ -257,7 +259,8 @@ async function startWorld(tag: string): Promise<World> {
     rows,
     pick: async (value) => {
       const row = rows().find(
-        (candidate) => candidate.choice?.setting === "bash" && candidate.choice?.value === value,
+        (candidate) =>
+          /bash/iu.test(candidate.choice?.setting ?? "") && candidate.choice?.value === value,
       );
       assert.ok(row?.action !== undefined, `the Cards line carries the value ${value}`);
       await row.action(inlineHelpers);
@@ -305,6 +308,23 @@ const DESIGNED_MINIMAL_NEON_TOP =
 const DESIGNED_DEFAULT_HEADING =
   "\u001b[95m\u001b[1mbash npm test\u001b[22m\u001b[39m\u001b[37m (timeout 30s)\u001b[39m" +
   "                               ";
+
+/**
+ * `minimal` x `float`, a command the HOST already collapsed: the word costs three columns, and the
+ * row has only its minimum rule fill, so the cost comes out of the COMMAND'S OWN ABBREVIATION — the
+ * three characters before the host's ellipsis — never out of a character the host did not
+ * abbreviate, and the fill is left exactly as the host drew it.
+ */
+const DESIGNED_MINIMAL_FLOAT_LONG_HEADING =
+  " \u001b[48;5;236m\u001b[95m▎\u001b[39m\u001b[95m \u001b[39m\u001b[95mbash \u001b[95m\u001b[1mnpm run typech…\u001b[22m\u001b[39m" +
+  "\u001b[37m (timeout 30s)\u001b[39m\u001b[39m\u001b[95m  \u001b[39m \u001b[2mctrl+o to expand\u001b[39m" +
+  " \u001b[95m  \u001b[39m\u001b[49m ";
+
+/** `minimal` x `neon`, the same rule in the outline: the command's abbreviated tail pays. */
+const DESIGNED_MINIMAL_NEON_LONG_TOP =
+  "\u001b[95m╭\u001b[39m\u001b[95m─ \u001b[39m\u001b[95mbash \u001b[95m\u001b[1mnpm run typechec…\u001b[22m\u001b[39m" +
+  "\u001b[37m (timeout 30s)\u001b[39m\u001b[39m\u001b[95m ─\u001b[39m \u001b[2mctrl+o to expand\u001b[39m" +
+  " \u001b[95m╮\u001b[39m";
 
 interface Cell {
   /** The user's own vocabulary: `<card style> × <card content>`. */
@@ -502,6 +522,83 @@ test("T18: a card whose command is still running is headed too, in both minimal 
 });
 
 // ---------------------------------------------------------------------------------------------
+// T24–T25: a command the host already collapsed pays the word's three columns from its own
+// abbreviation; a command shown in full is never shortened (S14)
+// ---------------------------------------------------------------------------------------------
+
+test("T24/T25: a long collapsed command is headed bash by shortening its own ellipsis", async () => {
+  const world = await startWorld("matrix-long-collapsed");
+  await world.pick("bash heading");
+
+  const longCells = [
+    {
+      label: "float × minimal",
+      fixture: BASH_MINIMAL_FLOAT_CALL_LONG,
+      heading: 1,
+      designed: DESIGNED_MINIMAL_FLOAT_LONG_HEADING,
+    },
+    {
+      label: "neon × minimal",
+      fixture: BASH_MINIMAL_NEON_CALL_LONG,
+      heading: 0,
+      designed: DESIGNED_MINIMAL_NEON_LONG_TOP,
+    },
+  ] as const;
+
+  for (const cell of longCells) {
+    const resolved = world.resolver("bash", () => fakeRenderers(cell.fixture, []));
+    assert.ok(resolved !== undefined);
+    const output = mount(resolved, "renderCall").render(60);
+
+    assert.equal(output.length, cell.fixture.length, `${cell.label}: the frame keeps its row count`);
+    for (const [row, line] of output.entries()) {
+      if (row === cell.heading) assert.equal(line, cell.designed, `${cell.label}: the heading reads bash`);
+      else assert.equal(line, cell.fixture[row], `${cell.label}: row ${row} is the host's byte for byte`);
+    }
+    assertWidths(output, 60, cell.label);
+  }
+
+  // The design handled both cards, so the section must not claim a refusal for them.
+  const report = world.section().lines({ theme: undefined, configHome });
+  assert.equal(
+    report.some((line) => typeof line === "string" && /^unrecognised\s+none$/u.test(line)),
+    true,
+    "the section reports no refusal for a collapsed command the design headed",
+  );
+  assert.equal(
+    report.some((line) => typeof line === "string" && /no fill/u.test(line)),
+    false,
+    "and stops claiming no fill once the design can pay the word's columns",
+  );
+
+  world.dispose();
+});
+
+test("T25/S14: a command shown in full is never shortened, even with no fill", async () => {
+  const world = await startWorld("matrix-long-full");
+  await world.pick("bash heading");
+  const resolved = world.resolver("bash", () => fakeRenderers(BASH_DEFAULT_CALL_TIGHT, []));
+  assert.ok(resolved !== undefined);
+
+  // The row is full and its command is NOT abbreviated: a design must not hide what a command
+  // does by cutting three columns out of it, so the host's bytes stand and the refusal is reported.
+  assert.deepEqual(
+    mount(resolved, "renderCall").render(58),
+    [...BASH_DEFAULT_CALL_TIGHT],
+    "an unabbreviated command is the host's, byte for byte",
+  );
+
+  const lines = world.section().lines({ theme: undefined, configHome });
+  assert.equal(
+    lines.some((line) => typeof line === "string" && /no fill/u.test(line)),
+    true,
+    "a genuine refusal is still reported",
+  );
+
+  world.dispose();
+});
+
+// ---------------------------------------------------------------------------------------------
 // T19: a frame the design cannot recognise comes back byte-identical, and is reported once
 // ---------------------------------------------------------------------------------------------
 
@@ -616,7 +713,7 @@ test("T19: a heading with no fill to take the word's three columns is left alone
   assert.equal(notices.length, 1, "one notice, delivered exactly once");
   assert.match(notices[0] ?? "", /\[bash-card\]/u);
   assert.match(notices[0] ?? "", /no padding or rule fill/u);
-  assert.match(notices[0] ?? "", /BASH CARD/u, "it points at the section that reports it live");
+  assert.match(notices[0] ?? "", /CARD BASH/u, "it points at the section that reports it live");
 
   world.dispose();
 });

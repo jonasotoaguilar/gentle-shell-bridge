@@ -437,7 +437,8 @@ test("PRESERVE: a conforming provider row renders exactly as before", () => {
 // A tool design's line (N7, N9)
 // ---------------------------------------------------------------------------------------------
 //
-// A design is declared per TOOL name, so its line's name is derived from that name — never from the
+// A design is declared per TOOL name, so its line's name is derived from that name, led by the noun
+// the host's own Cards lines use (`Card style`, `Card content`, so `Card bash`) — never from the
 // plugin's module path and never from the design's id. A design's `label` is a VALUE on the line,
 // not a row name, so the shape rule applies to the line and the tool name is what satisfies it. The
 // worked example used to contribute a `Bash rendering` provider row; it contributes a design now,
@@ -456,8 +457,8 @@ test("a design's line is named from its tool, and no id reaches a row", () => {
   host.buildMenu();
 
   assert.ok(
-    host.toggleLines().includes("bash ● native ○ bash heading"),
-    `the design's line is the tool's name: ${host.toggleLines().join(" | ")}`,
+    host.toggleLines().includes("Card bash ● native ○ bash heading"),
+    `the design's line is \`Card <tool>\`: ${host.toggleLines().join(" | ")}`,
   );
   for (const line of host.toggleLines()) {
     const setting = line.split(" ")[0] ?? "";

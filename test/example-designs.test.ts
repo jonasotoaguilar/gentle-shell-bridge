@@ -1,20 +1,20 @@
 /**
- * T10: `examples/bash-card.ts` as a DESIGN plugin — the handshake, the sidebar section, and the
- * surfaces it contributes.
+ * T10: `examples/bash-card.ts` as a PLUGIN — the handshake, the sidebar section, and the surfaces
+ * it contributes.
  *
  * The example is what a plugin author copies, so what is proven here is its whole contract:
  *
  * - it reaches the bridge through the symbol and the `gentle-shell-bridge:ready` announcement, with
  *   no path, no environment variable and no import (both load orders work);
- * - it registers ONE design for `bash` and ONE sidebar section, and its own `session_start` handler
- *   is the only entry point;
+ * - it registers its design for `bash`, its `plain` card style and its sidebar section, and its own
+ *   `session_start` handler is the only entry point (the demo row provider is covered here too);
  * - the design's `Cards` line appears with no extra wiring, and the section reads the live selection;
  * - disposing the load leaves neither surface behind;
  * - nothing is ever written to stdout/stderr.
  *
- * The suites this replaces (`example-handshake`, `example-late-load`, `example-section-rows`) covered
- * these same behaviours for the removed mode rows, card style and transform; everything that still
- * exists is re-covered here against the design bus.
+ * The `plain` card style's own coverage lives in `test/example-plain-style.test.ts`, restored from
+ * the two suites that were deleted with the style (`5c0c123:test/example-transform.test.ts`,
+ * `5c0c123:test/example-late-load.test.ts`) and extended with the integration matrix.
  */
 
 import assert from "node:assert/strict";
@@ -47,7 +47,7 @@ import {
 } from "../src/tool-designs.ts";
 import { resetToolDesignRowStateForTests, installToolDesignRows } from "../src/tool-design-rows.ts";
 import { resetToolDesignWiringForTests } from "../src/tool-design-wiring.ts";
-import type { CustomizeRow, SectionRow, SidebarSection } from "../src/types.ts";
+import type { CustomizeRow, InlineHelpers, SectionRow, SidebarSection } from "../src/types.ts";
 import { createFakeEvents, type FakeEvents } from "./fake-events.ts";
 
 type SessionHandler = (event: unknown, ctx: { hasUI?: boolean; ui?: unknown }) => void;
@@ -92,7 +92,7 @@ const notifySurface = (): {
   return { ui: { notify: (message, level) => calls.push([message, level]) }, calls };
 };
 
-/** How many of each surface the example owns right now: its design, and its section. */
+/** How many of `plain` and of the section the example owns right now (the design is checked too). */
 const surfaceCounts = (): number[] => [
   snapshotToolDesigns("bash").filter((design) => design.id === "bash-card.bash-heading").length,
   snapshotSections().filter((section) => section.id === "bash-card.status").length,
@@ -126,11 +126,18 @@ const captureConsole = (): { writes: string[]; restore: () => void } => {
 
 const sectionOf = (): SidebarSection => {
   const section = snapshotSections().find((candidate) => candidate.id === "bash-card.status");
-  assert.ok(section !== undefined, "the example registers BASH CARD");
+  assert.ok(section !== undefined, "the example registers CARD BASH");
   return section;
 };
 
 const context = (): { theme: unknown; configHome: string } => ({ theme: undefined, configHome });
+
+/** The inline helpers a demo row's action is handed; none of them are used by the trivial demo. */
+const inlineHelpers: InlineHelpers = {
+  input: async () => undefined,
+  confirm: async () => true,
+  capture: async () => undefined,
+};
 
 let configHome: string;
 let previousConfigHome: string | undefined;
@@ -306,7 +313,7 @@ test("the Cards line appears with no extra wiring, and the section reads the liv
 
   installToolDesignRows();
   const rows: CustomizeRow[] = buildRows({ theme: undefined, configHome }).rows;
-  const designLine = rows.filter((row) => row.choice?.setting === "bash");
+  const designLine = rows.filter((row) => isBashDesignSetting(row.choice?.setting));
   assert.deepEqual(
     designLine.map((row) => row.choice?.value),
     ["native", "bash heading"],
@@ -314,8 +321,8 @@ test("the Cards line appears with no extra wiring, and the section reads the liv
   );
 
   const section = sectionOf();
-  assert.equal(section.title, "BASH CARD");
-  assert.equal(section.rowLabel, "bash card");
+  assert.equal(section.title, "CARD BASH");
+  assert.equal(section.rowLabel, "card bash");
   assert.equal(section.meta?.(context()), "native", "the header count is the live selection");
 
   const [selected, resolver] = section.lines(context());
@@ -348,6 +355,154 @@ test("the Cards line appears with no extra wiring, and the section reads the liv
     false,
     "no dotted id reaches a row name",
   );
+});
+
+// ---------------------------------------------------------------------------------------------
+// The demo category: a toggle and a button in a category the plugin invents
+// ---------------------------------------------------------------------------------------------
+
+const DEMO_CATEGORY = "Card bash";
+
+/** The tool-design line's setting, old bridge (`bash`) and current bridge (`Card bash`). */
+const isBashDesignSetting = (setting: string | undefined): boolean =>
+  setting === "bash" || setting === "Card bash";
+
+/** The category's rows, through the real provider and the real build. */
+const demoRows = (): CustomizeRow[] =>
+  buildRows({ theme: undefined, configHome }).rows.filter((row) => row.category === DEMO_CATEGORY);
+
+const sectionStrings = (): string[] =>
+  sectionOf()
+    .lines(context())
+    .filter((line): line is string => typeof line === "string");
+
+const demoStoreValues = (): Record<string, unknown> => {
+  const document = JSON.parse(
+    readFileSync(join(configHome, "gentle-shell-bridge", "bash-card.json"), "utf8"),
+  ) as { values: Record<string, unknown> };
+  return document.values;
+};
+
+test("a plugin adds its OWN category with a toggle and a button, through one provider", async () => {
+  publishBridgeApi();
+  const { pi, sessionHandlers } = recordingPi();
+  (await loadExample("demo-category"))(pi);
+  const { ui } = notifySurface();
+  sessionHandlers[0]({}, { hasUI: true, ui });
+
+  const rows = demoRows();
+  assert.deepEqual(
+    rows.map((row) => row.label),
+    ["Demo toggle", "Demo toggle", "Demo button"],
+    "a two-value toggle (one line) and a plain button, through one provider",
+  );
+
+  const [on, off, button] = rows;
+  assert.equal(on?.choice?.setting, "Demo toggle");
+  assert.equal(off?.choice?.setting, "Demo toggle");
+  assert.deepEqual([on?.choice?.value, off?.choice?.value], ["on", "off"]);
+  assert.equal(button?.choice, undefined, "the button carries no choice");
+  assert.equal(typeof button?.action, "function", "Enter can run it");
+
+  // The category is created by the row, exactly once, and the default is `off`.
+  const categories = [...new Set(buildRows({ theme: undefined, configHome }).rows.map((row) => row.category))];
+  assert.equal(categories.filter((category) => category === DEMO_CATEGORY).length, 1);
+  assert.equal(on?.choice?.current(), false, "the stored default is off");
+  assert.equal(off?.choice?.current(), true);
+
+  for (const row of rows) {
+    const preview = row.preview?.();
+    assert.ok(preview !== undefined, "every demo row depicts itself");
+    assert.equal([...preview.title].length < 40, true, "a short literal title");
+    for (const line of preview.sample.split("\n")) {
+      assert.equal([...line].length < 40, true, "a short literal sample row");
+    }
+  }
+
+  const section = sectionStrings();
+  assert.equal(section.includes("demo toggle  off"), true, "the sidebar shows the live value");
+  assert.equal(section.includes("demo presses  0"), true);
+});
+
+test("choosing the demo toggle persists it and the sidebar shows the new value", async () => {
+  publishBridgeApi();
+  const { pi, sessionHandlers } = recordingPi();
+  (await loadExample("demo-toggle"))(pi);
+  const { ui } = notifySurface();
+  sessionHandlers[0]({}, { hasUI: true, ui });
+
+  const onRow = demoRows().find(
+    (row) => row.choice?.setting === "Demo toggle" && row.choice.value === "on",
+  );
+  assert.ok(onRow?.action !== undefined);
+  await onRow.action(inlineHelpers);
+
+  assert.equal(onRow.choice?.current(), true, "the same row reads the new value");
+  assert.equal(sectionStrings().includes("demo toggle  on"), true, "the sidebar shows it live");
+  assert.equal(demoStoreValues().demoToggle, "on", "and it is persisted in the example's own store");
+});
+
+test("the demo button counts its presses in the section, through the example's store", async () => {
+  publishBridgeApi();
+  const { pi, sessionHandlers } = recordingPi();
+  (await loadExample("demo-button"))(pi);
+  const { ui } = notifySurface();
+  sessionHandlers[0]({}, { hasUI: true, ui });
+
+  const button = demoRows().find((row) => row.label === "Demo button");
+  assert.ok(button?.action !== undefined);
+  await button.action(inlineHelpers);
+  await button.action(inlineHelpers);
+
+  assert.equal(sectionStrings().includes("demo presses  2"), true, "Enter increments the counter");
+  assert.equal(demoStoreValues().demoPresses, 2, "and the count is persisted");
+});
+
+test("a second registration replaces the demo provider instead of stacking a category", async () => {
+  publishBridgeApi();
+  const { pi, sessionHandlers } = recordingPi();
+  (await loadExample("demo-reload-1"))(pi);
+  const { ui } = notifySurface();
+  for (const handler of sessionHandlers) handler({}, { hasUI: true, ui });
+
+  const onRow = demoRows().find(
+    (row) => row.choice?.setting === "Demo toggle" && row.choice.value === "on",
+  );
+  const button = demoRows().find((row) => row.label === "Demo button");
+  assert.ok(onRow?.action !== undefined && button?.action !== undefined);
+  await onRow.action(inlineHelpers);
+  await button.action(inlineHelpers);
+
+  // A `/reload` loads the file again: the same provider id must replace, not duplicate.
+  (await loadExample("demo-reload-2"))(pi);
+  for (const handler of sessionHandlers) handler({}, { hasUI: true, ui });
+
+  assert.equal(demoRows().length, 3, "one category, one toggle line, one button");
+  const section = sectionStrings();
+  assert.equal(section.includes("demo toggle  on"), true, "the stored toggle survives the reload");
+  assert.equal(section.includes("demo presses  1"), true, "and so does the press count");
+});
+
+test("an older bridge without registerRows keeps the design and section, and adds no category", async () => {
+  const published = bridgeApi() ?? publishBridgeApi();
+  hostSlot()[BRIDGE_API_KEY] = {
+    schema: published.schema,
+    version: published.version,
+    VERSION: published.VERSION,
+    registerToolDesign: published.registerToolDesign,
+    registerSection: published.registerSection,
+    createStore: published.createStore,
+  };
+
+  const { pi, sessionHandlers } = recordingPi();
+  // `registerRows` is absent from this object: the example must degrade, not throw.
+  const dispose = (await loadExample("demo-old-bridge"))(pi);
+  const { ui } = notifySurface();
+  for (const handler of sessionHandlers) handler({}, { hasUI: true, ui });
+
+  assert.deepEqual(surfaceCounts(), DESIGN_AND_SECTION, "the promised surfaces still register");
+  assert.deepEqual(demoRows(), [], "a surface the bridge never promised adds nothing");
+  dispose();
 });
 
 test("the design's own preview depicts the card in that design", async () => {
@@ -485,7 +640,7 @@ test("with a bus but no bridge yet the notice says it is waiting for the announc
   const message = calls[0][0];
   assert.match(message, /waiting for the "gentle-shell-bridge:ready" announcement/u);
   assert.match(message, /registers the bash design/u);
-  assert.match(message, /the BASH CARD sidebar section/u);
+  assert.match(message, /the CARD BASH sidebar section/u);
   assert.match(message, /if it is not installed, or the published object is incompatible, nothing arrives/u);
   assert.doesNotMatch(message, /no compatible gentle-shell-bridge is installed/u);
 });

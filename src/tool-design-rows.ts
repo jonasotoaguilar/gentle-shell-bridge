@@ -8,14 +8,28 @@
  * that share a `choice.setting` into one rendered line (`lib/visual-customize-view.ts:395-402,583-595`),
  * so all of one tool's values share that tool's setting and two tools can never share a line.
  *
- * ## The names
+ * ## The names: `Card <tool>`, like `Card style` and `Card content`
  *
- * A row name is what a human reads (`./row-names.ts`), so the line's name is the TOOL NAME made
- * readable: `deriveRowLabel` owns the derivation (`./row-labels.ts`), the word limit is the rule's own
- * (`MAX_ROW_NAME_WORDS`), and two tool names that would read the same are told apart deterministically
- * with an ordinal — exactly the way sections are (`sectionRowLabels`). The id is never shown: a
- * design's `label` is its value, and the persisted value is the design's id, so renaming a label never
- * loses a user's choice.
+ * A row name is what a human reads (`./row-names.ts`), and the `Cards` category already names its
+ * lines `Card <what>`: `Card style`, `Card content`. A design line follows that vocabulary, so the
+ * bash tool's line reads `Card bash` — never the bare tool name, which reads like a category of its
+ * own. The readable words come from the TOOL (`deriveRowLabel`), never from the plugin or the id, and
+ * the bridge's name rule is one to three plain words (`MAX_ROW_NAME_WORDS`), so `Card` plus at most
+ * two tool words:
+ *
+ * - `bash` → `Card bash`;
+ * - `lsp_navigation` → `Card lsp navigation`;
+ * - `mcp__engram__mem_save` → the TAIL is the specific part, so the leading words go:
+ *   `Card mem save` (not `Card mcp engram`, which says nothing about the tool);
+ * - a tool name with no words at all keeps the fallback word: `Card tool`;
+ * - two tools that read the same after that clamp are told apart deterministically with an ordinal —
+ *   `Card mem save`, `Card mem 2` — replacing the last word so the result still passes the shape
+ *   rule, exactly the way sections and card styles are told apart (`sectionRowLabels`).
+ *
+ * The id is never shown: a design's `label` is its value, and the persisted value is the design's id,
+ * so renaming a label never loses a user's choice. The line's NAME is not persisted anywhere either —
+ * the store is keyed by the tool name (`bridge-tool-designs` → `selections` → `{ "bash": … }`), so
+ * renaming the line moves nothing but the text the user reads.
  *
  * ## No design, no line
  *
@@ -27,9 +41,10 @@
  * ## A change repaints the cards already drawn (S2)
  *
  * The action persists FIRST (the host re-reads `current()` when it repaints) and then asks for a
- * forced frame through `requestRepaint()` (`./repaint.ts`): `tui.invalidate()` drops the per-component
- * card caches and `requestRender(force = true)` draws the whole surface again, so the cards already on
- * screen change too — not only the next one. A press that changes nothing costs no frame.
+ * frame through `requestRepaint()` (`./repaint.ts`): one differential `requestRender()`, because the
+ * wrapper re-reads the live selection on every render pass, so the cards already on screen change too
+ * — not only the next one (S13/T23 measured the cache-dropping version as the freeze). A press that
+ * changes nothing costs no frame.
  *
  * This module is internal: `src/index.ts` does not re-export it.
  */
@@ -52,27 +67,38 @@ import type { CustomizeRow, RowPreview, ToolDesignRegistration } from "./types.t
 /** The rows provider's id; it is the bridge's own registration, never a plugin's. */
 export const TOOL_DESIGN_ROWS_PROVIDER_ID = "bridge.tool-designs";
 
-/** The tool name's readable words, clamped to the row-name word limit. */
-function toolWords(tool: string): string {
+/** The word every per-tool design line starts with: the `Cards` category's own vocabulary. */
+const TOOL_LINE_PREFIX = "Card";
+
+/** The word a tool name that derives to nothing still reads as (`deriveRowLabel` returned ""). */
+const TOOL_NAME_FALLBACK = "tool";
+
+/**
+ * The tool's readable words, clamped so `Card` plus them fits the row-name word limit. A long name
+ * keeps its TAIL: `mcp__engram__mem_save` reads `mem save`, because the last words are the specific
+ * part and the leading ones (`mcp`, `engram`) are the same for every tool of that server.
+ */
+function toolWords(tool: string): string[] {
   const derived = deriveRowLabel(tool);
-  const words = derived === "" ? ["tool"] : derived.split(" ").filter((word) => word !== "");
-  return words.slice(0, MAX_ROW_NAME_WORDS).join(" ");
+  const words = derived === "" ? [TOOL_NAME_FALLBACK] : derived.split(" ").filter((word) => word !== "");
+  const budget = Math.max(1, MAX_ROW_NAME_WORDS - 1);
+  return words.length > budget ? words.slice(words.length - budget) : words;
 }
 
 /**
- * The line name of every tool that has designs, in registration order, made unique the way sections
- * are: the readable tool name, then the lowest free ordinal (replacing the last word when the base
- * already uses the full word limit, so the result still passes the shape rule).
+ * The line name of every tool that has designs, in registration order: `Card <tool words>`, made
+ * unique the way sections are — the readable name, then the lowest free ordinal (replacing the last
+ * word when the base already uses the full word limit, so the result still passes the shape rule).
  */
 function toolLineNames(tools: readonly string[]): Array<{ tool: string; name: string }> {
   const taken = new Set<string>();
   return tools.map((tool) => {
-    const base = toolWords(tool);
+    const base = [TOOL_LINE_PREFIX, ...toolWords(tool)].join(" ");
     let name = base;
     let suffix = 2;
     while (taken.has(name)) {
       const words = base.split(" ");
-      const kept = words.length >= MAX_ROW_NAME_WORDS ? words.slice(0, MAX_ROW_NAME_WORDS - 1) : words;
+      const kept = words.slice(0, MAX_ROW_NAME_WORDS - 1);
       name = `${kept.join(" ")} ${suffix++}`;
     }
     taken.add(name);

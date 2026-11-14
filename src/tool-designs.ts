@@ -82,6 +82,11 @@ interface ToolDesignState {
   entries: DesignEntry[];
   conflicts: ToolDesignConflict[];
   failures: ToolDesignFailure[];
+  /**
+   * How many times the persisted selections were READ since the last reset. One read is exactly one
+   * `readFileSync` (`./store.ts`'s `get`), so this counts the file work a render pass costs.
+   */
+  selectionReads: number;
 }
 
 /** Stable process-global slot, like the bus and the store: two copies must agree. */
@@ -101,9 +106,10 @@ function designState(): ToolDesignState {
     // the lists in place, so two copies always see one registry.
     if (!Array.isArray(existing.conflicts)) existing.conflicts = [];
     if (!Array.isArray(existing.failures)) existing.failures = [];
+    if (typeof existing.selectionReads !== "number") existing.selectionReads = 0;
     return existing;
   }
-  const created: ToolDesignState = { entries: [], conflicts: [], failures: [] };
+  const created: ToolDesignState = { entries: [], conflicts: [], failures: [], selectionReads: 0 };
   host[DESIGNS_KEY] = created;
   return created;
 }
@@ -333,8 +339,23 @@ export function applyToolDesign(
  * hand-edited file can never select a design the user did not choose.
  */
 function readSelections(): Record<string, unknown> {
+  designState().selectionReads += 1;
   const stored = createStore(TOOL_DESIGN_STORE_ID).get<unknown>(TOOL_DESIGN_STORE_KEY, {});
   return isRecord(stored) ? stored : {};
+}
+
+/**
+ * How many persisted-selection reads happened since the last reset. Each one is a single
+ * `readFileSync` of the bridge's tool-design store, so a caller can bound the file work a switch or a
+ * frame performs instead of timing it (S13/T23). Read by the cost test; not part of the public API.
+ */
+export function getToolDesignSelectionReads(): number {
+  return designState().selectionReads;
+}
+
+/** Test-only seam for the read counter; deliberately not re-exported from `src/index.ts`. */
+export function resetToolDesignSelectionReads(): void {
+  designState().selectionReads = 0;
 }
 
 /** The design id stored for one tool, or `native` when it has none (or the value is unusable). */
@@ -371,14 +392,11 @@ export function resolveToolDesignSelection(tool: string): ToolDesignSelection {
   return design === undefined ? { kind: "missing", id } : { kind: "design", design };
 }
 
-/**
- * Test-only seam: empties the registry, the conflict records and the failure records in place.
- * Deliberately not re-exported from `src/index.ts`. The persisted selections live in the store file,
- * which a test points at its own config home.
- */
+/** Test-only seam: empties the registry, the conflict records and the failure records in place. */
 export function resetToolDesignsForTests(): void {
   const state = designState();
   state.entries.length = 0;
   state.conflicts.length = 0;
   state.failures.length = 0;
+  state.selectionReads = 0;
 }

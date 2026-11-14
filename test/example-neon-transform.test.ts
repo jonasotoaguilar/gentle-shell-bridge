@@ -193,7 +193,9 @@ async function startWorld(tag: string): Promise<World> {
     rows,
     pick: async (value) => {
       const row = rows().find(
-        (candidate) => candidate.choice?.setting === "bash" && candidate.choice?.value === value,
+        (candidate) =>
+          (candidate.choice?.setting === "bash" || candidate.choice?.setting === "Card bash") &&
+          candidate.choice?.value === value,
       );
       assert.ok(row?.action !== undefined, `the Cards line carries the value ${value}`);
       await row.action(inlineHelpers);

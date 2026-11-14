@@ -151,6 +151,31 @@ export const BASH_MINIMAL_FLOAT_RESULT_PROMPT: readonly string[] = [
 ];
 
 /**
+ * `minimal` x `float`, the CALL component of a settled card whose command is too long for the
+ * heading row. Derived from the INSTALLED host, not written by hand: `bashSummary(command, width)`
+ * (`quiet-tools.ts:492-501`) clips the command and appends the host's ellipsis, `clipPlain`
+ * (`:505-510`) does the cut, and `formatToolCall` (`:519-527`) puts the muted ` (timeout 30s)` after
+ * it. The width it is handed is the one `renderCall` computes (`:781`): the card's inner width minus
+ * `CARD_TOP_CHROME` (8, `:489`) and the 18 columns of the `ctrl+o to expand` hint — 32 at width 60 —
+ * less the timeout's own 14 columns, so the command is clipped to 18 columns. `cardTopRows`
+ * (`shell-card.ts:246-271`) then wraps that title and `cardTop` (`:141-164`) leaves only its minimum
+ * fill before the hint. That minimum is why the design's fill rule refuses this row.
+ */
+export const BASH_MINIMAL_FLOAT_CALL_LONG: readonly string[] = [
+  " \u001b[48;5;236m\u001b[95m▎\u001b[39m\u001b[95m                                                         \u001b[39m\u001b[49m ",
+  " \u001b[48;5;236m\u001b[95m▎\u001b[39m\u001b[95m \u001b[39m\u001b[95m$ \u001b[95m\u001b[1mnpm run typecheck…\u001b[22m\u001b[39m\u001b[37m (timeout 30s)\u001b[39m\u001b[39m\u001b[95m  \u001b[39m \u001b[2mctrl+o to expand\u001b[39m \u001b[95m  \u001b[39m\u001b[49m ",
+];
+
+/**
+ * `minimal` x `neon`, the same collapsed long command: the outline spends one column fewer on its
+ * leading chrome, so `bashSummary` clips two more columns of the command before the ellipsis. Produced
+ * by the same host path (the only difference is `floatRows`' chrome, `shell-card.ts:105-108`).
+ */
+export const BASH_MINIMAL_NEON_CALL_LONG: readonly string[] = [
+  "\u001b[95m╭\u001b[39m\u001b[95m─ \u001b[39m\u001b[95m$ \u001b[95m\u001b[1mnpm run typecheck -…\u001b[22m\u001b[39m\u001b[37m (timeout 30s)\u001b[39m\u001b[39m\u001b[95m ─\u001b[39m \u001b[2mctrl+o to expand\u001b[39m \u001b[95m╮\u001b[39m",
+];
+
+/**
  * `minimal` x `neon`, the CALL component of a settled card: one row, the outlined top rule
  * (`floatRows` falls back to `OUTLINE_CHROME` when the style is not float, `shell-card.ts:105-108`).
  */

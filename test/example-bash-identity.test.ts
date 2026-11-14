@@ -178,6 +178,10 @@ interface World {
  * A session as Pi runs it: the bridge arms itself (installing the one resolver and the design rows),
  * then the example registers its design from its own `session_start`.
  */
+/** The tool-design line's setting, old bridge (`bash`) and current bridge (`Card bash`). */
+const isBashDesignSetting = (setting: string | undefined): boolean =>
+  setting === "bash" || setting === "Card bash";
+
 async function startWorld(tag: string): Promise<World> {
   publishBridgeApi();
   const host = createFakeHost();
@@ -210,7 +214,8 @@ async function startWorld(tag: string): Promise<World> {
     rows,
     pick: async (value) => {
       const row = rows().find(
-        (candidate) => candidate.choice?.setting === "bash" && candidate.choice?.value === value,
+        (candidate) =>
+          isBashDesignSetting(candidate.choice?.setting) && candidate.choice?.value === value,
       );
       assert.ok(row !== undefined, `the Cards line for bash carries the value ${value}`);
       assert.ok(row.action !== undefined, `the ${value} value must have an action`);
@@ -238,14 +243,15 @@ const DESIGNED_FLOAT_HEADING =
 test("T10/S8: the design appears on the `bash` Cards line beside the host's own card", async () => {
   const world = await startWorld("cards-line");
 
-  const values = world.rows()
-    .filter((row) => row.choice?.setting === "bash")
+  const values = world
+    .rows()
+    .filter((row) => isBashDesignSetting(row.choice?.setting))
     .map((row) => row.choice?.value);
   assert.deepEqual(values, ["native", "bash heading"], "the host's card is the default value");
 
-  const native = world.rows().find(
-    (row) => row.choice?.setting === "bash" && row.choice?.value === "native",
-  );
+  const native = world
+    .rows()
+    .find((row) => isBashDesignSetting(row.choice?.setting) && row.choice?.value === "native");
   assert.equal(native?.choice?.current(), true, "nothing is selected on install");
 
   world.dispose();

@@ -147,13 +147,15 @@ export interface BridgeApi {
    */
   readonly registerTransform?: typeof registerTransform;
   /**
-   * A full repaint of everything the host draws (T4): `tui.invalidate()` — which drops the
-   * per-component frame caches a tool row keeps — followed by `requestRender(force = true)`.
+   * A repaint of what the host draws (T4, S13): one DIFFERENTIAL frame, `requestRender()` with no
+   * argument, after bumping the host's sidebar revision. It does NOT invalidate the component tree and
+   * does NOT force a full redraw: measured on a 600-child transcript with real pi components, that cost
+   * 753 ms and 6.9 MB per switch against 20 ms for the differential frame, because invalidating clears
+   * every Markdown cache. A design change still reaches the cards ALREADY on screen because the design
+   * wrapper re-applies the live selection to the host's rows on every render pass.
    *
-   * This is what makes a setting change reach the cards ALREADY on screen: the host resolves a tool
-   * row once and replays its cached frame otherwise. Returns what `/bridge-status` reports as the last
-   * repaint, and never throws — with no host captured yet the request is reported as `unavailable`
-   * with its reason.
+   * Returns what `/bridge-status` reports as the last repaint, and never throws — with no host
+   * captured yet the request is reported as `unavailable` with its reason.
    *
    * Optional for the same reason as `registerCardStyle`: the slot is first-wins, so a mixed-copy
    * process can hand back an object published before this member existed. A plugin that needs it

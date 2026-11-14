@@ -2,7 +2,8 @@
  * The customize rows for tool designs (S6, T9): one line per tool that HAS designs, in the `Cards`
  * category, with the tool's own card as one value and each design as another. The selection is
  * persisted per tool in the bridge's own store, and changing it repaints the cards already drawn
- * through `requestRepaint()` — the forced frame that drops the host's per-component card caches.
+ * through `requestRepaint()` — one differential frame, because the wrapper re-reads the live selection
+ * on every render pass (S13/T23: dropping the caches was the freeze).
  *
  * Asserted through the row contract the host receives — `buildRows` — and the store file, so the
  * test reads what the menu reads.
@@ -19,7 +20,7 @@ import { resetNoticesForTests } from "../src/notices.ts";
 import { resetPluginLinesForTests } from "../src/plugin-lines.ts";
 import { getRepaintDiagnostics, resetRepaintForTests, setRepaintHost } from "../src/repaint.ts";
 import { buildRows, resetRowBuildStateForTests } from "../src/rows.ts";
-import { resetStoreStateForTests } from "../src/store.ts";
+import { createStore, resetStoreStateForTests } from "../src/store.ts";
 import {
   TOOL_DESIGN_NATIVE,
   getToolDesignSelection,
@@ -151,11 +152,11 @@ test("T9: one Cards line per tool that has designs, in Cards, values are the too
   assert.ok(rows.every((row) => row.category === "Cards"), "every row belongs to Cards");
   const lines = toggleLines(rows);
   assert.equal(lines.length, 2, "one line per tool, never one line per design");
-  assert.match(lines[0], /^bash /u);
+  assert.match(lines[0], /^Card bash /u, "the line is named after the Cards category, then the tool");
   assert.match(lines[0], /● native/u, "the tool's own card is the default selection");
   assert.match(lines[0], /○ bash heading/u);
   assert.match(lines[0], /○ bash framed/u);
-  assert.match(lines[1], /^write /u);
+  assert.match(lines[1], /^Card write /u);
   assert.match(lines[1], /○ write badge/u);
 });
 
@@ -177,7 +178,7 @@ test("T9: the selection persists PER TOOL and moves the bullet on the next build
 
   // And the way back to the host's own card.
   const native = rowsForBuild().find(
-    (row) => row.choice?.value === TOOL_DESIGN_NATIVE && row.choice?.setting?.startsWith("bash") === true,
+    (row) => row.choice?.value === TOOL_DESIGN_NATIVE && row.choice?.setting === "Card bash",
   );
   assert.ok(native?.action !== undefined);
   await native.action({ input: async () => undefined, confirm: async () => true, capture: async () => undefined });
@@ -196,8 +197,8 @@ test("T9: changing the value repaints the drawn cards through requestRepaint()",
 
   assert.deepEqual(
     tui.calls,
-    ["invalidate", "requestRender"],
-    "the host's component frame caches are dropped first, then a forced frame is asked for",
+    ["requestRender"],
+    "one differential frame; no cache is dropped and no forced full redraw is asked for",
   );
   assert.equal(getRepaintDiagnostics().lastTrigger?.outcome, "repainted");
 
@@ -221,10 +222,67 @@ test("T9: a design's own preview is the preview its value shows", () => {
   assert.match(badge.preview().title, /write badge/u);
 
   const native = rows.find(
-    (row) => row.choice?.value === TOOL_DESIGN_NATIVE && row.choice?.setting?.startsWith("bash") === true,
+    (row) => row.choice?.value === TOOL_DESIGN_NATIVE && row.choice?.setting === "Card bash",
   );
   assert.ok(native?.preview !== undefined);
   assert.match(native.preview().sample, /own card|host/u);
+});
+
+test("T9: the line name starts with `Card `, then the tool's readable words, like the host's rows", () => {
+  registerToolDesign({ ...writeBadge, tool: "bash", id: "loon.bash-heading" });
+  registerToolDesign({ ...writeBadge, tool: "lsp_navigation", id: "loon.lsp" });
+  registerToolDesign({ ...writeBadge, tool: "mcp__engram__mem_save", id: "loon.mcp" });
+  registerToolDesign({ ...writeBadge, tool: "···", id: "loon.nowords" });
+
+  const settings = [...new Set(rowsForBuild().map((row) => row.choice?.setting))];
+
+  assert.deepEqual(settings, [
+    "Card bash",
+    "Card lsp navigation",
+    // The TAIL of a long name is the specific part: `Card mcp engram` would say nothing.
+    "Card mem save",
+    // A tool name that derives to no words keeps the fallback word.
+    "Card tool",
+  ]);
+  for (const setting of settings) {
+    assert.ok(setting !== undefined);
+    const words = setting.trim().split(/\s+/u);
+    assert.ok(words.length >= 1 && words.length <= 3, `${setting} must stay within the word limit`);
+    assert.equal(words[0], "Card", `${setting} must start with the Cards category's word`);
+    assert.match(setting, /^Card( [a-z0-9]+){1,2}$/u, `${setting} is capitalised like Card style`);
+  }
+});
+
+test("T9: two tools that clamp to the same name stay distinct and pass the shape rule", () => {
+  registerToolDesign({ ...writeBadge, tool: "mcp__alpha__mem_save", id: "loon.alpha" });
+  registerToolDesign({ ...writeBadge, tool: "mcp__beta__mem_save", id: "loon.beta" });
+
+  const settings = [...new Set(rowsForBuild().map((row) => row.choice?.setting))];
+
+  assert.deepEqual(settings, ["Card mem save", "Card mem 2"], "the second gets the lowest free ordinal");
+  for (const setting of settings) {
+    assert.ok(setting !== undefined);
+    assert.ok(
+      setting.trim().split(/\s+/u).length <= 3,
+      `${setting} must stay within the row-name word limit`,
+    );
+    assert.doesNotMatch(setting, /[.:|/\\[\](){}→]/u, `${setting} must carry no structural mark`);
+  }
+});
+
+test("T9: the persisted value and the stored selection are unchanged by the line's name", async () => {
+  registerToolDesign(bashHeading);
+
+  const pick = rowsForBuild().find((row) => row.choice?.value === "bash heading");
+  assert.ok(pick?.action !== undefined);
+  assert.equal(pick.choice?.setting, "Card bash", "the line is named after the card, not after the store");
+  await pick.action({ input: async () => undefined, confirm: async () => true, capture: async () => undefined });
+
+  // The VALUE is the design's id and the store is still keyed by the TOOL name: only the visible
+  // line name moved.
+  assert.equal(getToolDesignSelection("bash"), "loon.bash-heading");
+  const stored = createStore("bridge-tool-designs").get<Record<string, unknown>>("selections", {});
+  assert.deepEqual(stored, { bash: "loon.bash-heading" });
 });
 
 test("T9: a tool name keeps a row name that passes the shape rule, even a long MCP one", () => {

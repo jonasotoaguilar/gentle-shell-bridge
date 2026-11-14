@@ -412,11 +412,14 @@ The bridge enforces this rather than trusting authors, and it never rewrites a n
 Every field below is already understood by gentle-shell's own renderer; the bridge carries rows
 as authored, with one deliberate exception: it sets `choice.applyOnMove: false` on every row it
 contributes, so a toggle is navigated and confirmed with Enter instead of switching as the cursor
-passes over it (the host's own rows keep their own field).
+passes over it (the host's own rows keep their own field, so `Card style · neon/float` still
+applies on ←/→). While a bridge row is focused, the host's footer reads exactly
+`←/→ choose · Enter apply` instead of `←/→ change`, and a move writes nothing: no store update, no
+persisted value, no repaint. Enter applies once.
 
 | Kind | Shape | Renders as |
 | --- | --- | --- |
-| Toggle | two or more consecutive rows sharing `choice.setting` | one line `Name ● current ○ other`; ←/→ moves the `›` cursor, Enter applies (the bridge always sets `applyOnMove: false`) |
+| Toggle | two or more consecutive rows sharing `choice.setting` | one line `Name ● current ○ other`; ←/→ moves the `›` cursor and the footer reads `←/→ choose · Enter apply`, Enter applies (the bridge always sets `applyOnMove: false`) |
 | Action | a row without `choice` | one line; Enter/Space runs `action(inline)` |
 | Gated | `visible()` returns `false` | row hidden; a throw fails closed and hides it |
 | Preview | `preview()` returns `{ title, sample }` | read-only preview for the focused row |

@@ -22,12 +22,17 @@
  *
  * ## How the host measures a row
  *
- * `visibleWidth` (`pi-tui/dist/utils.js:212-268`) strips ANSI, expands a tab to THREE columns
- * (`graphemeWidth`, `:148-155`), segments the rest into grapheme clusters and charges an emoji
- * cluster two columns (`:164-179`). This package's own `visibleColumns` counts a tab as one column
- * and every code point separately, so a row this package believes is 48 columns wide can measure
- * 51 to the host. The port below is the host's model, kept here independently of `src/` so the
- * assertions do not test the implementation against itself.
+ * `visibleWidth` (`pi-tui/dist/utils.js:212-268`) strips complete CSI/OSC/APC sequences, expands a
+ * TAB to THREE columns (`:229-231`), segments the rest into grapheme clusters and charges each one
+ * the way `graphemeWidth` charges it (`:126-165`): zero for a cluster of ignorables/controls/marks,
+ * two for an RGI emoji (after the host's own `couldBeEmoji` prefilter, so a bare `©`, `☺` or `▶` is
+ * NOT an emoji and stays one column), two for a regional-indicator pair, otherwise the base code
+ * point's East Asian `W|F` width, plus every trailing halfwidth/fullwidth form and the Thai/Lao AM
+ * vowels. This package's own `visibleColumns` counts a tab as one column and every code point
+ * separately, so a row this package believes is 48 columns wide can measure 51 to the host. The
+ * port below is the host's model, kept here independently of `src/` — no production width helper is
+ * imported — so the assertions do not test the implementation against itself; a self-check test
+ * pins the values measured from the installed `visibleWidth`.
  *
  * ## The rail path, as the host paints it
  *
@@ -74,17 +79,101 @@ const MAIN_WITH_RAIL = TERMINAL_COLUMNS - RAIL_COLUMNS;
 /** The main column when the rail does not paint at all. */
 const MAIN_WITHOUT_RAIL = TERMINAL_COLUMNS;
 
-const ANSI = /\u001b\[[0-9;]*m/gu;
-const ZERO_WIDTH = /^[\p{Mn}\p{Me}\p{Cf}\u1160-\u11ff\u200b-\u200f\u202a-\u202e\ufe00-\ufe0f\ufeff]+$/u;
-const EMOJI = /[\p{Extended_Pictographic}\p{Regional_Indicator}]/u;
-const WIDE = /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6]|[\u{1f300}-\u{1f64f}]|[\u{1f900}-\u{1f9ff}]|[\u{20000}-\u{3fffd}]/u;
+/**
+ * One complete escape sequence's length at `index`, read as the host's `extractAnsiCode` reads it
+ * (`pi-tui/dist/utils.js:265-320`): CSI up to its final byte, OSC/APC up to BEL or ST. Zero when
+ * there is none, so the walk copies the character.
+ */
+function escapeLengthAt(line: string, index: number): number {
+  if (line[index] !== "\u001b") return 0;
+  const kind = line[index + 1];
+  if (kind === "[") {
+    let end = index + 2;
+    while (end < line.length && !/[mGKHJ]/u.test(line[end] ?? "")) end += 1;
+    return end < line.length ? end + 1 - index : 0;
+  }
+  if (kind === "]" || kind === "_") {
+    let end = index + 2;
+    while (end < line.length) {
+      if (line[end] === "\u0007") return end + 1 - index;
+      if (line[end] === "\u001b" && line[end + 1] === "\\") return end + 2 - index;
+      end += 1;
+    }
+  }
+  return 0;
+}
+
+/** A cluster of nothing but ignorables, controls, marks or surrogates: no columns (`:27`). */
+const ZERO_WIDTH = /^(?:\p{Default_Ignorable_Code_Point}|\p{Control}|\p{Mark}|\p{Surrogate})+$/v;
+/** What a cluster may carry before its base (`leadingNonPrintingRegex`, `:28`). */
+const LEADING_NON_PRINTING =
+  /^[\p{Default_Ignorable_Code_Point}\p{Control}\p{Format}\p{Mark}\p{Surrogate}]+/v;
+/** The emoji set the host tests AFTER its prefilter (`rgiEmojiRegex`, `:29`). */
+const RGI_EMOJI = /^\p{RGI_Emoji}$/v;
+
+/** The host's cheap emoji prefilter (`couldBeEmoji`, `:16-26`). */
+function couldBeEmoji(segment: string): boolean {
+  const codePoint = segment.codePointAt(0) ?? 0;
+  return (
+    (codePoint >= 0x1f000 && codePoint <= 0x1fbff) ||
+    (codePoint >= 0x2300 && codePoint <= 0x23ff) ||
+    (codePoint >= 0x2600 && codePoint <= 0x27bf) ||
+    (codePoint >= 0x2b50 && codePoint <= 0x2b55) ||
+    segment.includes("\ufe0f") ||
+    segment.length > 2
+  );
+}
 
 /**
- * pi-tui's `visibleWidth`: ANSI stripped, a tab is three columns, and each grapheme cluster is
- * charged as a whole (an emoji cluster two columns, a zero-width cluster none).
+ * The East Asian Wide/Fullwidth blocks: a base code point in one of them is two columns
+ * (`get-east-asian-width`'s `eastAsianWidth`, which `graphemeWidth` calls at `:151`). These are the
+ * blocks a rail row can carry — CJK, Kana, Hangul, the fullwidth forms, enclosed ideographs and the
+ * supplementary ideographic planes; a wide EMOJI is charged by the RGI rule above instead.
+ */
+const WIDE: ReadonlyArray<readonly [number, number]> = [
+  [0x1100, 0x115f],
+  [0x2329, 0x232a],
+  [0x2e80, 0x303e],
+  [0x3041, 0xa4cf],
+  [0xa960, 0xa97f],
+  [0xac00, 0xd7a3],
+  [0xf900, 0xfaff],
+  [0xfe10, 0xfe19],
+  [0xfe30, 0xfe6f],
+  [0xff01, 0xff60],
+  [0xffe0, 0xffe6],
+  [0x16fe0, 0x16fe4],
+  [0x17000, 0x18d08],
+  [0x1b000, 0x1b2ff],
+  [0x1d300, 0x1d376],
+  [0x1f200, 0x1f2ff],
+  [0x20000, 0x3fffd],
+];
+
+function isWide(codePoint: number): boolean {
+  return WIDE.some(([start, end]) => codePoint >= start && codePoint <= end);
+}
+
+/**
+ * pi-tui's `visibleWidth`: escapes dropped, a tab three columns, and each grapheme cluster charged
+ * as the host charges it. Kept independent of `src/` on purpose.
  */
 function hostWidth(line: string): number {
-  const clean = line.replace(ANSI, "").replace(/\t/gu, "   ");
+  let clean = "";
+  let index = 0;
+  while (index < line.length) {
+    const length = escapeLengthAt(line, index);
+    if (length > 0) {
+      index += length;
+      continue;
+    }
+    clean += line[index];
+    index += 1;
+  }
+  // A TAB is three columns (`:229-231`); the host substitutes before segmenting.
+  clean = clean.replace(/\t/gu, "   ");
+  // Fast path, like the host's: printable ASCII is one column per byte.
+  if (/^[\x20-\x7e]*$/u.test(clean)) return clean.length;
   let total = 0;
   for (const { segment } of new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(clean)) {
     total += clusterWidth(segment);
@@ -92,12 +181,53 @@ function hostWidth(line: string): number {
   return total;
 }
 
+/** One grapheme cluster's columns, in the host's own order (`graphemeWidth`, `:126-165`). */
 function clusterWidth(segment: string): number {
   if (ZERO_WIDTH.test(segment)) return 0;
-  if (EMOJI.test(segment)) return 2;
-  const base = Array.from(segment).find((char) => !ZERO_WIDTH.test(char)) ?? "";
-  return WIDE.test(base) ? 2 : 1;
+  if (couldBeEmoji(segment) && RGI_EMOJI.test(segment)) return 2;
+
+  const base = segment.replace(LEADING_NON_PRINTING, "");
+  const codePoint = base.codePointAt(0);
+  if (codePoint === undefined) return 0;
+  if (codePoint >= 0x1f1e6 && codePoint <= 0x1f1ff) return 2;
+
+  let width = isWide(codePoint) ? 2 : 1;
+  for (const char of segment.slice(1)) {
+    const trailing = char.codePointAt(0) ?? 0;
+    if (trailing >= 0xff00 && trailing <= 0xffef) width += isWide(trailing) ? 2 : 1;
+    else if (trailing === 0x0e33 || trailing === 0x0eb3) width += 1;
+  }
+  return width;
 }
+
+// ---------------------------------------------------------------------------------------------
+// The oracle itself, pinned to numbers measured from the installed `visibleWidth`
+// ---------------------------------------------------------------------------------------------
+
+test("the host-width oracle agrees with the values pi-tui's own visibleWidth produces", () => {
+  const measured: Array<[string, number]> = [
+    ["a", 1],
+    ["©", 1],
+    ["©️", 2],
+    ["1️⃣", 2],
+    ["▶", 1],
+    ["🎵", 2],
+    ["ｶﾞ", 2],
+    ["👨‍👩‍👧‍👦", 2],
+    ["🇯🇵", 2],
+    ["e\u0301", 1],
+    ["\u0301", 0],
+    ["a\tb", 5],
+    ["中文", 4],
+    ["한국어", 6],
+    ["Ａ", 2],
+    ["👨\u001b[31m‍👩‍👧‍👦AB", 4],
+    ["\u001b]8;;http://example.com\u0007a\u001b]8;;\u0007", 1],
+  ];
+  for (const [row, columns] of measured) {
+    assert.equal(hostWidth(row), columns, `${JSON.stringify(row)} measures ${columns} to the host`);
+  }
+});
 
 /**
  * The width the layout gives the main column, given what a part returned: the host pads each row by

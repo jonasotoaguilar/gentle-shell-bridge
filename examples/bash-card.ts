@@ -447,6 +447,7 @@ const BASH_TRANSFORM_ID = "bash-card-example.bash-cards";
 const FLOAT_BAR = "▎";
 /** The `neon` outline's corners and side rail (`OUTLINE_CHROME`, `shell-card.ts:105`). */
 const NEON_TOP = "╭";
+const NEON_TOP_RIGHT = "╮";
 const NEON_SIDE = "│";
 const NEON_BOTTOM = "╰";
 const NEON_BOTTOM_RIGHT = "╯";
@@ -544,10 +545,12 @@ function plainBashCard(stripped: readonly string[], start: number): BashCardSpan
 
 /**
  * A `neon` card's top rule: `╭─ <heading> ────╮`. It starts at column 0, which is what tells it
- * apart from every `float` row (one-column margin, then `▎`) and from this file's own gutter.
+ * apart from every `float` row (one-column margin, then `▎`) and from this file's own gutter — and
+ * it ENDS with the frame's right corner, because `cardTop` always closes the rule (`╮`). A row that
+ * only starts like a top rule is not a frame, so the rows under it are not a body.
  */
 function isNeonTop(text: string): boolean {
-  return text.startsWith(`${NEON_TOP}─ `);
+  return text.startsWith(`${NEON_TOP}─ `) && text.endsWith(NEON_TOP_RIGHT);
 }
 
 /** A `neon` body row: `│ <text> … │` — the side rail on both ends, then the frame's padding. */

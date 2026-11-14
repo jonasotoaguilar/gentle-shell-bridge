@@ -290,6 +290,24 @@ test("an incomplete neon card, or a neon card that is not bash, is the same arra
   world.dispose();
 });
 
+test("a neon top rule with no closing corner is not a frame, even when rows below look like one", async () => {
+  // The host always closes its top rule with `╮` (`cardTop`, `shell-card.ts:139-160`). A row that
+  // merely STARTS like a top rule is not a card, and the rows under it are not its body.
+  const noCorner =
+    "\u001b[90m╭\u001b[39m\u001b[90m─ \u001b[39m\u001b[95m✿ bash\u001b[39m" +
+    "\u001b[90m ─────────────────────────────\u001b[39m";
+  const frame = ["prose", "", noCorner, ...NEON_BASH_CARD_WITH_BODY.slice(1)];
+  const world = await startWorld("neon-no-corner", frame);
+
+  world.setMode("tool");
+  const output = world.tui.chat.render(40);
+
+  assert.equal(output, world.hostLines(), "an incomplete top rule is not a bash card");
+  assert.deepEqual([...output], [...frame], "every row is the host's, byte for byte");
+
+  world.dispose();
+});
+
 // ---------------------------------------------------------------------------------------------
 // C5: the shape is visible in `/bridge-status`
 // ---------------------------------------------------------------------------------------------

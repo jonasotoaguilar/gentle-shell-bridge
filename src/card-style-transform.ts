@@ -409,20 +409,23 @@ function cellWidth(char: string): number {
 }
 
 /**
- * The model pi-tui measures a row with, ported from `visibleWidth`:
+ * The model pi-tui measures a row with, ported from `visibleWidth` (`pi-tui/dist/utils.js:126-268`):
  *
- * - ANSI/CSI, OSC and APC sequences are zero columns (`pi-tui/dist/utils.js:232-252`, which strips
- *   through `extractAnsiCode`, so an OSC-8 hyperlink contributes its TEXT and not its URL);
- * - a TAB is THREE columns, not one (`graphemeWidth`, `:148-155`: `if (code === 0x09) return 3`);
- * - the rest is segmented into GRAPHEME CLUSTERS (`:255-258`, `Intl.Segmenter` with
- *   `granularity: "grapheme"`) and each cluster is charged as a whole: an emoji cluster two
- *   columns (`:164-167`), a regional-indicator pair two (`:174-179`), a cluster of nothing but
- *   marks none (`:160-163`), otherwise its base code point's East Asian width.
+ * - ANSI/CSI, OSC and APC sequences are zero columns (`:228-257`, which strips through
+ *   `extractAnsiCode`, so an OSC-8 hyperlink contributes its TEXT and not its URL);
+ * - a TAB is THREE columns, not one (`:229-231`, `clean.replace(/\t/g, "   ")`);
+ * - the rest is segmented into GRAPHEME CLUSTERS (`:259-262`, `Intl.Segmenter` with
+ *   `granularity: "grapheme"`) and each cluster is charged the way `graphemeWidth` charges it
+ *   (`:126-165`): a cluster of nothing but ignorables, controls, marks and surrogates none, an RGI
+ *   emoji (after the host's own `couldBeEmoji` prefilter, so bare `©`/`☺`/`▶` are NOT emoji) two, a
+ *   leading regional-indicator pair two, otherwise its base code point's East Asian `W|F` width,
+ *   plus every trailing halfwidth/fullwidth form and the Thai/Lao AM vowels.
  *
  * This exists because `visibleColumns` counts per code point, charges a tab one column and only
  * ignores SGR, so a row this package believes fits can measure wider to the host (or a fitting row
  * can be cut). Anything contributed to the HOST's frame is measured the host's way
- * (`./section-panel.ts`, `./sidebar-render.ts`, `./transform-pipeline.ts`).
+ * (`./section-panel.ts`, `./sidebar-render.ts`, `./transform-pipeline.ts`), and the port is exact:
+ * measured against the installed `visibleWidth` for every Unicode code point, no cluster differs.
  */
 export function hostColumns(line: string): number {
   if (line === "") return 0;
@@ -504,37 +507,120 @@ function graphemes(clean: string): string[] {
   return clusters;
 }
 
-/** Marks, joiners, variation selectors and emoji modifiers ride their base: no columns of their own. */
-function isZeroWidthCodePoint(code: number): boolean {
+/**
+ * A cluster made only of ignorables, controls, marks, formats or surrogates has no columns
+ * (`zeroWidthRegex`, `pi-tui/dist/utils.js:27`).
+ */
+const ZERO_WIDTH_CLUSTER = /^(?:\p{Default_Ignorable_Code_Point}|\p{Control}|\p{Mark}|\p{Surrogate})+$/v;
+
+/** The marks an emoji or a consonant may carry before its base (`leadingNonPrintingRegex`, `:28`). */
+const LEADING_NON_PRINTING =
+  /^[\p{Default_Ignorable_Code_Point}\p{Control}\p{Format}\p{Mark}\p{Surrogate}]+/v;
+
+/** The emoji set the host tests AFTER its cheap prefilter (`rgiEmojiRegex`, `:29`). */
+const RGI_EMOJI = /^\p{RGI_Emoji}$/v;
+
+/**
+ * The host's cheap emoji prefilter (`couldBeEmoji`, `pi-tui/dist/utils.js:16-26`): broad blocks, an
+ * explicit emoji presentation selector, or a multi-code-unit sequence. Without it, `©` and `☺`
+ * would be charged as emoji when the host charges them one column.
+ */
+function couldBeEmoji(segment: string): boolean {
+  const codePoint = segment.codePointAt(0) ?? 0;
   return (
-    code < 32 ||
-    (code >= 0x7f && code < 0xa0) ||
-    (code >= 0x300 && code <= 0x36f) ||
-    (code >= 0x200b && code <= 0x200f) ||
-    (code >= 0x2060 && code <= 0x2064) ||
-    code === 0xfeff ||
-    (code >= 0xfe00 && code <= 0xfe0f) ||
-    (code >= 0x1f3fb && code <= 0x1f3ff)
+    (codePoint >= 0x1f000 && codePoint <= 0x1fbff) ||
+    (codePoint >= 0x2300 && codePoint <= 0x23ff) ||
+    (codePoint >= 0x2600 && codePoint <= 0x27bf) ||
+    (codePoint >= 0x2b50 && codePoint <= 0x2b55) ||
+    segment.includes("\ufe0f") ||
+    segment.length > 2
   );
 }
 
-const PICTOGRAPHIC = /[\p{Extended_Pictographic}\p{Regional_Indicator}]/u;
+/**
+ * The East Asian width of a base code point, as the host reads it: `W` or `F` is two columns, every
+ * other class one (`get-east-asian-width`'s `eastAsianWidth`, which `graphemeWidth` calls at
+ * `pi-tui/dist/utils.js:151`). The host depends on that package's generated tables; this is its
+ * `W|F` range set, flattened to `[start, end, start, end, …]`, so the port stays dependency-free.
+ * A lone code point is `[cp, cp]`.
+ */
+const WIDE_RANGES: readonly number[] = [
+  0x1100, 0x115f, 0x231a, 0x231b, 0x2329, 0x232a, 0x23e9, 0x23ec,
+  0x23f0, 0x23f0, 0x23f3, 0x23f3, 0x25fd, 0x25fe, 0x2614, 0x2615,
+  0x2630, 0x2637, 0x2648, 0x2653, 0x267f, 0x267f, 0x268a, 0x268f,
+  0x2693, 0x2693, 0x26a1, 0x26a1, 0x26aa, 0x26ab, 0x26bd, 0x26be,
+  0x26c4, 0x26c5, 0x26ce, 0x26ce, 0x26d4, 0x26d4, 0x26ea, 0x26ea,
+  0x26f2, 0x26f3, 0x26f5, 0x26f5, 0x26fa, 0x26fa, 0x26fd, 0x26fd,
+  0x2705, 0x2705, 0x270a, 0x270b, 0x2728, 0x2728, 0x274c, 0x274c,
+  0x274e, 0x274e, 0x2753, 0x2755, 0x2757, 0x2757, 0x2795, 0x2797,
+  0x27b0, 0x27b0, 0x27bf, 0x27bf, 0x2b1b, 0x2b1c, 0x2b50, 0x2b50,
+  0x2b55, 0x2b55, 0x2e80, 0x2e99, 0x2e9b, 0x2ef3, 0x2f00, 0x2fd5,
+  0x2ff0, 0x303e, 0x3041, 0x3096, 0x3099, 0x30ff, 0x3105, 0x312f,
+  0x3131, 0x318e, 0x3190, 0x31e5, 0x31ef, 0x321e, 0x3220, 0x3247,
+  0x3250, 0xa48c, 0xa490, 0xa4c6, 0xa960, 0xa97c, 0xac00, 0xd7a3,
+  0xf900, 0xfaff, 0xfe10, 0xfe19, 0xfe30, 0xfe52, 0xfe54, 0xfe66,
+  0xfe68, 0xfe6b, 0xff01, 0xff60, 0xffe0, 0xffe6, 0x16fe0, 0x16fe4,
+  0x16ff0, 0x16ff6, 0x17000, 0x18cd5, 0x18cff, 0x18d1e, 0x18d80, 0x18df2,
+  0x1aff0, 0x1aff3, 0x1aff5, 0x1affb, 0x1affd, 0x1affe, 0x1b000, 0x1b122,
+  0x1b132, 0x1b132, 0x1b150, 0x1b152, 0x1b155, 0x1b155, 0x1b164, 0x1b167,
+  0x1b170, 0x1b2fb, 0x1d300, 0x1d356, 0x1d360, 0x1d376, 0x1f004, 0x1f004,
+  0x1f0cf, 0x1f0cf, 0x1f18e, 0x1f18e, 0x1f191, 0x1f19a, 0x1f200, 0x1f202,
+  0x1f210, 0x1f23b, 0x1f240, 0x1f248, 0x1f250, 0x1f251, 0x1f260, 0x1f265,
+  0x1f300, 0x1f320, 0x1f32d, 0x1f335, 0x1f337, 0x1f37c, 0x1f37e, 0x1f393,
+  0x1f3a0, 0x1f3ca, 0x1f3cf, 0x1f3d3, 0x1f3e0, 0x1f3f0, 0x1f3f4, 0x1f3f4,
+  0x1f3f8, 0x1f43e, 0x1f440, 0x1f440, 0x1f442, 0x1f4fc, 0x1f4ff, 0x1f53d,
+  0x1f54b, 0x1f54e, 0x1f550, 0x1f567, 0x1f57a, 0x1f57a, 0x1f595, 0x1f596,
+  0x1f5a4, 0x1f5a4, 0x1f5fb, 0x1f64f, 0x1f680, 0x1f6c5, 0x1f6cc, 0x1f6cc,
+  0x1f6d0, 0x1f6d2, 0x1f6d5, 0x1f6d8, 0x1f6dc, 0x1f6df, 0x1f6eb, 0x1f6ec,
+  0x1f6f4, 0x1f6fc, 0x1f7e0, 0x1f7eb, 0x1f7f0, 0x1f7f0, 0x1f90c, 0x1f93a,
+  0x1f93c, 0x1f945, 0x1f947, 0x1f9ff, 0x1fa70, 0x1fa7c, 0x1fa80, 0x1fa8a,
+  0x1fa8e, 0x1fac6, 0x1fac8, 0x1fac8, 0x1facd, 0x1fadc, 0x1fadf, 0x1faea,
+  0x1faef, 0x1faf8, 0x20000, 0x2fffd, 0x30000, 0x3fffd,
+];
 
-/** The columns one grapheme cluster occupies, as the host charges it. */
+/** Whether a base code point is East Asian Wide or Fullwidth: two columns, as the host charges it. */
+function isEastAsianWide(codePoint: number): boolean {
+  let low = 0;
+  let high = WIDE_RANGES.length / 2 - 1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    const start = WIDE_RANGES[middle * 2] ?? 0;
+    const end = WIDE_RANGES[middle * 2 + 1] ?? 0;
+    if (codePoint < start) high = middle - 1;
+    else if (codePoint > end) low = middle + 1;
+    else return true;
+  }
+  return false;
+}
+
+/**
+ * The columns one grapheme cluster occupies, as the host charges it (`graphemeWidth`,
+ * `pi-tui/dist/utils.js:126-165`), in the host's own order:
+ *
+ * 1. a cluster of ignorables, controls, marks and surrogates is zero columns;
+ * 2. an RGI emoji (after the host's prefilter) is two, so `©`/`☺` are NOT emoji and `©️`/`1️⃣` are;
+ * 3. a leading regional-indicator pair is two; otherwise the base's East Asian width;
+ * 4. every trailing halfwidth/fullwidth form and the Thai/Lao AM vowels add their own columns.
+ */
 function clusterColumns(cluster: string): number {
-  let base = 0;
-  let found = false;
-  for (const char of cluster) {
-    const code = char.codePointAt(0) ?? 0;
-    if (isZeroWidthCodePoint(code)) continue;
-    if (!found) {
-      base = code;
-      found = true;
+  if (ZERO_WIDTH_CLUSTER.test(cluster)) return 0;
+  if (couldBeEmoji(cluster) && RGI_EMOJI.test(cluster)) return 2;
+
+  const base = cluster.replace(LEADING_NON_PRINTING, "");
+  const codePoint = base.codePointAt(0);
+  if (codePoint === undefined) return 0;
+  if (codePoint >= 0x1f1e6 && codePoint <= 0x1f1ff) return 2;
+
+  let width = isEastAsianWide(codePoint) ? 2 : 1;
+  if (cluster.length > 1) {
+    // The host slices the cluster by UTF-16 unit and only these code points add columns.
+    for (const char of cluster.slice(1)) {
+      const trailing = char.codePointAt(0) ?? 0;
+      if (trailing >= 0xff00 && trailing <= 0xffef) width += isEastAsianWide(trailing) ? 2 : 1;
+      else if (trailing === 0x0e33 || trailing === 0x0eb3) width += 1;
     }
   }
-  if (!found) return 0;
-  if (PICTOGRAPHIC.test(cluster)) return 2;
-  return isWideCodePoint(base) ? 2 : 1;
+  return width;
 }
 
 /**
@@ -572,46 +658,55 @@ export function visibleColumns(line: string): number {
  * Nothing is ever appended to fit: padding is the style's business.
  */
 export function clipToWidth(line: string, width: number): string {
-  if (width <= 0) return "";
+  // W2-2 first, at every width: a row that already fits is the same bytes. Measured the host's way,
+  // an ANSI-only row has zero columns, so it survives even at width zero.
   if (hostColumns(line) <= width) return line;
+  if (width <= 0) return "";
 
-  let output = "";
-  let used = 0;
-  let styled = false;
-  let linkOpen = false;
-  let stop = false;
+  // Segment the VISIBLE text, not one escape-free run at a time: an SGR sequence may sit inside a
+  // grapheme cluster (`👨` + SGR + `‍👩‍👧‍👦`), and cutting at a run boundary split that cluster.
+  // Every visible character is mapped back to where it starts in the raw row, so the kept prefix is
+  // one raw slice — escapes interleaved with the clusters that were kept, nothing half-emitted.
+  const visible: string[] = [];
+  const rawAt: number[] = [];
   let index = 0;
-  while (!stop && index < line.length) {
+  while (index < line.length) {
     const escape = hostEscapeAt(line, index);
     if (escape !== undefined) {
-      output += escape.code;
-      if (escape.code.endsWith("m")) styled = true;
-      const target = osc8Target(escape.code);
-      if (target !== undefined) linkOpen = target !== "";
       index += escape.length;
       continue;
     }
-    if (line[index] === "\t") {
-      if (used + TAB_COLUMNS > width) break;
-      output += "\t";
-      used += TAB_COLUMNS;
-      index += 1;
+    rawAt.push(index);
+    visible.push(String.fromCodePoint(line.codePointAt(index) ?? 0));
+    index += visible[visible.length - 1]?.length ?? 1;
+  }
+  rawAt.push(line.length);
+
+  let used = 0;
+  let kept = 0;
+  let codePoints = 0;
+  for (const cluster of graphemes(visible.join(""))) {
+    const cells = cluster === "\t" ? TAB_COLUMNS : clusterColumns(cluster);
+    if (used + cells > width) break;
+    used += cells;
+    codePoints += [...cluster].length;
+    kept = codePoints;
+  }
+
+  let output = line.slice(0, rawAt[kept] ?? line.length);
+  let styled = false;
+  let linkOpen = false;
+  let scan = 0;
+  while (scan < output.length) {
+    const escape = hostEscapeAt(output, scan);
+    if (escape === undefined) {
+      scan += 1;
       continue;
     }
-    // A plain run: segmented exactly as the host segments the stripped row.
-    const start = index;
-    while (index < line.length && line[index] !== "\t" && hostEscapeAt(line, index) === undefined) {
-      index += 1;
-    }
-    for (const cluster of graphemes(line.slice(start, index))) {
-      const cells = clusterColumns(cluster);
-      if (used + cells > width) {
-        stop = true;
-        break;
-      }
-      output += cluster;
-      used += cells;
-    }
+    if (escape.code.endsWith("m")) styled = true;
+    const target = osc8Target(escape.code);
+    if (target !== undefined) linkOpen = target !== "";
+    scan += escape.length;
   }
   if (linkOpen) output += OSC8_CLOSE;
   return styled ? `${output}${RESET}` : output;

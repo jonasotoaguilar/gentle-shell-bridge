@@ -461,11 +461,26 @@ inert and declines (so the host's own dispatch continues). The header is always 
 the section.
 
 The hover claim uses the host's own published slot rather than a private channel: `SidebarState.hover`
-is declared as "shared across separately loaded extensions" (`lib/shell-sidebar.ts:37`), and
+is declared as "shared across separately loaded extensions" (`lib/shell-sidebar.ts:31`), and
 `src/section-pointer.ts` stores `{ owner, clear }` there with the host's own semantics — the previous
 owner's `clear()` runs when the owner changes, and the host's "pointer left the rail" call
 (`setSidebarHover(tui)` with no owner) clears ours. `NativePointerRegion` itself is not reachable and
 is not needed: the dispatch it adapts is the one the bridge already receives.
+
+**Who sees a move first (S21).** The host's own region answers EVERY move inside its frame with
+`{ handled: true }` — it looks the row up, paints the target and, with no target, clears and still
+reports handled (`lib/native-pointer-region.ts:80-88`, `extensions/gentle-shell.ts:2732-2741`). A click
+is the different path: with no target it returns `undefined` (`:2747-2757`), which is why folding a
+section worked while NOTHING in a contributed section ever highlighted. The wrapper used to offer the
+event to the host first and only ask the contributor when the host declined, so the host swallowed
+every move. It now offers a MOVE whose `y` falls inside the contribution's own row range —
+`[startRow, endRow)`, both recorded by the render that preceded the event — to the contributor first,
+and falls through to the host when the contributor declines, so the host still clears its own hover on
+our inert rows. Every other event keeps the host first. This cannot steal a host card's pointer: a host
+target only ever lives inside the host's own lines, which end where `startRow` begins. Pinned by
+`test/sidebar-hover.test.ts`, including "the host's own row keeps the pointer" and "one click, one
+call" (`N12`). Under tmux, zellij or screen the host forwards no plain move events at all
+(`lib/shell-hover.ts`'s platform note), so hover cannot be checked there.
 
 ### Repaint and the digest (N13, N14)
 

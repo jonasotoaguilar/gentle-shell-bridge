@@ -111,9 +111,12 @@ bridge reads the live selection on every render pass. A `read` card is never tou
 declared per tool name, and the bus has no bash-specific branch.
 
 The **`CARD BASH`** section is the second surface: the host draws the card and owns the collapse
-control, and the section body reports live state — which value is selected for `bash`, whether this
-load's design reached the bridge (`resolver  registered` / `resolver  absent`), and whether the
-design could recognise the frames it was handed (`unrecognised  none`, or the reason). It needs no
+control, and the card's right-aligned `meta` is the live selection for `bash` — the surface that
+survives a collapse, and the only place the section shows it, so the value is never printed twice.
+The body reports whether this load's design reached the bridge (`resolver  registered` /
+`resolver  absent`), whether the restored `plain` style did (`card style  registered` /
+`absent`), and whether the design could recognise the frames it was handed
+(`unrecognised  none`, or the reason). It needs no
 extra wiring either: registering the section is what adds its `Sections` toggle; the section's row
 reads `card bash`, and the plugin's INTEGRATIONS line reads `Card bash`.
 
@@ -170,10 +173,15 @@ live:
 
 ```text
 demo toggle   on
-demo presses  3
+demo presses        3
 ```
 
-Choosing `on` persists it; Enter on `Demo button` increments the counter. Each demo row carries a
+`demo toggle` is an inert row. `demo presses` is a CLICKABLE action row, drawn the way the host draws
+its own: the label on the left and the count right-aligned. Clicking it increments the counter once,
+and hovering it paints it with the host's own hover role, exactly as `INTEGRATIONS` and `CHANGES` do —
+the worked example is how you check that the bridge's hover works in your terminal. Choosing `on`
+persists the toggle; Enter on `Demo button` in the demo category increments the same counter. Each
+demo row carries a
 short literal preview. A bridge old enough not to publish `registerRows` degrades without throwing:
 no demo category, while the design and the section keep working.
 

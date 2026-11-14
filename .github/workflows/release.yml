@@ -15,9 +15,13 @@ name: Publish to npm
 # cut the next version through this workflow: a version the registry already has
 # is skipped and its GitHub Release is still created, so re-running is safe.
 #
-# If the trusted publisher in npm's settings names an environment, add
-# `environment: <that name>` to the publish job and create it here; the two must
-# match or the OIDC exchange is refused.
+# If the trusted publisher in npm's settings names an environment, this job
+# must declare the same one; the two have to match or the OIDC exchange is
+# refused with a 404 on the PUT. npm's binding for this package names the
+# `release` environment, so the job declares it.
+#
+# The FILE must stay named release.yml: the trusted publisher binds to the
+# workflow FILENAME, not to its content.
 
 on:
   push:
@@ -87,6 +91,9 @@ jobs:
     needs: preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # Protected environment: npm's trusted publisher binds this workflow
+    # filename AND this environment name.
+    environment: release
     permissions:
       contents: write
       # Trusted publishing: grant the OIDC assertion here and nowhere else.

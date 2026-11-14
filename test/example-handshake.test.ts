@@ -26,7 +26,7 @@ import { HOST_CARD_STYLE_SETTING } from "../src/card-style-line.ts";
 import { resetBusForTests, resetSectionsForTests, snapshotProviders, snapshotSections, snapshotTransforms } from "../src/bus.ts";
 import { installSectionRows } from "../src/sections-rows.ts";
 import { resetStoreStateForTests } from "../src/store.ts";
-import type { CustomizeRow, InlineHelpers } from "../src/types.ts";
+import type { CustomizeRow, InlineHelpers, SectionRow } from "../src/types.ts";
 import { createFakeHost } from "./fake-host.ts";
 
 const hostSlot = (): Record<symbol, unknown> => globalThis as unknown as Record<symbol, unknown>;
@@ -313,7 +313,16 @@ test("with the API present at session_start the example registers rows, store an
   assert.ok(exampleSection !== undefined, "the example's section registered itself");
   assert.equal(exampleSection.meta?.(sectionContext()), "tool", "and reads the value just written");
   const lines = exampleSection.lines(sectionContext());
-  assert.deepEqual(lines, ["rendering  tool", "transform  registered"]);
+  // The first row is STRUCTURED (N10–N12): a glyph, the value in the dimmer meta column, a tone and
+  // a click that switches the mode. The second stays a plain string and carries no action, which is
+  // what makes it inert.
+  const row = lines[0] as SectionRow;
+  assert.equal(row.label, "rendering");
+  assert.equal(row.meta, "tool");
+  assert.equal(row.glyph, "◉");
+  assert.equal(row.tone, "accent");
+  assert.equal(typeof row.onClick, "function", "the row is clickable");
+  assert.equal(lines[1], "transform  registered", "a plain string row: inert, no action");
 });
 
 test("two session_start events leave one provider and one section, not two", async () => {

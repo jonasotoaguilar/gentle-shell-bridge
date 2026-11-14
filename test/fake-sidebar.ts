@@ -368,11 +368,17 @@ export function createRailTui(options: FakeRailTuiOptions): FakeRailTui {
  * Split a part's header row into the card's glyph, title and right-aligned count, the way
  * `headerParts` does (`lib/shell-sidebar-layout.ts:57-66`): the count is whatever follows the gap
  * before it, so a single-spaced title keeps its spaces.
+ *
+ * The host splits an ANSI-carrying header — it keeps each part's escape codes and hands them to the
+ * card — while this scaffold draws without styling. So the codes are stripped here: a test asserts
+ * the TITLE a user reads, and the coloured header's bytes are asserted directly against the host's
+ * own algorithm (`test/section-panel.test.ts`) instead of through this frame.
  */
 function splitHeader(line: string): { glyph?: string; title: string; count?: string } {
-  const glyphMatch = /^(\S+)\s+(.*)$/.exec(line.trimEnd());
+  const plain = line.replace(/\u001b\[[0-9;]*m/gu, "");
+  const glyphMatch = /^(\S+)\s+(.*)$/.exec(plain.trimEnd());
   const glyph = glyphMatch?.[1];
-  const rest = glyphMatch?.[2] ?? line.trimEnd();
+  const rest = glyphMatch?.[2] ?? plain.trimEnd();
   const [title, ...tail] = rest.split(/\s{2,}/);
   const count = tail.join(" ").trim();
   return {

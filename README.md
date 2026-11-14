@@ -115,14 +115,38 @@ const dispose = registerSection({
   id: "loon.music",             // unique and stable: ordering, replacement, the toggle; internal
   title: "MUSIC",               // card heading, framed by the host like AGENTS / STATS
   rowLabel: "music",            // optional: the text the Sections row reads (derived from title)
-  meta: () => "1 playing",      // optional right-aligned count
-  lines: () => ["track  Blue in Green", "album  Kind of Blue"], // per frame, live
+  meta: () => "1 playing",      // optional right-aligned count; read per frame, so it is live
+  lines: () => [                // per frame, live
+    "track  Blue in Green",     // a plain string is drawn byte for byte, exactly as before
+    {                           // a structured row is drawn like a native one
+      glyph: "▸",
+      label: "album",
+      meta: "Kind of Blue",
+      tone: "muted",
+      onClick: () => play(),    // only a row with onClick is clickable
+    },
+  ],
   defaultVisible: true,
   order: 10,                    // optional; unordered sections follow, in registration order
 });
 
 // dispose() removes the card and its toggle; other sections are untouched.
 ```
+
+The card behaves like a host card. The HEADER is the host's own header — `▾ MUSIC`, the right-aligned
+`meta`, the hover accent — and clicking it folds the section (a folded body is not built at all, and
+the fold is remembered in the bridge's own store). A row with `onClick` is clickable and highlights
+under the pointer; a row without it is inert and never highlights. `meta` is read at render time and
+folded into the rail's digest, so a value that changes is repainted with no re-registration.
+
+The `tone` of a structured row names one of the host's own roles — `text`, `muted`, `dim`, `accent`,
+`success`, `error`, `warning` — never a colour, and anything else is rejected and reported.
+
+Where the header and rows are DRAWN is reported, not assumed: the host's own
+`renderPanelHeader`/`renderPanelRow` live in a module this package cannot import, so the bridge looks
+for them on every object it is handed, uses them when it finds them, and otherwise draws with a
+byte-identical port. `/bridge-status` says which it used and what remains unreachable
+(`section frame: host` or `section frame: fallback` plus a `section frame gap` line).
 
 The row is a **label**, never the id and never a prefix. The host's own `Sections` rows read
 `changes`, `stats`, `usageCost`; a plugin's section reads the same way:
@@ -141,16 +165,16 @@ the raw id is never the suffix. An explicit `rowLabel` obeys the same row-name s
 "Row names" below — a name that breaks it is rejected and reported, never rewritten.
 
 What the bridge does with those fields, and what it will not do: the card is drawn by the
-host's own frame code, the body is clipped to the rail width and capped at 8 rows (with a
-`… +N more` marker; width is counted in UTF-16 code units, not terminal columns, and a plugin
-that emits ANSI owns its own width), a hidden section is not built at all (its `lines()`/`meta()`
-are not called), and a throwing section loses only its own body and is reported by
-`/bridge-status`.
+host's own frame code, a plain string row is clipped to the rail width, and the body is capped at 8
+rows (with a `… +N more` marker; a plain row's width is counted in UTF-16 code units, not terminal
+columns, and a plugin that emits ANSI in one owns its own width). A hidden section is not built at
+all (its `lines()`/`meta()` are not called), nor is a collapsed one, and a throwing section loses
+only its own body and is reported by `/bridge-status`.
 Sections always render **after** the native cards — interleaving is impossible because the
-host builds its status sections in a closure. Visibility lives in
+host builds its status sections in a closure. Visibility and the fold live in
 `~/.pi/gentle-ai/gentle-shell-bridge/bridge-sections.json` as
-`{ "schemaVersion": 1, "values": { "sections": { "loon.music": true } } }`, deliberately not
-in the host's strictly validated `visual-customization.json`.
+`{ "schemaVersion": 1, "values": { "sections": { "loon.music": true }, "collapsed": { "loon.music": true } } }`,
+deliberately not in the host's strictly validated `visual-customization.json`.
 
 ## Quick start: a card style
 
@@ -371,12 +395,17 @@ from the rows the last menu build actually received, so before any build the rep
 provider's `rows()`.
 
 It also answers the sidebar question: a `sections` table (id, title, the `row` label the menu
-reads plus a collision note when two labels wanted the same text, persisted visibility and where
-the position comes from), the most recent frame's `section failures`, and a `sidebar` line —
+reads plus a collision note when two labels wanted the same text, persisted visibility — and
+`collapsed` while the card is folded — and where the position comes from), the most recent frame's
+`section failures` (phase `lines`, `meta` or `onClick`), and a `sidebar` line —
 `intercepted (rail wrapped)`, `intercepted (rail pending)`, `no-sidebar-state`, or
-`not armed` with the reason the wiring could not acquire a `tui`. Those three blocks appear
-only when they have something to say, so a row-only install keeps the historical output.
-Diagnostics never run a section's `lines()`/`meta()` either. The hook backend is reported as
+`not armed` with the reason the wiring could not acquire a `tui`. Three more lines say how the card
+is drawn and how the pointer reaches it: `section frame: host` or `fallback` with what was looked
+for and whether a theme had arrived, `section interaction:` with the pointer path and the hover
+claim, and — in the fallback case — a `section frame gap:` line naming what cannot be reached. Those
+blocks appear only when they have something to say, so a row-only install keeps the historical
+output. Diagnostics never run a section's `lines()`/`meta()` either; the rail's digest does, during a
+frame. The hook backend is reported as
 `hook` only when this process pushed its fan-out provider into a host registry. Ids stay in this
 report on purpose: it is for the plugin author diagnosing a registration, not for the user picking
 a toggle.

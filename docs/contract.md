@@ -187,8 +187,10 @@ One command, `/bridge-status`, reporting:
 | Last failures | most recent provider failures: `id`, message, and whether rows were dropped |
 | Store problems | store files this process could not use, with the plugin id and the reason |
 | Duplicate settings | every `category` + `setting` pair contributed by more than one provider in the rows of the last menu build; `no build yet` before the first build |
-| Sections | every registered section with its id, title, the `row` label the menu reads (and the collision note when two wanted the same label), persisted visibility and where its position comes from (`order 3` or `registration order`); omitted when no section is registered. Ids stay here on purpose: this report is for the plugin author, not the user picking a toggle |
-| Section failures | the most recent sidebar frame's failing sections with `id`, `phase` (`lines`/`meta`) and message |
+| Sections | every registered section with its id, title, the `row` label the menu reads (and the collision note when two wanted the same label), persisted visibility (plus `collapsed` while the card is folded) and where its position comes from (`order 3` or `registration order`); omitted when no section is registered. Ids stay here on purpose: this report is for the plugin author, not the user picking a toggle |
+| Section frame | which drawing the section header and rows use: `host` when the host's own `renderPanelHeader`/`renderPanelRow` were found on an object the bridge is handed, `fallback` otherwise — with what was looked for, whether Pi has handed the widget factory a theme, and (for `fallback`) a `section frame gap` line naming what cannot be reached. Emitted with the sections table |
+| Section interaction | how the pointer reaches the rows: the host's own `handleMouse` dispatch, and how the hover claim is carried (`hover owner claimed on the host's sidebar state`, `unavailable` with the reason, or `not used yet`). Emitted with the sections table |
+| Section failures | the most recent sidebar frame's failing sections with `id`, `phase` (`lines`/`meta`/`onClick`) and message |
 | Sidebar | `intercepted (rail wrapped)`, `intercepted (rail pending)`, `no-sidebar-state`, or `not armed` with the reason the wiring could not acquire a `tui` |
 | Transforms | every registered transcript transform in pipeline order (`order 3` or `registration order`) with the last frame's outcome: `applied`, `skipped`, `failed` with the message, or `not run`; omitted when no transform is registered |
 | Card style surfaces | per surface (`conversation`, `rail`): whether the selected style reached it and what its last frame did there (`transformed N cards`, `pass-through (native / missing / no card)`, `failed` with the style and message); `not reached` carries the attach outcome (`no-layout-root`, `no-sidebar`, `no-rail`, …). Emitted with the card-style block |
@@ -483,8 +485,17 @@ const dispose: () => void = registerSection({
   id: "loon.music",                 // unique and stable: ordering, replacement, the toggle
   title: "MUSIC",                   // card heading, drawn like AGENTS / CHANGES / STATS
   rowLabel: "music",                // optional: the text the Sections row reads
-  meta: () => "1 playing",          // optional right-aligned count; omitted when blank
-  lines: (ctx) => ["track  …"],     // body, evaluated per frame
+  meta: () => "1 playing",          // optional right-aligned count; live, read per frame
+  lines: (ctx) => [                 // body, evaluated per frame
+    "track  Blue in Green",         // a plain string: drawn byte for byte, as before
+    {                               // or a structured row, drawn like a native one
+      glyph: "▸",
+      label: "album",
+      meta: "Kind of Blue",
+      tone: "muted",                // text | muted | dim | accent | success | error | warning
+      onClick: () => play(),        // only a row with onClick is clickable
+    },
+  ],
   defaultVisible: true,             // absent means true
   order: 10,                        // optional integer
 });
@@ -502,32 +513,89 @@ const dispose: () => void = registerSection({
   moved. A `rowLabel` that breaks the row-name shape (one to three plain words, no arrow, colon,
   dot, pipe, slash or bracket — see §4) is rejected: the section is not registered, and the
   offending string is reported under `row name rejections`. Nothing is rewritten.
-- `meta(ctx)` — optional right-aligned text. A throw drops that section's body (see below).
-- `lines(ctx)` — the body. Evaluated **per frame**, so live state is honest with no redraw API.
+- `meta(ctx)` — optional right-aligned text. Read per frame, so a value that changes is drawn on the
+  next frame without re-registering. A throw drops that section's body (see below).
+- `lines(ctx)` — the body. Evaluated **per frame**, so live state is honest with no redraw API. A row
+  is a plain string or a structured row (see below).
 - `defaultVisible` — the fallback until the user toggles the section.
 - `order` — sections **with** an `order` render first, ascending; sections without one follow
   in registration order. Ties keep registration order. The rule is computed from an explicit
   sort key, never from map iteration.
 
-`ctx` carries the same shape as `RowContext`: the resolved gentle-shell config home and the
-host theme where one is available (the rail render call carries none, so a section sees
-`theme: undefined`).
+`ctx` carries the same shape as `RowContext`: the resolved gentle-shell config home and, now that Pi
+hands the bridge a theme (`ctx.ui.setWidget(key, (tui, theme) => …)`), the host theme — so a section
+can paint with the same roles the rest of the shell uses. Before the widget factory runs, `theme` is
+`undefined` and the card is drawn uncoloured; `/bridge-status` says which.
+
+### Body rows
+
+A row is a plain **string** or a structured **row object**:
+
+```ts
+{ label: string; meta?: string; glyph?: string; tone?: Tone; onClick?: () => void }
+```
+
+- a plain string is drawn **byte for byte**: the author's characters, clipped to the width, no
+  indent, no padding, no styling. Every section written before structured rows existed looks
+  exactly the same;
+- a structured row is drawn the way the host draws its own `AGENTS` rows: indent, `glyph label` on
+  the left, the right-aligned dimmer `meta`, and the parts painted with the host's roles;
+- `tone` names one of the host's own roles — `text`, `muted`, `dim`, `accent`, `success`, `error`,
+  `warning` — and never a colour or an SGR code. Anything else is **rejected**;
+- `onClick` is what makes a row clickable. A row without it is **inert**: it never highlights under
+  the pointer and never answers a click;
+- `meta` is read at render time, so the same registration can show a value that moves (a mode, a
+  count, an elapsed time) with no re-registration.
+
+The bridge maps physical rows to row identity and answers the host's own pointer dispatch; clicking
+an actionable row runs exactly one `onClick`, once per click. A throwing `onClick` is recorded (phase
+`onClick`) and never escapes into the host.
 
 ### Rendering
 
-A section is drawn by the host's own card code: the bridge contributes the part's rows and
-the card groups over them, and the layout calls `sectionCardRows` on them. A body row is
-clipped to the width the host passes and the body is capped at 8 rows, with a visible
-`… +N more` marker when the cap bites. The bridge never returns a row wider than that number —
-which is **UTF-16 code units, not terminal columns**: a wide CJK glyph or an emoji counts as one
-unit here, so the host may still clip what we thought fitted. A plugin that emits ANSI escape
-sequences owns its own width: the bridge neither parses nor strips them.
+A section is drawn by the host's own card code: the bridge contributes the part's header and rows and
+the card groups over them, and the layout calls `sectionCardRows` on them. The HEADER is the host's
+header — caret from the section's own collapse state, uppercase title, right-aligned `meta`, the
+host's hover accent.
+
+Where those two builders come from is reported, not assumed. The host's own
+`renderPanelHeader`/`renderPanelRow` live in gentle-shell's `lib/shell-panel.ts`, which this package
+cannot import (Pi loads each extension in its own module graph). So the bridge **looks** for them on
+every object it is handed — the rail part, the Pi theme, the terminal's sidebar state — and:
+
+- when it finds them, it draws with them and `/bridge-status` reports `section frame: host`;
+- otherwise it draws with a byte-identical port of the same algorithm (proved against the host's
+  code transcribed into `test/section-panel.test.ts`) and reports `section frame: fallback` plus the
+  gap, naming exactly what was looked for.
+
+A plain string row is clipped to the width the host passes and the body is capped at 8 rows, with a
+visible `… +N more` marker when the cap bites. A structured row is fitted by the panel builder, which
+measures **columns** (SGR-aware). The bridge never returns a row wider than that number — for a
+PLAIN row the measure is **UTF-16 code units, not terminal columns**, so a wide CJK glyph or an emoji
+counts as one unit there and the host may still clip what we thought fitted; a plugin that emits ANSI
+escape sequences in a plain row owns its own width.
 
 **Sections render after the native ones. Interleaving is impossible**: the host's status
 sections (`CHANGES`, `STATS`, `INTEGRATIONS`) are built in a closure the bridge cannot reach
 (`lib/shell-bar.ts:247,251-316`), and the rail paints a hard-coded key order
 (`lib/shell-sidebar-layout.ts:344`). The bridge therefore appends to the last painted part
 (`footer`), so a section always follows every native card.
+
+### Collapsing
+
+The header is the section's collapse control, as it is for the host's own cards: clicking it folds
+the card. A collapsed section is its header alone — the body is **not built**, not built and hidden,
+so `lines()` is not called while it is folded. The folded state is bridge-owned store state (the
+plugin writes no flag and no setting for it), and a click persists it and asks for the frame in the
+same call.
+
+### Live updates and the digest
+
+`meta()` and `lines()` are read per frame, and the bridge folds what they produced into the rail
+part's `digest`. The host's layout re-renders a part only when that value moves
+(`lib/shell-sidebar-layout.ts:114-119`), so a row field that changed — a mode, a count, a hovered row
+— reaches the screen with no re-registration and no timer. The host's own digest stays part of the
+value; when nothing contributes rows, the host's answer is passed through unchanged.
 
 ### Hidden means not built
 
@@ -538,8 +606,10 @@ user choice, not a request to compute something invisible.
 
 A throwing `lines()` or `meta()`, or a return that is not the documented shape, drops that
 section's body, records `{ sectionId, phase, message }` for `/bridge-status`, and leaves every
-native card and every other section rendering. A non-array or a non-string row is a failure,
-never coerced.
+native card and every other section rendering. A non-array, a sparse array, or a row that is not a
+string and has no string `label` is a failure, never coerced; so is a `tone` outside the seven host
+roles, a non-string `meta`/`glyph`, and an `onClick` that is not a function. A throwing `onClick` is
+recorded with phase `onClick`.
 
 ### The automatic `Sections` rows
 
@@ -592,13 +662,16 @@ one namespaced file:
 {
   "schemaVersion": 1,
   "values": {
-    "sections": { "loon.music": false }
+    "sections": { "loon.music": false },
+    "collapsed": { "loon.music": true }
   }
 }
 ```
 
 `sections` maps a section id to `true` (shown) / `false` (hidden); a missing id falls back to
-`defaultVisible`. A value that is not a boolean is ignored rather than coerced.
+`defaultVisible`. `collapsed` maps a section id to `true` (folded) / `false` (open); a missing id is
+OPEN, the state a card a user has never folded starts in. A value that is not a boolean is ignored
+rather than coerced. Both maps are bridge-owned: the plugin writes neither a flag nor a setting.
 
 Why not `visual-customization.json`: the host validates that file against a closed
 `VISUAL_SECTION_KEYS` list (`lib/visual-customization-policy.ts:82`, `keysMatch` ~:112-130) and

@@ -42,12 +42,19 @@ import {
   type SidebarFailure,
 } from "./sidebar.ts";
 import { getSectionFailures, type SectionRenderFailure } from "./sidebar-render.ts";
+import { getPanelReport } from "./section-panel.ts";
+import { getSectionHoverReport } from "./section-pointer.ts";
 import { SECTION_ROWS_PROVIDER_ID } from "./sections-rows.ts";
 import { sectionRowLabels } from "./row-labels.ts";
 import { getRowNameRejections, type RowNameRejection } from "./row-names.ts";
 import { getStoreDiagnostics, type StoreProblem } from "./store.ts";
-import type { CustomizeRow, RowContext, RowProvider } from "./types.ts";
-import { getSectionVisibility, isSectionVisible } from "./visibility.ts";
+import type { RowContext, RowProvider } from "./types.ts";
+import {
+  getSectionCollapsed,
+  getSectionVisibility,
+  isSectionCollapsed,
+  isSectionVisible,
+} from "./visibility.ts";
 
 export type StatusBackend = "hook" | "capture" | "none";
 
@@ -75,12 +82,32 @@ export interface StatusSectionEntry {
   title: string;
   /** The persisted (or default) visibility right now. */
   visible: boolean;
+  /** Present only while the card is folded (N13); absent keeps every historical line unchanged. */
+  collapsed?: true;
   /** The render position's source: an explicit integer, or registration order when absent. */
   order: number | "registration";
   /** The label the section's `Sections` row reads (N2). The id stays in `id`, never in a row. */
   rowLabel: string;
   /** Present when two sections wanted the same label: the label this one had to move away from. */
   rowLabelCollision?: string;
+}
+
+/**
+ * How the section frame is drawn and how the pointer reaches it (N11, N15): the answer to "is this
+ * the host's own header, or a port of it, and what could the bridge not reach".
+ */
+export interface StatusSectionFrame {
+  /** `host` when the host's own builders were found on an object the bridge is handed. */
+  source: "host" | "fallback";
+  /** Where they were looked for, in the order the objects were offered. */
+  lookedAt: string[];
+  /** What was missing, as a person reads it; empty when the host's builders were found. */
+  missing: string[];
+  /** Whether Pi has handed the widget factory a theme yet; without one, rows are uncoloured. */
+  theme: "captured" | "missing";
+  /** The pointer path: the host's own dispatch, and how the hover claim is carried. */
+  hover: "host-state" | "unavailable" | "not used";
+  hoverReason?: string;
 }
 
 /** One rejected row name, as `/bridge-status` lists it: the string verbatim and the rule it broke. */
@@ -167,6 +194,11 @@ export interface StatusSnapshot {
   duplicates?: StatusDuplicate[];
   /** Absent when no section is registered, so a row-only run keeps its historical output. */
   sections?: StatusSectionEntry[];
+  /**
+   * How the section frame is drawn (N11) and what it could not reach (N15). Absent when no section
+   * is registered, so a row-only session keeps its historical output exactly.
+   */
+  sectionFrame?: StatusSectionFrame;
   /** Absent when the most recent sidebar frame had no section failure. */
   sectionFailures?: SectionRenderFailure[];
   /**
@@ -268,10 +300,12 @@ export function collectStatus(): StatusSnapshot {
   const sections = snapshotSections();
   if (sections.length > 0) {
     const visibility = getSectionVisibility();
+    const collapsedMap = getSectionCollapsed();
     snapshot.sections = sectionRowLabels(sections).map(({ section, label, collision }) => ({
       id: section.id,
       title: section.title,
       visible: isSectionVisible(visibility, section),
+      ...(isSectionCollapsed(collapsedMap, section) ? { collapsed: true as const } : {}),
       order:
         typeof section.order === "number" && Number.isFinite(section.order)
           ? section.order
@@ -279,6 +313,7 @@ export function collectStatus(): StatusSnapshot {
       rowLabel: label,
       ...(collision === undefined ? {} : { rowLabelCollision: collision }),
     }));
+    snapshot.sectionFrame = describeSectionFrame();
   }
   const sectionFailures = getSectionFailures();
   if (sectionFailures.length > 0) snapshot.sectionFailures = sectionFailures;
@@ -324,6 +359,26 @@ export function collectStatus(): StatusSnapshot {
   }
 
   return snapshot;
+}
+
+/**
+ * How the section frame is drawn (N11) and what the bridge could not reach (N15).
+ *
+ * This is a REPORT of the run, not a claim in a comment: the panel source comes from looking for the
+ * host's builders on every object the bridge is handed, the theme from whether Pi has run the
+ * `setWidget` factory, and the hover mechanism from the last attempt to claim the shared pointer.
+ */
+function describeSectionFrame(): StatusSectionFrame {
+  const panel = getPanelReport();
+  const hover = getSectionHoverReport();
+  return {
+    source: panel.source,
+    lookedAt: panel.lookedAt,
+    missing: panel.missing,
+    theme: panel.theme === "captured" ? "captured" : "missing",
+    hover: hover.mechanism,
+    ...(hover.reason === undefined ? {} : { hoverReason: hover.reason }),
+  };
 }
 
 /**
@@ -635,8 +690,14 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
         section.rowLabelCollision === undefined
           ? `, row "${section.rowLabel}"`
           : `, row "${section.rowLabel}" (label collision with "${section.rowLabelCollision}")`;
-      lines.push(`  - ${section.id} "${section.title}": ${visibility}, ${order}${row}`);
+      lines.push(
+        `  - ${section.id} "${section.title}": ${visibility}${section.collapsed === true ? ", collapsed" : ""}, ${order}${row}`,
+      );
     }
+  }
+
+  if (snapshot.sectionFrame !== undefined) {
+    lines.push(...formatSectionFrame(snapshot.sectionFrame));
   }
 
   if (snapshot.sectionFailures !== undefined) {
@@ -725,6 +786,46 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
     lines.push(`notices dropped: ${snapshot.noticesDropped}`);
   }
 
+  return lines;
+}
+
+/**
+ * The section-frame block: which drawing the header and rows use, how the pointer reaches them, and
+ * the gap the bridge cannot close (N11, N15).
+ *
+ * Every fact here is a measurement of this run: the source comes from looking for the host's two
+ * builder functions on the objects the bridge is actually handed, the theme from whether Pi has run
+ * the widget factory, and the hover mechanism from the last claim of the shared pointer.
+ */
+function formatSectionFrame(frame: StatusSectionFrame): string[] {
+  const looked = frame.lookedAt.length === 0 ? "nothing yet" : frame.lookedAt.join(", ");
+  const why =
+    frame.source === "host"
+      ? `the host's own renderPanelHeader/renderPanelRow, found on: ${looked}`
+      : `looked for renderPanelHeader/renderPanelRow on: ${looked}; found none`;
+  const theme =
+    frame.theme === "captured"
+      ? "theme captured, rows painted in the host's roles"
+      : "no theme captured yet, rows drawn uncoloured";
+  const hover =
+    frame.hover === "not used"
+      ? "hover not used yet"
+      : frame.hover === "host-state"
+        ? "hover owner claimed on the host's sidebar state"
+        : `hover owner unavailable (${frame.hoverReason ?? "no reason recorded"})`;
+  const lines = [
+    `section frame: ${frame.source} (${why}; ${theme})`,
+    `section interaction: rail handleMouse (the host's own dispatch), ${hover}`,
+  ];
+  if (frame.source === "fallback") {
+    // N15: the gap, named. Not "unsupported": gentle-shell's panel module publishes no seam on any
+    // object this package is given, so the header and rows are drawn by the byte-identical port.
+    lines.push(
+      "section frame gap: gentle-shell's lib/shell-panel.ts cannot be imported (Pi loads each " +
+        "extension in its own module graph) and publishes no builder on the rail part, the Pi theme " +
+        "or the terminal's sidebar state, so the header and rows are drawn by a byte-identical port",
+    );
+  }
   return lines;
 }
 

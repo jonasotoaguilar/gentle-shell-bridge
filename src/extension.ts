@@ -35,6 +35,7 @@ import { isRecord } from "./rows.ts";
 import { installCardStyleRows } from "./card-style-rows.ts";
 import { installCardStyleTransform, installRailCardStyleTransform } from "./card-style-wiring.ts";
 import { installSectionRows } from "./sections-rows.ts";
+import { setSectionTheme } from "./section-panel.ts";
 import { installSidebarBackend, noteSidebarUnavailable, type SidebarTuiLike } from "./sidebar.ts";
 import { setRepaintHost } from "./repaint.ts";
 import { clearPluginStatus, installPluginStatus } from "./plugin-lines.ts";
@@ -114,8 +115,15 @@ export function armSidebar(ui: unknown): SidebarArmResult {
     }
 
     // `this` matters: Pi's setWidget is a method on the UI context.
-    setWidget.call(surface, SIDEBAR_WIDGET_KEY, (tui: unknown) => {
+    //
+    // The factory's SECOND argument is Pi's theme (`dist/core/extensions/types.d.ts:113`: `(tui:
+    // theme) => Component`), the same documented hand-out gentle-shell's own parts take their theme
+    // from. The bridge keeps it so a section header and its rows paint in the host's roles instead
+    // of the terminal's defaults (N11); without it the drawing is uncoloured and `/bridge-status`
+    // says so.
+    setWidget.call(surface, SIDEBAR_WIDGET_KEY, (tui: unknown, theme?: unknown) => {
       captured = isRecord(tui) ? (tui as SidebarTuiLike) : undefined;
+      setSectionTheme(theme);
       // The renderer and the interception are installed from inside the factory: that is the first
       // moment a `tui` exists, and the resolver keeps working for a later re-install.
       installSectionRail();

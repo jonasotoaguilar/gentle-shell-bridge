@@ -79,9 +79,53 @@ export interface CustomizeRow {
 export type SectionContext = RowContext;
 
 /**
+ * The semantic roles a section row may paint with (N10). They are the host's own theme roles —
+ * `lib/shell-bar.ts:98-101` paints `fg(role, text)` for exactly these names, and
+ * `lib/shell-sidebar-layout.ts:123-124` signatures a theme with nine of them — so a row says what it
+ * MEANS (`error`, `success`, `muted`) and the theme decides the colour. A raw colour, an SGR code or
+ * any other word is rejected when the row is built, never coerced: a row the theme cannot paint
+ * would otherwise reach the terminal as plain text the author believed was styled.
+ */
+export type Tone = "text" | "muted" | "dim" | "accent" | "success" | "error" | "warning";
+
+/** The roles a `Tone` may name, for validation and for the docs. */
+export const TONES: readonly Tone[] = [
+  "text",
+  "muted",
+  "dim",
+  "accent",
+  "success",
+  "error",
+  "warning",
+];
+
+/**
+ * One body row of a section (N10): what the host's own `AGENTS` rows carry, and nothing more.
+ *
+ * `label` is the row's text; `meta` is the right-aligned secondary column (tokens, elapsed time, a
+ * value — the field that updates live, N14); `glyph` is a one-character mark before the label;
+ * `tone` names a semantic role; `onClick` is what makes the row CLICKABLE (N12). A row without
+ * `onClick` is inert: it never highlights under the pointer and never answers a click.
+ */
+export interface SectionRow {
+  label: string;
+  meta?: string;
+  glyph?: string;
+  tone?: Tone;
+  onClick?: () => void;
+}
+
+/**
+ * One body row: a plain string (kept byte-identical, so no existing plugin changes appearance) or a
+ * structured row.
+ */
+export type SectionLine = string | SectionRow;
+
+/**
  * A plugin's sidebar section: the analogue of `RowProvider` for the rail, mirroring the sidebar
  * spec's S2. The plugin writes content only — it never names a `setting`, a rail key or a card
- * frame; the bridge frames the section and contributes its visibility toggle.
+ * frame; the bridge frames the section, draws the host's header and contributes the section's
+ * visibility and collapse controls.
  */
 export interface SidebarSection {
   /** Unique and stable: the key for ordering, replacement and the persisted visibility toggle. */
@@ -100,9 +144,12 @@ export interface SidebarSection {
   meta?(ctx: SectionContext): string | undefined;
   /**
    * The body, evaluated per frame, so live state is honest without a redraw API. A throw drops
-   * this section's body, and only this section's.
+   * this section's body, and only this section's. A row is a plain string or a `SectionRow`
+   * (N10), and a structured row's `meta` — like the body itself — is read at render time, so a
+   * plugin that changes it is repainted without re-registering (N14). A collapsed section is not
+   * built at all (N13).
    */
-  lines(ctx: SectionContext): string[];
+  lines(ctx: SectionContext): SectionLine[];
   /** Visible unless the user (or the plugin) says otherwise; defaults to `true`. */
   defaultVisible?: boolean;
   /**

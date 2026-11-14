@@ -408,8 +408,14 @@ function cellWidth(char: string): number {
   return isWideCodePoint(code) ? 2 : 1;
 }
 
-/** The visible columns of one row, SGR ignored. Used to decide whether clipping is needed at all. */
-function visibleColumns(line: string): number {
+/**
+ * The visible columns of one row, SGR ignored. Used to decide whether clipping is needed at all.
+ *
+ * Exported for the section renderer's panel fallback (`./section-panel.ts`): the host's
+ * `fitPanelLine` measures rows with pi-tui's `visibleWidth`, which this package cannot import, so
+ * the same column model the card styles already use is the one place width is decided.
+ */
+export function visibleColumns(line: string): number {
   let columns = 0;
   let index = 0;
   while (index < line.length) {

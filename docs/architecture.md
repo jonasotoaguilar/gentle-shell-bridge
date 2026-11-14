@@ -317,7 +317,10 @@ existing part is the only way in, and the `footer` part is painted last.
   (`lib/shell-bar.ts:247,251-316`): unreachable, so no interleaving is possible.
 - The host's own `footer` part is registered at `extensions/gentle-shell.ts:2681`; readers reach
   another part's `spend` through `parts.get("agents").spend()` (`:2652`), which is why every field
-  of the wrapped part is forwarded untouched, `digest` included (the layout memo keys on it).
+  of the wrapped part is forwarded untouched. `digest` is the one field the wrapper owns, because the
+  layout memo re-renders a part only when its VALUE moves (`:114-119`): the host's own answer is
+  forwarded unchanged while nothing contributes rows, and the contributed rows' signature is
+  appended when they do (N14).
 
 ### The interception
 
@@ -332,11 +335,67 @@ and leaves any retained wrapper as a pass-through (a generation guard).
 ### The renderer
 
 `src/sidebar-render.ts` contributes the section rows and their card groups per frame. A hidden
-section is not built at all; a throwing `lines()`/`meta()`, a sparse array or a non-string row
-loses only that section's body and is recorded for `/bridge-status`. Rows are clipped to the width
-the host passes and the body is capped at 8 rows with a visible `… +N more` marker. Width is
-measured in **UTF-16 code units**, not terminal columns, and a plugin that emits ANSI owns its own
-width — the bridge does not parse or strip escape sequences.
+section is not built at all, and neither is a COLLAPSED one: folding is a user choice, and a folded
+body costs nothing (its `lines()` is not called). A throwing `lines()`/`meta()`/`onClick`, a sparse
+array, or a row that is not a string and has no usable `label` loses only that section's body and is
+recorded for `/bridge-status`.
+
+A plain string row is clipped to the width the host passes and the body is capped at 8 rows with a
+visible `… +N more` marker; width is measured in **UTF-16 code units** there, not terminal columns,
+and a plugin that emits ANSI in a plain row owns its own width. A structured row is fitted by the
+panel builder in **columns** instead.
+
+### The header and the panel builders (N11, N15)
+
+The host draws its own rail sections with `renderPanelHeader` / `renderPanelRow` and paints a hover
+with `paintHoverable` (`lib/shell-panel.ts:44-80`, `lib/shell-hover.ts:33-38`): `▾`/`▸` by `open`, the
+uppercased title in `text` (bold, `warning` while hovered), the right-aligned count in `muted`, rows
+indented by two and fitted to the width. `src/section-panel.ts` reproduces that drawing exactly, and
+it gets the theme from the same place the host does: the second argument of Pi's `setWidget` factory.
+
+The host's two builders are NOT importable — gentle-shell is not a dependency, and Pi loads every
+extension through its own jiti loader with `moduleCache: false`, so `lib/shell-panel.ts` is a
+separate module graph with no published seam. Rather than claim a reach it does not have, the bridge
+LOOKS for them on every object it is handed — the rail part, the Pi theme, the terminal's sidebar
+state — uses them when they are found, and otherwise draws with the port. `getPanelReport()` feeds
+`/bridge-status` with what was looked for, what was found, and whether a theme had arrived; when the
+answer is `fallback` the report also carries the gap, so "the card does not look native" always has
+an answer. `test/section-panel.test.ts` transcribes the host's own functions and compares bytes, which
+is what makes "byte-identical fallback" a claim a test enforces instead of a comment.
+
+### Colouring and the theme
+
+Pi hands a widget factory `(tui, theme)`; gentle-shell's own parts take their theme the same way, and
+`src/extension.ts` now keeps it (`setSectionTheme`). Before that factory runs there is no theme: the
+rows are drawn uncoloured rather than guessed at, and the report says `theme missing`.
+
+### The pointer (N12)
+
+Clicking is POSITIONAL in this host, not a row field. The layout maps a pointer event into the part's
+frame and calls the part's `handleMouse` with those coordinates (`lib/shell-sidebar-layout.ts:245-259`),
+and the wrapper already receives that call, so the bridge's own rows can answer it. The backend hands
+the contributor `position.startRow` — how many rows the host painted before the contribution, recorded
+by the render that preceded the event — and `src/sidebar-render.ts` maps `y - startRow` onto the rows
+it built. A row with `onClick` is clickable and highlights under the pointer; a row without it is
+inert and declines (so the host's own dispatch continues). The header is always actionable: it folds
+the section.
+
+The hover claim uses the host's own published slot rather than a private channel: `SidebarState.hover`
+is declared as "shared across separately loaded extensions" (`lib/shell-sidebar.ts:37`), and
+`src/section-pointer.ts` stores `{ owner, clear }` there with the host's own semantics — the previous
+owner's `clear()` runs when the owner changes, and the host's "pointer left the rail" call
+(`setSidebarHover(tui)` with no owner) clears ours. `NativePointerRegion` itself is not reachable and
+is not needed: the dispatch it adapts is the one the bridge already receives.
+
+### Repaint and the digest (N13, N14)
+
+A collapse persists to the bridge store and then asks for the frame synchronously, through the same
+two steps the host uses for a part-owner write (`invalidateSidebar` + `requestRender`, `src/repaint.ts`).
+A LIVE field needs nothing but the digest: the memo re-renders a part when its digest changes, so the
+contributed rows' signature (bodies, `meta`, collapse flags, the hovered row, and what the theme
+paints) is folded into the wrapper's `digest` and a changed `meta` reaches the screen on the next
+layout pass. Reading `meta()`/`lines()` from the digest is the same trade the host's own parts make
+(`extensions/gentle-agents.ts:2255-2260`).
 
 ### The `Sections` toggle names
 

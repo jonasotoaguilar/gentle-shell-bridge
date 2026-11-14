@@ -31,6 +31,13 @@
  *    `Sections` toggle in `/gentle:customize`, so the card can be hidden without the plugin writing
  *    a row, a setting or a store for it.
  *
+ *    The card behaves like a host card (N10–N14), which is the whole point of the row model: clicking
+ *    the HEADER folds the section (the bridge owns that, and persists it), the header's right-aligned
+ *    count is the live rendering mode, and the `rendering` row is CLICKABLE — pressing it switches
+ *    `default` ↔ `tool` through the same store the `Cards` toggle writes, so the card, the toggle's
+ *    bullet and the next conversation frame all agree. The `transform` row carries no `onClick`, so
+ *    it is inert and never highlights: a row acts only when the plugin says it does.
+ *
  * D. The card style — through the bridge as well. `registerCardStyle` adds one value, `plain`, to
  *    the `Card style` line `/gentle:customize` already draws: `○ neon ○ float ○ plain`. Choosing it
  *    makes the bridge repaint every conversation card the host drew with this file's frame — a
@@ -147,8 +154,23 @@ interface RowProviderLike {
 }
 
 /**
+ * One structured section row (`SectionRow` in `src/types.ts`): the shape that makes a row a row of
+ * a native card — an icon, a semantic tone, a right-aligned live `meta` and an optional `onClick`.
+ * `tone` names one of the host's own roles (`text`, `muted`, `dim`, `accent`, `success`, `error`,
+ * `warning`), never a colour.
+ */
+interface SectionRowLike {
+  label: string;
+  meta?: string;
+  glyph?: string;
+  tone?: "text" | "muted" | "dim" | "accent" | "success" | "error" | "warning";
+  onClick?: () => void;
+}
+
+/**
  * The section contract (`docs/contract.md` §11), structural like every host shape here. A section
- * writes content only: no `choice`, no `action`, no `preview` — the bridge contributes the toggle.
+ * writes content only: no `choice`, no `action`, no `preview` — the bridge contributes the toggle,
+ * the header, the collapse control and the pointer handling.
  */
 interface SidebarSectionLike {
   id: string;
@@ -159,7 +181,8 @@ interface SidebarSectionLike {
    */
   rowLabel?: string;
   meta?(ctx: { theme: unknown; configHome: string }): string | undefined;
-  lines(ctx: { theme: unknown; configHome: string }): string[];
+  /** A plain string is drawn byte for byte; a structured row is drawn like a native one. */
+  lines(ctx: { theme: unknown; configHome: string }): Array<string | SectionRowLike>;
   defaultVisible?: boolean;
   order?: number;
 }
@@ -558,6 +581,24 @@ function readStoredMode(store: BridgeStoreLike | undefined): BashRenderingMode {
   }
 }
 
+/**
+ * Persist the mode. ONE writer for the `Cards` toggle's `action()` and the sidebar row's `onClick`,
+ * so the two surfaces cannot drift: both write the same key, and both write it the same way.
+ * A store that refuses the write leaves the mode where it was, which is what every read reports.
+ */
+function writeStoredMode(store: BridgeStoreLike, value: BashRenderingMode): void {
+  try {
+    store.set(SETTING_KEY, value);
+  } catch {
+    // Unwritable state is not a crash: the next read reports the mode that is still stored.
+  }
+}
+
+/** The other mode: one click moves `default` ↔ `tool`, so a press always changes something. */
+function nextMode(store: BridgeStoreLike): BashRenderingMode {
+  return readStoredMode(store) === MODE_TOOL ? MODE_DEFAULT : MODE_TOOL;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Reaching gentle-shell-bridge: a runtime handshake, not a path
 // ---------------------------------------------------------------------------------------------
@@ -771,7 +812,7 @@ function renderingRow(store: BridgeStoreLike, value: BashRenderingMode): Customi
     // rule"). The transform reads the same value on the next conversation frame, which is how
     // cards already on screen change look instead of keeping the one they were built with.
     action: () => {
-      store.set(SETTING_KEY, value);
+      writeStoredMode(store, value);
     },
   };
 }
@@ -806,10 +847,23 @@ function bashCardSection(
     // own `stats` / `agents` lines.
     rowLabel: SECTION_ROW_LABEL,
     // The right-aligned count: the same value the `Cards` toggle writes, so the two surfaces
-    // cannot disagree.
+    // cannot disagree. Read per frame, which is what makes it LIVE (N14): clicking the row below
+    // changes it and the host repaints without this section re-registering.
     meta: () => readStoredMode(store),
     lines: () => [
-      `rendering  ${readStoredMode(store)}`,
+      // A structured row (N10–N12): the icon, the label and the value in the dimmer secondary
+      // column, and `onClick` — which is the ONLY thing that makes a row clickable. Pressing it
+      // flips the mode through the same store the `Cards` toggle writes, so the visible effect is
+      // the header's count, this row's meta and the next conversation frame.
+      {
+        glyph: readStoredMode(store) === MODE_TOOL ? "◉" : "○",
+        label: "rendering",
+        meta: readStoredMode(store),
+        tone: readStoredMode(store) === MODE_TOOL ? "accent" : "muted",
+        onClick: () => writeStoredMode(store, nextMode(store)),
+      },
+      // No `onClick`: inert on purpose. It reports a fact the plugin cannot change at runtime, so a
+      // click on it does nothing, exactly as a host row without an action does.
       `transform  ${transformRegistered() ? "registered" : "absent"}`,
     ],
     // Visible on install: a section needs no extra step from the plugin or the user (S1).

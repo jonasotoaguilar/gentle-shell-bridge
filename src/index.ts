@@ -48,7 +48,10 @@ export type {
   RowPreview,
   RowProvider,
   SectionContext,
+  SectionLine,
+  SectionRow,
   SidebarSection,
+  Tone,
   TransformContext,
   TranscriptTransform,
 } from "./types.ts";

@@ -152,9 +152,12 @@ test("digest, spend, surface, summary, open, alert and invalidate reach their re
 
   const wrapped = footer();
   assert.ok(wrapped !== undefined);
-  assert.equal(wrapped.digest, rail.digest, "digest is forwarded untouched: the layout memo keys on it");
-  assert.equal(wrapped.digest?.(), "footer:stable");
-  assert.equal(calls.digest, 1, "reading digest calls the host's own function");
+  // The digest's VALUE is the host's own while nothing contributes rows (N14): the layout memo
+  // compares values (`existing.digest === digest`), never function identity, so the wrapper may keep
+  // forwarding the host's answer from its own function.
+  const hostDigest = rail.digest?.();
+  assert.equal(wrapped.digest?.(), hostDigest, "the host's digest value reaches its reader");
+  assert.equal(calls.digest, 2, "each read calls the host's own function, once");
   assert.equal(wrapped.spend, rail.spend, "spend keeps its identity");
   assert.deepEqual(wrapped.spend?.(), { runs: 2, tokens: 3, cost: 4 });
   assert.equal(wrapped.surface, "panel");
@@ -299,7 +302,7 @@ test("a foreign wrapper already on the rail is wrapped around, never clobbered",
   assert.notEqual(wrapped, foreign, "we wrap the foreign wrapper instead of replacing it");
   wrapped.render(40);
   assert.equal(foreignCalls, 1, "the foreign wrapper still runs");
-  assert.equal(wrapped.digest, rail.digest, "and its fields still flow through ours");
+  assert.equal(wrapped.digest?.(), rail.digest?.(), "and its fields still flow through ours");
 });
 
 test("an unknown tui shape is reported, never thrown", () => {

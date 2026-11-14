@@ -185,16 +185,19 @@ genuinely not installed. That is exact: there is no third state and nothing to w
 Object.freeze({
   schema: "gentle-shell-bridge/api", // identity, so a foreign payload is never mistaken for ours
   version: 1,                        // the major; a breaking change is a NEW symbol key
-  VERSION: "0.1.0",                  // the publishing release; informational only
+  VERSION: "0.2.0",                  // the publishing release; informational only
   registerRows,
   registerSection,
+  registerCardStyle,                 // since 0.2.0; optional on an older published object
   createStore,
 });
 ```
 
 Publication is **first wins**: a compatible object already in the slot is kept and never replaced,
 and the slot is never reset. A consumer gates on the schema string, `version === 1` and the three
-callable members. Anything else — another library's payload, another major, a partial object — is
+callable members below — `registerCardStyle` is NOT part of the gate, so an object published by a
+copy older than 0.2.0 is still a usable bridge for rows, sections and the store; a plugin that needs
+card styles checks `typeof api.registerCardStyle === "function"` before calling it. Anything else — another library's payload, another major, a partial object — is
 **absent**, never an error: the object is not used, the slot is left exactly as it is (never
 overwritten, deleted or reset), and one notice per process names the mismatch. `v1` in the key is
 the major: a breaking change is a new `v2` key, never a mutation of this one.
@@ -450,11 +453,111 @@ rejects unknown keys, so a third-party section key cannot live there. The user e
 identical to a native section toggle; the file deliberately is not. The blast radius is the
 same per-plugin decision recorded in [state.md](state.md).
 
+## 12. Card styles
+
+One call adds a card style to gentle-shell's conversation cards — a third option on the same
+`Card style` line the host already draws, with no change to the host.
+
+```ts
+import { registerCardStyle } from "gentle-shell-bridge";
+
+const dispose: () => void = registerCardStyle({
+  id: "loon.cute",              // identity: replacement and ordering key, and the stored value
+  label: "cute",                // what the user reads; unique among the line's values
+  order: 10,                    // optional: ordered styles first, ascending, then registration order
+  frame: { top, line, bottom }, // the three functions below; nothing else is called
+  preview: () => ({ title: "Cute", sample: "○ cute  ╭─ welcome ─╮" }), // optional, literal
+});
+```
+
+### The frame contract
+
+```ts
+top(ctx: { width: number; title?: string; hint?: string }): string;
+line(ctx: { text: string; width: number; first: boolean }): string;
+bottom(ctx: { width: number }): string;
+```
+
+`width` is the width the host rendered at. `title` is the heading the host printed, without its
+glyph and without the right-aligned hint; `hint` is that hint when its style runs prove it is one
+(a subtitle is never passed as a hint, and when the split is not provable the whole remainder
+arrives as `title` with `hint` undefined). `line` receives one body row at a time, `first` true for
+the card's first row. The bridge extracts all of it and passes it in; a style parses nothing. A row
+a style returns wider than `width` is clipped before it reaches the screen.
+
+### The host's own line is extended, never duplicated
+
+At capture the bridge locates the host's `Card style` rows (category `Cards`, that `setting`),
+splices them out and puts them back at the same index, immediately followed by one row per
+registered style, all sharing the host's `setting`. The host coalesces consecutive rows that share a
+setting, so the user sees ONE line in the host's own position:
+
+```text
+Card style  ○ neon ● float ○ cute
+```
+
+The host's own rows keep the host's `current()` and `action()`, wrapped in exactly two ways:
+`current()` reports `false` while a registered style is selected (one bullet at a time), and
+`action()` also returns the bridge to native rendering (below). The bridge never reimplements
+`neon`/`float` and never writes the host's `card-style.json`.
+
+### The way back to host rendering
+
+Pressing a host value (`neon`/`float`) **is** the way back: the host's own action runs, and the
+bridge clears its selection to `native` in a `finally`, so even a throwing setter cannot leave the
+session trapped inside a bridge style. The host's values are native rendering.
+
+### Fallback mode
+
+If the host's line cannot be located (a renamed setting, a menu without `Cards`, no capture at
+all), the bridge contributes its own line instead — `Bridge → card style`, with `native` plus every
+registered style. `native` means "the bridge leaves the conversation alone". `/bridge-status`
+reports which mode is in force; the values are never dropped to fit a narrow terminal, and the
+bridge does not control that width.
+
+### The selection
+
+The selection is the bridge's state, not the plugin's:
+`<gentle config home>/gentle-shell-bridge/bridge-card-style.json`.
+
+```json
+{ "schemaVersion": 1, "values": { "cardStyle": "loon.cute" } }
+```
+
+`cardStyle` is a style id or `native`. A missing file, an unreadable one, an unknown
+`schemaVersion` or a non-string value reads as `native`. A stored id whose style was disposed
+resolves to **missing**, which behaves exactly like `native` — no chrome is drawn for a style that
+no longer exists — and `/bridge-status` says `selection: … (missing: not registered)`. That is the
+whole degrade rule: choosing a style is opt-in, and losing the plugin that owns it can never leave a
+conversation broken.
+
+### What a registration must satisfy
+
+- `id`: a non-empty string, not `__proto__`/`constructor`/`prototype`, no NUL byte, and not a value
+  the line already shows (`neon`, `float`, `native`).
+- `label`: a non-empty string, unique — case-sensitively, as the host displays it — among the
+  line's values (another registered style's label or the host's own). Two values reading the same
+  cannot be told apart.
+- `frame.top`, `frame.line`, `frame.bottom`: functions. Any failure throws **before** anything is
+  stored, like the row and section id rules.
+- Registering an existing `id` replaces that style in place; `dispose()` removes exactly the one
+  registration it created, and calling it twice is a no-op.
+
+### What cannot be promised
+
+- A later post-processor that rewrites the conversation — cinlodev wraps the chat container's
+  `render` and strips box chrome — can erase this frame. The bridge cannot prevent it, and
+  `/bridge-status` says so instead of pretending otherwise.
+- The repaint depends on the host's own `float` grammar (see
+  [architecture.md](architecture.md) §14): a card drawn some other way is left exactly as it is.
+- A style never breaks the conversation: any throw inside detection or inside a style makes that
+  frame a pass-through and is reported.
+
 ## Limits
 
-- `registerRows`, `registerSection`, `createStore`, `bridgeApi` and `isBridgeApi` are the
-  contract; anything a plugin does inside `action()` beyond calling inline helpers is the
-  plugin's own business.
+- `registerRows`, `registerSection`, `registerCardStyle`, `createStore`, `bridgeApi` and
+  `isBridgeApi` are the contract; anything a plugin does inside `action()` beyond calling inline
+  helpers is the plugin's own business.
 - Rows can join existing categories only; `category` is typed to gentle-shell's closed
   union (`lib/visual-customize-view.ts:105`).
 - **Sections join the rail after the native cards, never between them.** The host's status
@@ -471,5 +574,13 @@ same per-plugin decision recorded in [state.md](state.md).
 - The runtime handshake is proven under `node --test` with a simulated process (a reset
   `globalThis` and a freshly loaded example per scenario), not by two live Pi extensions loading
   in either order inside one real session.
-- The API is pre-release (`0.1.0`). The `v1` symbol is the compatibility boundary: a breaking
+- A card style's frame is measured in terminal columns (wide characters count 2, combining marks
+  0); a style that mixes in its own images or escape tricks owns whatever the terminal does with it.
+- Card styles are proven against a fake conversation component that reproduces gentle-shell's
+  `float` output, never in a running Pi TUI; the downstream-override conflict above is a property of
+  a real session the fake cannot reproduce.
+- `registerCardStyle` is optional on the published object: an object published by a copy older than
+  this surface passes the gate but lacks it, so a plugin that needs card styles checks
+  `typeof api.registerCardStyle === "function"`.
+- The API is released (`0.2.0`). The `v1` symbol is the compatibility boundary: a breaking
   change takes a new key instead of mutating this one (§9).

@@ -4,6 +4,8 @@
   test suite. **Amended** by decision 4: a registered sidebar section's visibility is the one
   piece of state the bridge itself owns. **Amended** by decision 5: plugins reach the bridge
   through a published, versioned `globalThis` slot instead of a path or an environment variable.
+  **Amended** by decision 6: the selected card style is bridge-owned state, and the conversation
+  frames are repainted opt-in, degrading to native.
 - **Context:** [contract.md](contract.md), [architecture.md](architecture.md)
 - **Deciders:** package author and gentle-shell maintainers.
 
@@ -172,7 +174,9 @@ The bridge publishes `{ schema, version, VERSION, registerRows, registerSection,
 `Symbol.for("gentle-shell-bridge/api/v1")` when its module loads — first-wins, never overwritten,
 never reset. A plugin registers from its own `session_start` handler: Pi completes every extension
 module's async initialization before firing that event (`docs/extensions.md:213`, `:393`, `:512`),
-so the slot either holds the object or the bridge is not installed. A consumer gates on the schema
+so the slot either holds the object or the bridge is not installed. (`registerCardStyle` joined the
+object in 0.2.0; the gate stays on the three original members, so an older object is still a usable
+bridge for rows, sections and the store.) A consumer gates on the schema
 string, `version === 1` and the three callable members; anything else is absent, `bridgeApi()`
 returns `undefined`, and the bridge warns once per process. `bridgeApi()` and `isBridgeApi(value)`
 are the same handshake for a plugin that does import the package, and the exact form is quoted in
@@ -191,6 +195,26 @@ The cost is real and accepted: every plugin repeats the same handful of lines �
 and a shape gate — and copies them into its own file, because the whole point is that it cannot
 import the bridge. That boilerplate lasts until Pi ships a real cross-extension registry; on that
 day the inline block in each plugin becomes one call and this decision is superseded, not extended.
+
+**F. Rejected: ask gentle-shell for a card-style registry.** A third style could be supported
+properly — `CARD_STYLE` gaining members, the style policy file accepting any registered id, the
+frame functions living in the host — by one upstream change. Rejected: this package exists
+precisely because gentle-shell does not take every change (the sidebar work landed here for the
+same reason). A design that waits for an upstream merge is not a bridge: it makes the feature's
+delivery depend on a different project's review queue, and it would fork the moment the host
+declined. `CARD_STYLE` stays a two-member union (`lib/shell-card.ts:33-38`), any unknown stored
+value normalizes to `float` (`:43-45`), and the host keeps its own `Card style` line exactly as it
+built it — the bridge only extends that line and repaints what the host already drew.
+
+**G. Chosen: repaint the frames, opt-in, and degrade to native.** The bridge takes the `float`
+frame the host drew and re-renders it with the selected style's three functions, leaving every
+non-card row and every non-float card byte-identical. `native` is the default and the pass-through;
+selecting a host value (`neon`/`float`) is the way back; a style that throws is a pass-through for
+that frame and is reported; a disposed style resolves to `missing`, which behaves as `native`. The
+selection is bridge-owned state in the bridge's own file (`bridge-card-style.json`), not the host's
+`card-style.json`, for the same closed-key reason section visibility uses `bridge-sections.json`.
+Costs accepted and recorded: the repaint depends on the host's `float` grammar, and a downstream
+post-processor can override the frame (see [architecture.md](architecture.md) §14).
 
 ## Open questions
 

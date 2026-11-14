@@ -1,6 +1,7 @@
 /**
- * Worked consumer of `gentle-shell-bridge`: ONE Pi extension that demonstrates both surfaces the
- * package sits between.
+ * Worked consumer of `gentle-shell-bridge`: ONE Pi extension that demonstrates every surface the
+ * package publishes — a row toggle, a sidebar section and a card style — plus one Pi-native
+ * renderer of its own.
  *
  * A. Its own bash rendering — pure Pi, no bridge. `pi.registerToolRenderer` offers this extension
  *    the chance to draw `bash` calls itself. It only takes the offer while the toggle below
@@ -15,8 +16,20 @@
  *    gentle-shell's fullscreen sidebar, drawn by the host's own frame, whose body reports the mode
  *    and whether this load actually wired the bash renderer. The same registration gives it a
  *    `Sections` toggle in `/gentle:customize`, so the card can be hidden without the plugin writing
- *    a row, a setting or a store for it. A bridge that publishes an incompatible API is treated as
- *    absent: B and C register nothing and the example says so once through `ctx.ui.notify`.
+ *    a row, a setting or a store for it.
+ *
+ * D. The card style — through the bridge as well. `registerCardStyle` adds one value, `plain`, to
+ *    the `Card style` line `/gentle:customize` already draws: `○ neon ○ float ○ plain`. Choosing it
+ *    makes the bridge repaint every conversation card the host drew with this file's frame — a
+ *    single gutter character per row, the heading as plain text, no box — and choosing `neon` or
+ *    `float` puts the host's own rendering back. Nothing here parses a card: the bridge measures,
+ *    extracts the heading and the hint, and hands them over.
+ *
+ * A bridge that publishes an incompatible API is treated as absent: B, C and D register nothing and
+ * the example says so once through `ctx.ui.notify`. A bridge that publishes the row and section
+ * surfaces but not `registerCardStyle` (an older 0.1.x object) keeps B and C on the line and skips
+ * D silently: the member is optional, and this file must not warn about a surface the bridge never
+ * promised.
  *
  * Loading: copy this file into `~/.pi/agent/extensions/` (or point Pi's `packages` entry at this
  * repository) and `/reload`. The toggle defaults to `default`, so installing the example changes
@@ -165,15 +178,51 @@ interface SidebarSectionLike {
   order?: number;
 }
 
+/** The pieces of the host's card a style's frame is handed (`src/types.ts`, `CardFrame*Context`). */
+interface CardFrameTopContextLike {
+  width: number;
+  title?: string;
+  hint?: string;
+}
+interface CardFrameLineContextLike {
+  text: string;
+  width: number;
+  first: boolean;
+}
+interface CardFrameBottomContextLike {
+  width: number;
+}
+
+/**
+ * A card style as the bridge accepts it (`src/types.ts`, `CardStyleRegistration`). The three frame
+ * functions are the whole contract: measured width in, one row out, never wider than the width.
+ */
+interface CardStyleLike {
+  id: string;
+  label: string;
+  order?: number;
+  frame: {
+    top(ctx: CardFrameTopContextLike): string;
+    line(ctx: CardFrameLineContextLike): string;
+    bottom(ctx: CardFrameBottomContextLike): string;
+  };
+  preview?(): { title: string; sample: string };
+}
+
 /**
  * The API object `gentle-shell-bridge` publishes (`src/api.ts`, `BridgeApi`): the members this
  * example calls, structurally. Nothing here imports the package, so the shape has to be declared.
+ *
+ * `registerCardStyle` is OPTIONAL by contract: the published object is first-wins, so a process
+ * running an older copy can hand back a v1 object without it. A consumer gates with
+ * `typeof api.registerCardStyle === "function"` and keeps the other surfaces working.
  */
 interface BridgeApiLike {
   readonly schema: string;
   readonly version: number;
   registerRows(provider: RowProviderLike): () => void;
   registerSection(section: SidebarSectionLike): () => void;
+  registerCardStyle?(style: CardStyleLike): () => void;
   createStore(pluginId: string): BridgeStoreLike;
 }
 
@@ -616,8 +665,8 @@ function isBridgeApi(value: unknown): value is BridgeApiLike {
 /** The one notice when this load has nowhere to register: the bridge is absent, full stop. */
 const NO_BRIDGE_NOTICE =
   "[bash-card] no compatible gentle-shell-bridge is installed, so this load adds nothing: no " +
-  "Cards toggle and no BASH CARD sidebar section. Its own bash renderer still works. A slot that " +
-  "holds another object is treated as absent, never used.";
+  "Cards toggle, no BASH CARD sidebar section and no `plain` card style. Its own bash renderer " +
+  "still works. A slot that holds another object is treated as absent, never used.";
 
 // ---------------------------------------------------------------------------------------------
 // The in-TUI diagnostics channel
@@ -745,6 +794,81 @@ function bashCardSection(store: BridgeStoreLike, rendererRegistered: boolean): S
 }
 
 // ---------------------------------------------------------------------------------------------
+// The card style
+// ---------------------------------------------------------------------------------------------
+
+/** Stable across loads and unique on the line: `/reload` replaces this value, never adds a second. */
+const CARD_STYLE_ID = "bash-card.plain";
+/**
+ * What the user reads on the host's own `Card style` line. Short, and it collides with neither the
+ * host's values (`neon`, `float`), the bridge's `native`, nor another style's label — the bridge
+ * rejects a duplicate label at registration (`docs/contract.md` §12).
+ */
+const CARD_STYLE_LABEL = "plain";
+
+/** One character of gutter per row: no box, no border glyphs, cheap to read. */
+const CARD_STYLE_GUTTER = "▌";
+
+/**
+ * The frame. Three functions, each handed a width and text the BRIDGE already measured and
+ * extracted; nothing here looks for a title in a line or strips a frame. Every row goes through
+ * `clipLine`, so the style can never emit a line wider than the width it was given.
+ *
+ * A card in this style at width 40:
+ *
+ * ```text
+ * ▌ read                        ctrl+o
+ * ▌ config.ts
+ * ▌
+ * ```
+ */
+const PLAIN_CARD_FRAME: CardStyleLike["frame"] = {
+  top: (ctx) => {
+    const head = `${CARD_STYLE_GUTTER} ${ctx.title ?? ""}`.replace(/\s+$/, "");
+    const hint = ctx.hint;
+    if (hint === undefined) return clipLine(head, ctx.width);
+    // Right-align the hint when there is room for it and at least one space between; otherwise the
+    // heading wins and the hint is dropped rather than making the row ambiguous.
+    const gap = ctx.width - visibleWidth(head) - visibleWidth(hint) - 2;
+    if (gap < 1) return clipLine(head, ctx.width);
+    return clipLine(`${head}${" ".repeat(gap)}  ${hint}`, ctx.width);
+  },
+  line: (ctx) => {
+    const row = ctx.text === "" ? CARD_STYLE_GUTTER : `${CARD_STYLE_GUTTER} ${ctx.text}`;
+    return clipLine(row, ctx.width);
+  },
+  // A bare gutter closes the card: the style has no bottom border to draw, and the row costs one
+  // column instead of a rule across the frame.
+  bottom: (ctx) => (ctx.width > 0 ? CARD_STYLE_GUTTER : ""),
+};
+
+/** A literal depiction for `/gentle:customize`'s preview, drawn by the row's `preview()`. */
+const CARD_STYLE_PREVIEW = {
+  title: "Cards · plain",
+  sample: [
+    `${CARD_STYLE_GUTTER} read                 ctrl+o`,
+    `${CARD_STYLE_GUTTER} config.ts`,
+    `${CARD_STYLE_GUTTER}`,
+  ].join("\n"),
+};
+
+/**
+ * The registration this file sends, or nothing. A style draws what it is given: the bridge owns
+ * detection, the heading and the width.
+ */
+function bashCardStyle(): CardStyleLike {
+  return {
+    id: CARD_STYLE_ID,
+    label: CARD_STYLE_LABEL,
+    // After any style the host or another plugin leaves unordered; the host's own values come
+    // first regardless (`docs/contract.md` §12).
+    order: 30,
+    frame: PLAIN_CARD_FRAME,
+    preview: () => ({ ...CARD_STYLE_PREVIEW }),
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
 // Extension entry
 // ---------------------------------------------------------------------------------------------
 
@@ -834,6 +958,15 @@ export default function bashCardExample(pi: ExtensionApiLike): () => void {
       }),
       api.registerSection(bashCardSection(store, rendererRegistered)),
     );
+
+    // The third surface is optional by contract: an object published by an older copy passes the
+    // gate without `registerCardStyle`. Absent means "register the other two and stay quiet" — no
+    // queue, no repeated notice, and no invented fallback for a line the bridge does not have.
+    const registerCardStyle = api.registerCardStyle;
+    if (typeof registerCardStyle === "function") {
+      disposers.push(registerCardStyle.call(api, bashCardStyle()));
+    }
+
     bridgeRegistered = true;
   };
 

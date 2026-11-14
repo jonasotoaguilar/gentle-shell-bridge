@@ -11,6 +11,11 @@ import {
   registerRows,
   STORE_SCHEMA_VERSION,
   VERSION,
+  type CardFrame,
+  type CardFrameBottomContext,
+  type CardFrameLineContext,
+  type CardFrameTopContext,
+  type CardStyleRegistration,
   type CustomizeRow,
   type InlineHelpers,
   type RowChoice,
@@ -303,10 +308,29 @@ test("the public entry exports exactly the contract surface and no test seams", 
     "bridgeApi",
     "createStore",
     "isBridgeApi",
+    "registerCardStyle",
     "registerRows",
     "registerSection",
   ]);
   for (const seam of [
+    "installCardStyleTransform",
+    "disableCardStyleTransform",
+    "getCardStyleWiringDiagnostics",
+    "resetCardStyleWiringForTests",
+    "transformCardLines",
+    "getCardStyleTransformFailures",
+    "getCardStyleLastOutcome",
+    "resetCardStyleTransformForTests",
+    "installCardStyleRows",
+    "cardStyleRowMode",
+    "extendCardStyleLine",
+    "setCardStyleSelection",
+    "getCardStyleSelection",
+    "resolveCardStyleSelection",
+    "snapshotCardStyles",
+    "resetCardStylesForTests",
+    "CARD_STYLE_NATIVE",
+    "HOST_CARD_STYLE_SETTING",
     "resetBusForTests",
     "resetCaptureStateForTests",
     "resetHookStateForTests",
@@ -331,6 +355,18 @@ test("the public entry exports exactly the contract surface and no test seams", 
 
 test("the documented values and types are reachable from the public entry", () => {
   const provider: RowProvider = { id: "api", category: "Cards", rows: (): CustomizeRow[] => [] };
+  // The card-style surface: one registration, three functions, the contexts they receive.
+  const cardStyle: CardStyleRegistration = {
+    id: "api.cute",
+    label: "cute",
+    order: 1,
+    frame: {
+      top: (frameCtx: CardFrameTopContext) => `${frameCtx.title ?? ""}${frameCtx.hint ?? ""}`,
+      line: (frameCtx: CardFrameLineContext) => `${frameCtx.text}${frameCtx.first}`,
+      bottom: (frameCtx: CardFrameBottomContext) => String(frameCtx.width),
+    },
+    preview: (): RowPreview => ({ title: "Cute", sample: "sample" }),
+  };
   const context: RowContext = { theme: undefined, configHome: configHome };
   const choice: RowChoice = { setting: "s", value: "v", current: () => true };
   const label: RowLabel = "text";
@@ -344,6 +380,8 @@ test("the documented values and types are reachable from the public entry", () =
   const kind: StoreProblemKind = "invalid-json";
   const problem: StoreProblem = { pluginId: "api", path: "/tmp/x", kind, message: "m" };
   // The section surface is public too: a section is written by a plugin and registered with one call.
+  const frame: CardFrame = cardStyle.frame;
+  assert.equal(typeof frame.bottom, "function");
   const section: SidebarSection = {
     id: "api.section",
     title: "API",
@@ -354,6 +392,11 @@ test("the documented values and types are reachable from the public entry", () =
   };
 
   assert.equal(provider.rows(context).length, 0);
+  assert.equal(typeof publicApi.registerCardStyle, "function", "the entry exports the registration");
+  assert.equal(cardStyle.frame.top({ width: 1, title: "t" }), "t");
+  assert.equal(cardStyle.frame.line({ text: "x", width: 1, first: true }), "xtrue");
+  assert.equal(cardStyle.frame.bottom({ width: 7 }), "7");
+  assert.deepEqual(cardStyle.preview?.(), { title: "Cute", sample: "sample" });
   assert.equal(choice.value, "v");
   assert.equal(label, "text");
   assert.deepEqual(preview, { title: "t", sample: "s" });
@@ -363,5 +406,5 @@ test("the documented values and types are reachable from the public entry", () =
   assert.equal(STORE_SCHEMA_VERSION, 1);
   assert.equal(section.title, "API");
   assert.equal(section.lines(context).length, 1);
-  assert.equal(VERSION, "0.1.0");
+  assert.equal(VERSION, "0.2.0");
 });

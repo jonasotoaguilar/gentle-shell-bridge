@@ -80,6 +80,8 @@ const createFakePi = (): FakePi => {
   const shutdowns: BridgeSessionHandler[] = [];
   const commands: Array<{ name: string; handler: BridgeCommandHandler }> = [];
   const api: BridgeExtensionApi = {
+    // `gentle-pi` is present, so `session_start` installs the INTEGRATIONS surface (S9/T12).
+    getCommands: () => [{ name: "gentle:customize" }],
     on(event, handler) {
       if (event === "session_start") sessions.push(handler);
       else if (event === "session_shutdown") shutdowns.push(handler);
@@ -806,7 +808,7 @@ test("the example installed under the Pi distribution registers one identity and
   assert.deepEqual(
     [...footer.statuses.values()],
     ["Bash card · ready"],
-    "four surfaces, one identity, one row — and no `Pi coding agent` row",
+    "one design and one section, one identity, one row — and no `Pi coding agent` row",
   );
   assert.equal(footer.statuses.size, 1);
   assert.equal(new Set(footer.calls.map((entry) => entry.key)).size, 1);
@@ -818,7 +820,7 @@ test("the example installed under the Pi distribution registers one identity and
     report.plugins[0].key.startsWith(`${PLUGIN_LINE_PREFIX}bash-card.`),
     "the key names the plugin module, never the Pi distribution (I10, I11)",
   );
-  assert.equal(report.plugins[0].accepted, 4, "rows, section, card style and transform");
+  assert.equal(report.plugins[0].accepted, 2, "the design and the section, attributed alike");
   assert.equal(report.plugins[0].rejected.length, 0);
   assert.equal(report.plugins[0].nameConflicts.length, 0);
 });

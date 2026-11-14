@@ -1,17 +1,15 @@
 /**
- * L5: the example's `Bash rendering` toggle against a `neon` bash card.
+ * T10: the worked example's bash DESIGN inside the host's `neon` outline (S1, S5).
  *
- * The user's frame, in a real TUI: the host's own `Card style` line is on `neon`, the content is
- * minimal, and the example's `Bash rendering` is on `tool` — and the card keeps its neon outline.
- * The pipeline and the bridge are not the cause (the bridge's repaint is `float`-only, so a neon
- * frame reaches the transform untouched); the example's grammar only knew the host's `float` frame
- * and its own `plain` one. These tests exercise the REAL example through the real bridge entry, the
- * way `test/example-transform.test.ts` does for `float`/`plain`, and pin the third shape.
+ * The user's live frame: the host's own `Card style` line is on `neon`, and the bash card must come
+ * back with `bash` where it printed `$` — inside the SAME outline. A design never draws chrome: the
+ * host's frame is already there when it is handed the rows, so `neon` (and `float`) survive by
+ * construction, and the design only changes the mark and re-balances the rule's fill to keep the row
+ * exactly as wide as the host made it.
  *
- * The frames are host-derived fixtures (`test/fake-transcript.ts`: `NEON_BASH_CARD*`, built from
- * `gentle-shell/lib/shell-card.ts` — `cardTop`/`cardLine`/`cardBottom` with the frame role `90` and
- * the title role `95`). They are not read off a screenshot, and this unit does not observe a live
- * TUI: what is proven here is the example's grammar and the toggle, not the terminal.
+ * The frames are host-derived fixtures (`test/fake-transcript.ts`: `HOST_BASH_NEON_*`, built from
+ * `lib/shell-card.ts` — `cardTop`/`cardLine`/`cardBottom` at width 60), split the way Pi builds a
+ * card: the top rule is the call component, the body and closing rule the result component.
  */
 
 import assert from "node:assert/strict";
@@ -25,33 +23,28 @@ import {
   resetBusForTests,
   resetCardStylesForTests,
   resetSectionsForTests,
-  resetTransformsForTests,
-  snapshotProviders,
 } from "../src/bus.ts";
 import { resetCardStyleTransformForTests } from "../src/card-style-transform.ts";
 import { disableCardStyleTransform, resetCardStyleWiringForTests } from "../src/card-style-wiring.ts";
-import { setCardStyleSelection } from "../src/card-styles.ts";
 import { disableCaptureBackend, resetCaptureStateForTests } from "../src/capture.ts";
-import gentleShellBridge, {
-  type BridgeExtensionApi,
-  type BridgeSessionHandler,
-} from "../src/extension.ts";
+import gentleShellBridge, { type BridgeExtensionApi } from "../src/extension.ts";
 import { resetHookStateForTests } from "../src/hook.ts";
 import { resetNoticesForTests } from "../src/notices.ts";
-import { resetRowBuildStateForTests } from "../src/rows.ts";
+import { resetPluginLinesForTests } from "../src/plugin-lines.ts";
+import { resetRepaintForTests } from "../src/repaint.ts";
+import { buildRows, resetRowBuildStateForTests } from "../src/rows.ts";
 import { disableSidebarBackend, resetSidebarStateForTests } from "../src/sidebar.ts";
 import { resetSectionFailuresForTests } from "../src/sidebar-render.ts";
-import { collectStatus, formatStatus } from "../src/status.ts";
 import { resetStoreStateForTests } from "../src/store.ts";
-import { resetTransformPipelineForTests } from "../src/transform-pipeline.ts";
+import { resetToolDesignsForTests } from "../src/tool-designs.ts";
+import { resetToolDesignRowStateForTests } from "../src/tool-design-rows.ts";
+import { resetToolDesignWiringForTests } from "../src/tool-design-wiring.ts";
 import type { CustomizeRow, InlineHelpers } from "../src/types.ts";
+import { createFakeHost } from "./fake-host.ts";
 import {
-  NEON_BASH_CARD,
-  NEON_BASH_CARD_WITH_BODY,
-  NEON_BASH_CARD_WITH_HINT,
-  NEON_CARD,
-  createFakeTranscriptTui,
-  type FakeTui,
+  HOST_BASH_NEON_CALL,
+  HOST_BASH_NEON_RESULT,
+  stripAnsi,
 } from "./fake-transcript.ts";
 
 let configHome: string;
@@ -75,8 +68,6 @@ test.beforeEach(() => {
   resetBusForTests();
   resetSectionsForTests();
   resetCardStylesForTests();
-  resetTransformsForTests();
-  resetTransformPipelineForTests();
   resetCardStyleTransformForTests();
   resetCardStyleWiringForTests();
   resetCaptureStateForTests();
@@ -85,20 +76,25 @@ test.beforeEach(() => {
   resetSidebarStateForTests();
   resetSectionFailuresForTests();
   resetNoticesForTests();
+  resetPluginLinesForTests();
+  resetRepaintForTests();
   resetStoreStateForTests();
+  resetToolDesignsForTests();
+  resetToolDesignRowStateForTests();
+  resetToolDesignWiringForTests();
   disableCaptureBackend();
   disableSidebarBackend();
   disableCardStyleTransform();
-  // The bridge repaints nothing: the neon frame is the HOST's own style, which is the state L5
-  // reports. A `float`-only repaint could not produce or recognise it, and must not be blamed.
-  setCardStyleSelection("native");
 });
 
 type SessionHandler = (event: unknown, ctx: { hasUI?: boolean; ui?: unknown }) => void;
 
 interface FakePi {
   on?: (event: string, handler: SessionHandler) => void;
+  registerCommand?: () => void;
   registerToolRenderer?: (resolver: unknown) => void;
+  /** Present because the bridge checks the REQUIRED host package at runtime (S9/T12). */
+  getCommands?: () => Array<{ name: string }>;
 }
 
 type ExampleInit = (pi: FakePi) => () => void;
@@ -114,219 +110,168 @@ const inlineHelpers: InlineHelpers = {
   capture: async () => undefined,
 };
 
-type Mode = "default" | "tool";
+interface FakeComponent {
+  render(width: number): string[];
+}
+
+interface FakeRenderers {
+  renderShell?: unknown;
+  renderCall?: unknown;
+  renderResult?: unknown;
+  [member: string]: unknown;
+}
+
+function fakeComponent(lines: readonly string[]): FakeComponent {
+  const rows = [...lines];
+  return { render: (): string[] => rows };
+}
+
+function fakeRenderers(call: readonly string[], result: readonly string[]): FakeRenderers {
+  // One component instance per renderer, like Pi: the renderer is called once and the SAME object
+  // is re-rendered on every frame, which is what makes "the host's own array instance" observable.
+  const callComponent = fakeComponent(call);
+  const resultComponent = fakeComponent(result);
+  return {
+    renderShell: "default",
+    renderCall: () => callComponent,
+    renderResult: () => resultComponent,
+  };
+}
+
+const THEME = { name: "fake-theme" };
+
+function mount(renderers: FakeRenderers, member: "renderCall" | "renderResult"): FakeComponent {
+  const renderer = renderers[member];
+  assert.equal(typeof renderer, "function");
+  return member === "renderCall"
+    ? (renderer as (args: unknown, theme: unknown, ctx: unknown) => FakeComponent)(
+        { command: "npm test" },
+        THEME,
+        {},
+      )
+    : (renderer as (result: unknown, options: unknown, theme: unknown, ctx: unknown) => FakeComponent)(
+        { content: [] },
+        { expanded: false },
+        THEME,
+        {},
+      );
+}
 
 interface World {
-  tui: FakeTui;
-  /** The one array the host's conversation component produced, before any transform ran. */
-  hostLines: () => readonly string[];
-  /** A later frame: the host redraws its conversation. */
-  revealHostFrame(lines: readonly string[]): void;
-  setMode(mode: Mode): void;
+  readonly resolver: (tool: string, next: () => FakeRenderers) => FakeRenderers | undefined;
+  rows(): CustomizeRow[];
+  pick(value: string): Promise<void>;
   dispose(): void;
 }
 
-/**
- * A whole session as Pi runs it: the bridge arms itself through `ctx.ui.setWidget`, the example
- * registers from its own `session_start`, and the conversation component returns ONE cached array,
- * so "the same card, restyled" is observable rather than asserted.
- */
-async function startWorld(tag: string, frame: readonly string[]): Promise<World> {
+async function startWorld(tag: string): Promise<World> {
   publishBridgeApi();
-  const tui = createFakeTranscriptTui({ lines: [...frame] });
-  let hostFrame: string[] = [...frame];
-  let cached: string[] | undefined;
-  tui.chat.render = (): string[] => (cached ??= [...hostFrame]);
-
+  const host = createFakeHost();
+  const resolvers: unknown[] = [];
   const sessionHandlers: SessionHandler[] = [];
-  const init = await loadExample(tag);
-  const dispose = init({
+  const pi: FakePi = {
+    // `gentle-pi` is present, so the bridge's `session_start` arms (S9/T12).
+    getCommands: () => [{ name: "gentle:customize" }],
     on(_event, handler) {
       sessionHandlers.push(handler);
     },
-    registerToolRenderer() {},
-  });
-  const ui = {
-    notify() {},
-    setWidget: (_key: string, factory: (tuiArg: unknown, theme: unknown) => unknown) =>
-      factory(tui, {}),
-  };
-
-  const bridgeSessions: BridgeSessionHandler[] = [];
-  const bridgeExtension: BridgeExtensionApi = {
-    on(_event, handler) {
-      bridgeSessions.push(handler);
-    },
     registerCommand() {},
-  };
-  gentleShellBridge(bridgeExtension);
-  for (const handler of bridgeSessions) handler({}, { hasUI: true, ui });
-  for (const handler of sessionHandlers) handler({}, { hasUI: true, ui });
-
-  const provider = snapshotProviders().find(
-    (registered) => registered.id === "bash-card-example.rendering",
-  );
-  assert.ok(provider !== undefined, "the example's toggle registered itself");
-
-  const press = (mode: Mode): void => {
-    const row: CustomizeRow | undefined = provider.rows({ theme: undefined, configHome }).find(
-      (candidate) => candidate.choice?.value === mode,
-    );
-    assert.ok(row?.action !== undefined, `the ${mode} row must have an action`);
-    row.action(inlineHelpers);
-  };
-
-  return {
-    tui,
-    hostLines: () => cached ?? [],
-    revealHostFrame: (lines) => {
-      hostFrame = [...lines];
-      cached = undefined;
+    registerToolRenderer(resolver) {
+      resolvers.push(resolver);
     },
-    setMode: press,
+  };
+
+  gentleShellBridge(pi as BridgeExtensionApi);
+  const dispose = (await loadExample(tag))(pi);
+  for (const handler of sessionHandlers) handler({}, { hasUI: true, ui: host.ui });
+
+  assert.equal(resolvers.length, 1, "one resolver, the bridge's");
+  const resolver = resolvers[0] as World["resolver"];
+  const rows = (): CustomizeRow[] => buildRows({ theme: undefined, configHome }).rows;
+  return {
+    resolver,
+    rows,
+    pick: async (value) => {
+      const row = rows().find(
+        (candidate) => candidate.choice?.setting === "bash" && candidate.choice?.value === value,
+      );
+      assert.ok(row?.action !== undefined, `the Cards line carries the value ${value}`);
+      await row.action(inlineHelpers);
+    },
     dispose,
   };
 }
 
-// ---------------------------------------------------------------------------------------------
-// C1, C5: the same toggle, both directions, on a card already drawn
-// ---------------------------------------------------------------------------------------------
+/** The host's neon top rule with `bash` in place of `$`, three rule columns fewer. */
+const DESIGNED_NEON_TOP =
+  "\u001b[90m╭\u001b[39m\u001b[90m─ \u001b[39m\u001b[95mbash npm test\u001b[39m" +
+  "\u001b[37m (timeout 30s)\u001b[39m\u001b[90m ──────────\u001b[39m \u001b[2mctrl+o to expand\u001b[39m" +
+  " \u001b[90m╮\u001b[39m";
 
-test("`tool` restyles a neon bash card already on screen, and `default` restores the host's array", async () => {
-  const frame = ["a line the host wrote", "", ...NEON_BASH_CARD];
-  const world = await startWorld("neon-minimal", frame);
+test("T10: the neon outline stays neon, and only the mark changes", async () => {
+  const world = await startWorld("neon-design");
+  const renderers = fakeRenderers(HOST_BASH_NEON_CALL, HOST_BASH_NEON_RESULT);
+  const resolved = world.resolver("bash", () => renderers);
+  assert.ok(resolved !== undefined);
+  const call = mount(resolved, "renderCall");
+  const result = mount(resolved, "renderResult");
 
-  const before = world.tui.chat.render(40);
+  assert.deepEqual(call.render(60), [...HOST_BASH_NEON_CALL], "the host's neon rule, unchanged");
 
-  assert.equal(before, world.hostLines(), "`default` is the host's own array, untouched");
-  assert.deepEqual([...world.hostLines()], [...frame], "and the host's rows are its own");
+  await world.pick("bash heading");
+  const output = call.render(60);
 
-  world.setMode("tool");
-  const restyled = world.tui.chat.render(40);
-
-  assert.deepEqual(
-    restyled,
-    ["a line the host wrote", "", "▸ bash", "▸"],
-    "the neon card already on screen carries the example's chrome, bodyless as it was",
-  );
-  assert.notEqual(restyled, before, "a new frame was produced, not the host's array mutated");
-  assert.deepEqual([...world.hostLines()], [...frame], "the host's own array was never rewritten");
-
-  world.setMode("default");
-  const restored = world.tui.chat.render(40);
-
-  assert.equal(restored, world.hostLines(), "`default` restores the host's identical array");
-  assert.deepEqual([...restored], [...frame]);
-
-  world.dispose();
-});
-
-// ---------------------------------------------------------------------------------------------
-// C2: the neon body is the body, the rails and the hint are frame
-// ---------------------------------------------------------------------------------------------
-
-test("a neon body row survives as the card's body, without its rails or padding", async () => {
-  const world = await startWorld("neon-body", ["prose", "", ...NEON_BASH_CARD_WITH_BODY]);
-
-  world.setMode("tool");
-  const output = world.tui.chat.render(40);
-
-  assert.deepEqual(output, ["prose", "", "▸ bash", "▸ ls -1", "▸"]);
-  world.dispose();
-});
-
-test("a right-aligned hint on the neon top rule is frame, never body text", async () => {
-  const world = await startWorld("neon-hint", ["prose", "", ...NEON_BASH_CARD_WITH_HINT]);
-
-  world.setMode("tool");
-  const output = world.tui.chat.render(40);
-
-  assert.deepEqual(output, ["prose", "", "▸ bash", "▸ ls -1", "▸"]);
-  world.dispose();
-});
-
-// ---------------------------------------------------------------------------------------------
-// C4: another neon card is the host's
-// ---------------------------------------------------------------------------------------------
-
-test("a `neon` read card beside the bash one is carried through byte-identically", async () => {
-  const world = await startWorld("neon-read", ["prose", "", ...NEON_CARD, "", ...NEON_BASH_CARD]);
-
-  world.setMode("tool");
-  const output = world.tui.chat.render(40);
-
-  assert.deepEqual(output.slice(2, 5), [...NEON_CARD], "the read card is not bash: untouched");
-  assert.deepEqual(output.slice(6), ["▸ bash", "▸"], "and the bash card is the example's");
-  world.dispose();
-});
-
-// ---------------------------------------------------------------------------------------------
-// C3: anything that is not a complete neon bash card is left alone
-// ---------------------------------------------------------------------------------------------
-
-test("an incomplete neon card, or a neon card that is not bash, is the same array in `tool` mode", async () => {
-  const tipOnly = [NEON_BASH_CARD[0]];
-  const world = await startWorld("neon-incomplete", ["prose", "", ...tipOnly]);
-  world.setMode("tool");
-
-  const unterminated = world.tui.chat.render(40);
-  assert.equal(unterminated, world.hostLines(), "an unterminated card is not a card");
-  assert.deepEqual([...unterminated], ["prose", "", ...tipOnly]);
-
-  const railLess = [
-    NEON_BASH_CARD[0],
-    "\u001b[90m│\u001b[39m \u001b[39mls -1\u001b[39m",
-  ];
-  world.revealHostFrame(railLess);
-  const broken = world.tui.chat.render(40);
-  assert.equal(broken, world.hostLines(), "a row without the side rail is not a body row");
-  assert.deepEqual([...broken], [...railLess]);
-
-  world.revealHostFrame([...NEON_CARD]);
-  const notBash = world.tui.chat.render(40);
-  assert.equal(notBash, world.hostLines(), "a complete neon card that is not bash is untouched");
-  assert.deepEqual([...notBash], [...NEON_CARD]);
-
-  world.dispose();
-});
-
-test("a neon top rule with no closing corner is not a frame, even when rows below look like one", async () => {
-  // The host always closes its top rule with `╮` (`cardTop`, `shell-card.ts:139-160`). A row that
-  // merely STARTS like a top rule is not a card, and the rows under it are not its body.
-  const noCorner =
-    "\u001b[90m╭\u001b[39m\u001b[90m─ \u001b[39m\u001b[95m✿ bash\u001b[39m" +
-    "\u001b[90m ─────────────────────────────\u001b[39m";
-  const frame = ["prose", "", noCorner, ...NEON_BASH_CARD_WITH_BODY.slice(1)];
-  const world = await startWorld("neon-no-corner", frame);
-
-  world.setMode("tool");
-  const output = world.tui.chat.render(40);
-
-  assert.equal(output, world.hostLines(), "an incomplete top rule is not a bash card");
-  assert.deepEqual([...output], [...frame], "every row is the host's, byte for byte");
-
-  world.dispose();
-});
-
-// ---------------------------------------------------------------------------------------------
-// C5: the shape is visible in `/bridge-status`
-// ---------------------------------------------------------------------------------------------
-
-test("the frame that restyled the neon card reports the `neon` shape", async () => {
-  const world = await startWorld("neon-telemetry", ["prose", "", ...NEON_BASH_CARD]);
-
-  world.setMode("tool");
-  world.tui.chat.render(40);
-
-  const line = formatStatus(collectStatus()).find((candidate) =>
-    candidate.startsWith("  - bash-card-example.bash-cards"),
-  );
+  assert.equal(output.length, 1, "the call component is still one rule");
+  assert.equal(output[0], DESIGNED_NEON_TOP, "`bash` where the host printed `$`");
   assert.equal(
-    line,
-    "  - bash-card-example.bash-cards (order 10): applied, 4 lines, 1 candidate, " +
-      "1 recognised, 1 rewritten, shapes: neon 1",
-    "recognition names the shape that matched, so the next report is data-driven",
+    stripAnsi(output[0]).length,
+    stripAnsi(HOST_BASH_NEON_CALL[0]).length,
+    "the rule is exactly as wide as the host made it",
   );
+  assert.ok(stripAnsi(output[0]).startsWith("╭─ bash npm test"), "the outline is still the outline");
+  assert.ok(stripAnsi(output[0]).endsWith(" ctrl+o to expand ╮"), "and the hint is still the hint");
+
+  const body = result.render(60);
+  assert.deepEqual(body, [...HOST_BASH_NEON_RESULT], "every body row is byte-identical");
+  assert.equal(
+    body[body.length - 1],
+    HOST_BASH_NEON_RESULT[HOST_BASH_NEON_RESULT.length - 1],
+    "the closing rule is the host's own",
+  );
+
+  world.dispose();
+});
+
+test("T10: the design leaves a body row that carries `$` inside text alone", async () => {
+  const world = await startWorld("neon-content-dollar");
+  const result = [
+    "\u001b[90m│\u001b[39m export PATH=$HOME/bin                              \u001b[90m│\u001b[39m",
+    HOST_BASH_NEON_RESULT[1],
+    HOST_BASH_NEON_RESULT[2],
+  ];
+  const renderers = fakeRenderers(HOST_BASH_NEON_CALL, result);
+  const resolved = world.resolver("bash", () => renderers);
+  assert.ok(resolved !== undefined);
+  const mounted = mount(resolved, "renderResult");
+
+  await world.pick("bash heading");
+
+  assert.deepEqual(mounted.render(60), result, "output is never rewritten as if it were the mark");
+  world.dispose();
+});
+
+test("T10: the host's own card restores the neon rule byte for byte", async () => {
+  const world = await startWorld("neon-native");
+  const renderers = fakeRenderers(HOST_BASH_NEON_CALL, HOST_BASH_NEON_RESULT);
+  const resolved = world.resolver("bash", () => renderers);
+  assert.ok(resolved !== undefined);
+  const call = mount(resolved, "renderCall");
+
+  await world.pick("bash heading");
+  assert.equal(call.render(60)[0], DESIGNED_NEON_TOP);
+
+  await world.pick("native");
+  assert.deepEqual(call.render(60), [...HOST_BASH_NEON_CALL]);
 
   world.dispose();
 });

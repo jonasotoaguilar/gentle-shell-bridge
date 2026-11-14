@@ -49,6 +49,41 @@ export const READ_CARD: readonly string[] = [
 ];
 
 /**
+ * The INSTALLED host's bash tool card, `float` style, width 60, split the way Pi builds it: the call
+ * component (`ToolCardTop`) and the result component (`ToolCardBody`), each through `floatRows`.
+ *
+ * The heading is the host's minimal spelling, not the literal word `bash`: `quiet-tools.ts:521-525`
+ * titles it with the bare command and the card glyph supplies the `$` prompt, while the timeout
+ * rides in the muted role on the same row. The right-aligned `ctrl+o to expand` hint is in the dim
+ * role. Widths are exact: `floatRows` paints a one-column margin on both sides of a 58-column inner
+ * frame, and `cardTop` spends `1 + 1 + 24 + 1 + 11 + 18 + 2 = 58` columns on the heading row.
+ */
+export const HOST_BASH_CALL: readonly string[] = [
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m\u001b[90m                                                         \u001b[39m\u001b[49m ",
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m\u001b[90m \u001b[39m\u001b[95m$ npm test\u001b[39m\u001b[37m (timeout 30s)\u001b[39m\u001b[90m            \u001b[39m \u001b[2mctrl+o to expand\u001b[39m \u001b[90m  \u001b[39m\u001b[49m ",
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m\u001b[90m                                                         \u001b[39m\u001b[49m ",
+];
+
+/** The result component of the same card: two body rows and the closing rule, width 60. */
+export const HOST_BASH_RESULT: readonly string[] = [
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m PASS 42 tests                                          \u001b[90m \u001b[39m\u001b[49m ",
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m duration 1.2s                                          \u001b[90m \u001b[39m\u001b[49m ",
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m\u001b[90m                                                         \u001b[39m\u001b[49m ",
+];
+
+/**
+ * A `read` tool call beside it, drawn by the same host code (glyph `≡`, `TOOL_GLYPH.read`). The
+ * heading is `≡ read src/api.ts`; nothing about it is bash, so a bash design must leave it alone.
+ */
+export const HOST_READ_CARD: readonly string[] = [
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m\u001b[90m                                                         \u001b[39m\u001b[49m ",
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m\u001b[90m \u001b[39m\u001b[95m≡ read src/api.ts\u001b[39m\u001b[90m                   \u001b[39m \u001b[2mctrl+o to expand\u001b[39m \u001b[90m  \u001b[39m\u001b[49m ",
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m\u001b[90m                                                         \u001b[39m\u001b[49m ",
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m \u001b[39mexport function bridgeApi() {\u001b[39m                          \u001b[90m \u001b[39m\u001b[49m ",
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m\u001b[90m                                                         \u001b[39m\u001b[49m ",
+];
+
+/**
  * One `float` card, width 40, with NO hint and NO body: padding, header, padding. Its opener and
  * closer rows are byte-identical to the padded card's, which is why detection must key on
  * position rather than on a row's shape alone.
@@ -83,35 +118,20 @@ export const NEON_CARD: readonly string[] = [
 ];
 
 /**
- * A `neon` bash card with NO hint and NO body: exactly two rows, the top rule and the closing rule.
- * This is the minimal card L5 reports (`Card style: neon`, minimal content, `Bash rendering: tool`),
- * generated the way `shell-card.ts` generates it — `cardTop` at width 40 with no hint (title
- * `✿ bash`, fill `40 - 6 - 5 = 29` rules) and `cardBottom` (38 rules between the corners).
+ * The same bash card in the host's `neon` outline, width 60, split the same way: the top rule is the
+ * call component, the body plus the closing rule the result component. `cardTop` at width 60 spends
+ * `1 + 2 + 24 + 1 + 13 + 18 + 1 = 60` columns, so the title and the right-aligned hint are the
+ * host's own frame — a design changes the mark and the fill, never the rule's shape.
  */
-export const NEON_BASH_CARD: readonly string[] = [
-  "\u001b[90m╭\u001b[39m\u001b[90m─ \u001b[39m\u001b[95m✿ bash\u001b[39m\u001b[90m ─────────────────────────────\u001b[39m\u001b[90m╮\u001b[39m",
-  "\u001b[90m╰\u001b[39m\u001b[90m──────────────────────────────────────╯\u001b[39m",
+export const HOST_BASH_NEON_CALL: readonly string[] = [
+  "\u001b[90m╭\u001b[39m\u001b[90m─ \u001b[39m\u001b[95m$ npm test\u001b[39m\u001b[37m (timeout 30s)\u001b[39m\u001b[90m ─────────────\u001b[39m \u001b[2mctrl+o to expand\u001b[39m \u001b[90m╮\u001b[39m",
 ];
 
-/**
- * The same `neon` bash card with one body row (`ls -1`), drawn by `cardLine` at width 40: the side
- * rail, one space, the text, `36 - 5 = 31` columns of padding, one space and the right rail.
- */
-export const NEON_BASH_CARD_WITH_BODY: readonly string[] = [
-  "\u001b[90m╭\u001b[39m\u001b[90m─ \u001b[39m\u001b[95m✿ bash\u001b[39m\u001b[90m ─────────────────────────────\u001b[39m\u001b[90m╮\u001b[39m",
-  "\u001b[90m│\u001b[39m \u001b[39mls -1\u001b[39m                                \u001b[90m│\u001b[39m",
-  "\u001b[90m╰\u001b[39m\u001b[90m──────────────────────────────────────╯\u001b[39m",
-];
-
-/**
- * A `neon` bash card with a right-aligned hint AND a body row. The hint sits in the dim role on the
- * top rule (`cardTop`'s `tail`), so it is frame: a transform that restyles the card must not read it
- * as content. Fill is `40 - 6 - 5 - 8 = 21` rules.
- */
-export const NEON_BASH_CARD_WITH_HINT: readonly string[] = [
-  "\u001b[90m╭\u001b[39m\u001b[90m─ \u001b[39m\u001b[95m✿ bash\u001b[39m\u001b[90m ─────────────────────\u001b[39m \u001b[2mctrl+o\u001b[39m \u001b[90m╮\u001b[39m",
-  "\u001b[90m│\u001b[39m \u001b[39mls -1\u001b[39m                                \u001b[90m│\u001b[39m",
-  "\u001b[90m╰\u001b[39m\u001b[90m──────────────────────────────────────╯\u001b[39m",
+/** The result component of the `neon` bash card: two body rows and the closing rule, width 60. */
+export const HOST_BASH_NEON_RESULT: readonly string[] = [
+  "\u001b[90m│\u001b[39m PASS 42 tests                                            \u001b[90m│\u001b[39m",
+  "\u001b[90m│\u001b[39m duration 1.2s                                            \u001b[90m│\u001b[39m",
+  "\u001b[90m╰\u001b[39m\u001b[90m──────────────────────────────────────────────────────────╯\u001b[39m",
 ];
 
 /**

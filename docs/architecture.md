@@ -710,12 +710,10 @@ from a row's `action()`. The bridge already wraps that component for card styles
 layer is a widening of a proven path rather than a new interception: one loop, one place to clip, one
 place to isolate a throw, and one place `/bridge-status` reads.
 
-That is also why the worked example retired its `pi.registerToolRenderer` resolver: a resolver draws
-its own component from the tool's arguments, while a transform can only restyle what the host
-already drew. Keeping both would have meant two different pictures of the same card — the transform
-for history, the resolver for new rows — which is exactly the asymmetry the feature exists to remove.
-The transform is the single owner there, and `test/example-transform.test.ts` proves that a card
-drawn before the switch and one drawn after it are byte-identical.
+A transform draws what the host already drew, so history and new rows are one picture. A tool
+DESIGN (§16) is the other half of the same idea: the bridge owns Pi's one renderer resolver, hands a
+design the rows the host's own card produced, and reads the live selection on every render pass, so
+a design chosen after a card was drawn repaints that card instead of waiting for the next one.
 
 ### Ordering, isolation and the width
 
@@ -751,11 +749,63 @@ it does reaches the frame:** the counts are collected in the call that already p
 none at all, loses counts and never a frame. `/bridge-status` prints the counts on the transform's
 own line, and the block is still absent entirely when no transform is registered.
 
-The worked example reports `float` (the host's frame), `plain` (its own frame) and `neon` (the
-host's outlined frame — the bridge's repaint is `float`-only, so a neon card reaches a transform
-untouched and the example's grammar is the only thing that can recognise it) as shape names, so the
+A transform that reads `float` cards and the host's `neon` outline reports those two names (the
+bridge's card-style repaint is `float`-only, so a neon card reaches a transform untouched), so the
 next step after a real-TUI report is data-driven: a `skipped` line with candidates and no
 recognition names a grammar gap, and recognition with `0 rewritten` names a setting.
+
+## 16. The tool-design bus (S4–S7)
+
+### One resolver, because Pi composes
+
+`pi.registerToolRenderer(resolver)` (`dist/core/extensions/types.d.ts:546`) is the sanctioned way to
+choose how a tool's card is drawn. Resolvers COMPOSE — Pi chains every extension's resolver
+(`dist/core/extensions/runner.js:550-553`) — so two plugins that each called it would each wrap the
+other's component and neither could see the other's choice. The bridge therefore registers exactly
+ONE resolver while arming (`installToolDesignResolver`, from the same `session_start` that arms the
+rows and the sidebar) and returns `next()`'s renderers untouched for a tool with no design.
+
+### The wrapper keeps the frame
+
+For a tool that HAS at least one design the resolver returns a copy of the host's renderers whose
+`renderCall`/`renderResult` wrap the component the host built. Every other member — `renderShell`
+included, which decides whether the host frames the card itself — is the host's own value. The
+wrapper's `render(width)` is:
+
+```
+hostComponent.render(width) → design.apply(rows, { width, tool, theme }) → rows
+```
+
+so the chrome (`neon`, `float`, whatever the host's Card style is) exists before the design sees
+anything. `invalidate()` and the optional mouse/key-release members are delegated, so the card keeps
+behaving exactly as the host's did — only the rows can differ.
+
+Wrapping even when nothing is selected is deliberate. Pi resolves the renderers ONCE per card, when
+it constructs it (`interactive-mode.js:1816-1818,2957-2961,3028-3032,3376-3380`), and re-renders that
+same component on every frame. A card built while the design was unselected must still be able to
+follow a later selection, so the wrapper reads the LIVE selection on every pass; with no selection
+(or a selection whose design was disposed) it returns the host's own array instance, byte for byte.
+
+### Per tool name, never per bash
+
+`src/tool-designs.ts` keeps one registry per tool name and nothing else: no known-tool list, no
+branch on a name. `src/tool-design-rows.ts` turns each tool with designs into one `Cards` line —
+the host's own card (`native`) plus one value per design, in registration order — and persists the
+selection per tool in the bridge's own `bridge-tool-designs` store, never in the host's config. The
+stored value is the design's `id`, so renaming a label never moves the bullet; a selection whose
+design was disposed resolves to `missing` and draws the host's card.
+
+Registration goes through the same attribution as every other surface (`src/plugin-lines.ts`,
+`PluginSurface` includes `"tool design"`), so a plugin that contributes ONLY designs still gets its
+one INTEGRATIONS line and the same accepted/rejected counts.
+
+### What it reports
+
+`/bridge-status` lists every tool with designs, its live selection, whether the wrapper has mounted
+a card for it (`wrapper mounted on 2 cards` — the answer to "is this card even wrapped?"), the
+conflicts a replacement or a duplicate label produced, and the designs that threw. Failures are
+deduplicated by (tool, id, message): a design that throws on every frame is one fact, not one line
+per frame.
 
 ## Limits
 

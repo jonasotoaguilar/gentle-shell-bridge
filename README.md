@@ -25,52 +25,56 @@ what is not proven is listed under **Limits**.
 
 ## Worked consumer
 
-[`examples/bash-card.ts`](examples/bash-card.ts) is a standalone Pi extension that covers every
-surface the package publishes: a `Cards` toggle through `registerRows` + `createStore`; a **`BASH CARD`
-sidebar section** through `registerSection`, toggled from **`Sections`** in `/gentle:customize` with
-no setting, row or store written by the plugin; a third card style through
-`registerCardStyle`, which puts `plain` next to the host's own values on the `Card style` line —
-`○ neon ○ float ○ plain`; and a transcript transform through `registerTransform`, which is what makes
-the `Bash rendering` toggle apply to the bash cards **already on screen**.
+[`examples/bash-card.ts`](examples/bash-card.ts) is a standalone Pi extension that demonstrates the
+two surfaces this feature exists for: a **tool design** through `registerToolDesign`, and a **`BASH
+CARD` sidebar section** through `registerSection`, toggled from **`Sections`** in
+`/gentle:customize` with no setting, row or store written by the plugin.
 
-The toggle is the single control. `default` leaves the host's bash card exactly as the host drew it;
-`tool` rewrites every bash card in the frame with the example's own chrome (`▸ bash`, its body, `▸`),
-whether it was drawn before the switch or after it — and in whichever frame the host drew it: the
-host's own `float` card, the host's `neon` outline, or the example's own `plain` one. The bridge's
-card-style repaint is `float`-only by design, so recognising the host's neon outline is the example's
-own job; a neon `read` card in the same frame stays byte-identical. That is the difference between a
-transform and
-`pi.registerToolRenderer`: the renderer resolves once, when a tool row is BUILT, so it could only ever
-restyle the next card; a transform runs on every frame the conversation component renders. The
-example registers no tool renderer at all — one owner, one look, past and new byte-identical.
+The design is the one the user asked for. gentle-shell draws a minimal bash card with just a `$`
+mark; the design heads that same card with the word `bash`, and nothing else:
 
-`plain` is a style for TOOL cards in general: selecting it repaints a `read` card exactly like a
-`bash` one, so one style applies across tools. Choosing `neon` or `float` returns to the host's
-rendering, because those values ARE the host rendering. The style and the transform are registered
-from the same guarded call as the other surfaces, through the API object, and only when
-the published object actually carries them — an older bridge keeps what it can and the example says
-nothing about a surface the bridge never promised.
+```
+before   ▎ $ npm test (timeout 30s)          ctrl+o to expand
+after    ▎ bash npm test (timeout 30s)       ctrl+o to expand
+```
 
-Copy the file into `~/.pi/agent/extensions/` and `/reload` to load it; the toggle defaults to
-`default`, so installing it changes no bash rendering until the row is switched, while the section
-is visible immediately (`defaultVisible: true`). It does not import the package and does not know
-where it is installed: the example and the bridge meet on `globalThis` behind one symbol (see
-**Reaching the bridge without importing it**). Global extensions load before configured packages,
-so the example does not assume the bridge got there first: it tries the symbol in its own
-`session_start` handler **and** listens for the bridge's `gentle-shell-bridge:ready` announcement,
-whichever comes first registering the same four surfaces (registration replaces by stable id, so
-the second one adds nothing). When neither has happened yet, the notice says which state the load
-is in — waiting for an announcement on a Pi with an event bus, or nothing to wait for on one
-without — instead of claiming the bridge is not installed.
+The card is still the host's card. A design receives the lines the HOST's own renderer produced and
+returns the lines to draw, so whatever `Card style` is selected survives by construction: with
+`neon` the card stays neon, with `float` it stays float. The example changes exactly two things on
+the heading row — the mark, and the fill it gives back so the row keeps the host's width — and every
+other byte of every other row (ANSI, padding, hint, rails, body) comes back identical:
+`test/example-bash-identity.test.ts` and `test/example-neon-transform.test.ts` assert that byte for
+byte in both styles.
 
-Both rows carry `preview()`, so `/gentle:customize` draws a literal sample of the card each
-mode produces instead of "Preview unavailable".
+The design is registered for the tool name `bash`, and the `Cards` line it produces appears with no
+extra wiring: `bash  ○ native  ○ bash heading`. The first value is the bridge's own `native` — the
+host's card, the default — so installing the file changes no rendering until the user picks the
+design. Choosing it repaints the bash cards already on screen, not only the next one, because the
+bridge reads the live selection on every render pass. A `read` card is never touched: designs are
+declared per tool name, and the bus has no bash-specific branch.
+
+The **`BASH CARD`** section is the second surface: the host draws the card and owns the collapse
+control, and the section body reports live state — which value is selected for `bash`, and whether
+this load's design reached the bridge (`resolver  registered` / `resolver  absent`). It needs no
+extra wiring either: registering the section is what adds its `Sections` toggle.
+
+Copy the file into `~/.pi/agent/extensions/` and `/reload` to load it; the `bash` line defaults to
+the host's own card, while the section is visible immediately (`defaultVisible: true`). It does not
+import the package and does not know where it is installed: the example and the bridge meet on
+`globalThis` behind one symbol (see **Reaching the bridge without importing it**). Global extensions
+load before configured packages, so the example does not assume the bridge got there first: it tries
+the symbol in its own `session_start` handler **and** listens for the bridge's
+`gentle-shell-bridge:ready` announcement, whichever comes first registering the same two surfaces
+(registration replaces by stable id, so the second one adds nothing). When neither has happened yet,
+the notice says which state the load is in — waiting for an announcement on a Pi with an event bus,
+or nothing to wait for on one without — instead of claiming the bridge is not installed.
 
 A bridge that publishes something else — another major version, a partial object, another library's
 payload at the symbol — is treated as absent, never as an error: the example never calls an object it
-cannot trust, registers nothing, and says so once through `ctx.ui.notify` (naming the announcement
-channel when this Pi has one, because then a later publication is still possible). The bridge reports
-the version skew once per process.
+cannot trust, registers nothing, and says so once through `ctx.ui.notify`. An object published before
+`registerToolDesign` existed keeps the section and says `resolver  absent`: the member is optional,
+and a surface the bridge never promised is never warned about. The bridge reports the version skew
+once per process.
 
 ## Install
 
@@ -216,6 +220,46 @@ Rules the row cannot break: `id` and `label` are unique among the line's values 
 line, `rowLabel` — or `label` made readable — for the row), the id never appears in a row, and the
 style only ever receives text and a width — it parses nothing. Full contract: [docs/contract.md](docs/contract.md) §12.
 
+## Quick start: a tool design
+
+A design decides how ONE tool's card is drawn, composed with the host's own card. You register it for
+a tool NAME; the bridge owns Pi's single `registerToolRenderer` resolver and hands your `apply` the
+rows the host itself drew:
+
+```ts
+import { registerToolDesign } from "gentle-shell-bridge";
+
+const dispose: () => void = registerToolDesign({
+  tool: "bash",                 // a tool name, present or future: no bash-specific branch anywhere
+  id: "loon.bash-heading",      // unique per tool; the stored value and the replacement key
+  label: "bash heading",        // the value on the Cards line: bash  ○ native  ○ bash heading
+  name: "Loon kit",             // optional: this plugin's INTEGRATIONS row
+  preview: () => ({ title: "Cards · bash heading", sample: "╭─ bash npm test ─╮" }),
+  apply(lines, ctx) {           // the HOST's rows in, the rows to draw out
+    // ctx is { width, tool, theme }; lines already carry the host's frame, ANSI and padding.
+    // Change only the mark the design is for, and keep every other row byte-identical:
+    return lines.map((line) => rewriteTheMarkOnly(line));
+  },
+});
+
+// The user picks `bash heading` on its Cards line; `native` (the host's own card) stays the default,
+// and the choice repaints cards already drawn. dispose() removes the value.
+```
+
+What the bridge guarantees:
+
+- **the frame is the host's**, so the card style is preserved by construction — `neon` stays neon,
+  `float` stays float, and every byte you do not change is returned as drawn;
+- the design's `Cards` line appears with no extra wiring, one line per tool, whose values are
+  `native` (the host's card, the default) and every design registered for that tool;
+- the selection is persisted per tool in the bridge's own store, and changing it repaints the cards
+  already on screen, not only the next one;
+- a design declared for a tool with no card yet applies as soon as Pi builds one, because Pi resolves
+  renderers when the card is constructed;
+- a design that throws loses only its own card, and the host's rows are drawn instead.
+
+Full contract: [docs/contract.md](docs/contract.md) §14.
+
 ## Quick start: a transcript transform
 
 A tool renderer resolves once, when a row is built. A transform runs on every frame the conversation
@@ -276,17 +320,28 @@ counts that same frame recorded — lines received, and what the transform repor
 
 ```text
 transforms: 1 registered
-  - bash-card-example.bash-cards (order 10): applied, 13 lines, 4 candidates, 1 recognised, 1 rewritten, shapes: float 1
+  - loon.bash-cards (order 10): applied, 13 lines, 4 candidates, 1 recognised, 1 rewritten, shapes: float 1
 ```
 
 Those counts are the instrument, not decoration: `skipped` with `0 candidates` means the grammar
 found nothing card-shaped, candidates with `0 recognised` means it found the shape and rejected it,
 and recognised with `0 rewritten` means a setting decided the output. A shape name is the transform's
-own word for a frame it knows — the example reports `float`, `neon` and `plain` — so the report names
-which grammar matched. They are counts only — no line
+own word for a frame it knows — a plugin that reads `float` and `neon` reports those names — so the
+report names which grammar matched. They are counts only — no line
 of the conversation is stored or displayed, a shape name must be a short lowercase name (anything
 else is dropped, never rewritten), and reporting cannot throw into the frame. Full contract:
 [docs/contract.md](docs/contract.md) §13.
+
+A tool design reports its own block, because "the design is selected but the card did not change" has
+exactly two useful answers: which design resolves now, and whether the one resolver has mounted a
+card at all.
+
+```text
+tool designs: 1 tools with designs
+  - bash: bash-card.bash-heading, wrapper mounted on 2 cards
+      bash-card.bash-heading "bash heading" — heads the card with bash instead of the host's $ mark
+tool design resolver: registered (1 registered)
+```
 
 ## Reaching the bridge without importing it
 
@@ -294,7 +349,7 @@ A plugin and the bridge are two independent projects, so a path to one checkout 
 They meet on `globalThis`, behind one stable symbol:
 
 - `Symbol.for("gentle-shell-bridge/api/v1")` holds
-  `{ schema: "gentle-shell-bridge/api", version: 1, VERSION, registerRows, registerSection, registerCardStyle, registerTransform, createStore }`.
+  `{ schema: "gentle-shell-bridge/api", version: 1, VERSION, registerRows, registerSection, registerCardStyle, registerTransform, registerToolDesign, requestRepaint, createStore }`.
   It is frozen, first-wins (a valid object already there is kept, not replaced) and never reset.
 
 **Register at `session_start` if the package loaded first, otherwise when it announces itself.**
@@ -393,7 +448,7 @@ and **none of** `→ ← ↑ ↓ : . | / \ [ ] ( ) { }`. No trailing qualifier �
 row lives and the values say what the choices are:
 
 ```text
-Bash rendering                  OK    a row name, in the host's own vocabulary
+Bash design                     OK    a row name, in the host's own vocabulary
 Bash card → Bash rendering      BAD   an arrow and a repeated qualifier: reads as a breadcrumb
 Bash card: rendering            BAD   a colon
 Section: bash-card.status       BAD   a prefix plus a dotted internal id
@@ -442,6 +497,11 @@ from the rows the last menu build actually received, so before any build the rep
 `duplicate settings: no build yet` instead of claiming there are none. Diagnostics never run a
 provider's `rows()`.
 
+The first answer is whether the required host package is there: `gentle-pi: present`, or
+`gentle-pi: missing — <reason>` followed by one `bridge: disabled` line, because this bridge needs
+`gentle-pi` (it feeds `/gentle:customize`) and arms nothing without it — no rows, sections, card
+styles, tool designs or wrappers, and no per-surface block claiming work it is not doing.
+
 It also answers the sidebar question: a `sections` table (id, title, the `row` label the menu
 reads plus a collision note when two labels wanted the same text, persisted visibility — and
 `collapsed` while the card is folded — and where the position comes from), the most recent frame's
@@ -487,9 +547,9 @@ host's `setStatus` is unavailable at all. The rules that line obeys:
   (`🧠 gentle-pi · ready` is the host's own fixture).
 - **Colour belongs to the host.** Every entry is painted with one shared role; a plugin chooses a
   glyph, never a colour.
-- **One plugin means one line.** Ten rows, three sections, a card style and a transform still paint
-  one row; later changes repaint the same key in place, and `session_shutdown` clears it with
-  `undefined`.
+- **One plugin means one line.** Ten rows, three sections, a card style, a transform and a tool
+  design still paint one row; later changes repaint the same key in place, and `session_shutdown`
+  clears it with `undefined`.
 - **The name is derived, or given once.** The bridge resolves the module that registered to its
   owning `package.json` and derives one to three plain words (`@acme/loon-kit` → `Loon kit`); any
   registration may pass `name`, and the first usable declaration fixes it for the plugin.

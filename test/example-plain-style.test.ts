@@ -94,7 +94,7 @@ import { resetStoreStateForTests } from "../src/store.ts";
 import { resetToolDesignsForTests, setToolDesignSelection, snapshotToolDesigns } from "../src/tool-designs.ts";
 import { resetToolDesignRowStateForTests } from "../src/tool-design-rows.ts";
 import { resetToolDesignWiringForTests } from "../src/tool-design-wiring.ts";
-import type { CustomizeRow, InlineHelpers, SectionRow } from "../src/types.ts";
+import type { CustomizeRow, InlineHelpers } from "../src/types.ts";
 import { setSectionCollapsed } from "../src/visibility.ts";
 import { createFakeEvents } from "./fake-events.ts";
 import { createFakeHost, type FakeHost } from "./fake-host.ts";
@@ -1231,8 +1231,11 @@ test("T30: two surfaces, one identity — a section line reports the style as re
   assert.ok(section !== undefined);
   const lines = section.lines({ theme: undefined, configHome });
   assert.equal(lines.includes("card style  registered"), true);
-  const selected = lines[0] as SectionRow;
-  assert.equal(selected.label, "selected");
+  assert.equal(
+    lines.some((line) => typeof line !== "string" && line.label === "selected"),
+    false,
+    "the live selection is the header meta only, never a duplicate body row",
+  );
   assert.equal(section.meta?.({ theme: undefined, configHome }), "native");
 });
 

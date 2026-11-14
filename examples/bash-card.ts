@@ -60,18 +60,21 @@
  *    gentle-shell's fullscreen sidebar, drawn by the host's own frame, and the same registration
  *    gives it a `Sections` toggle in `/gentle:customize` with no row, setting or store written by
  *    this file. It reports the LIVE design state: which value is selected for `bash` (the header's
- *    right-aligned meta and the `selected` row), whether this load's design reached the bus
- *    (`resolver  registered` / `resolver  absent`), and whether the design could recognise the
- *    frames it was handed (`unrecognised  none`, or the reason — also delivered once through
- *    `ctx.ui.notify`).
+ *    right-aligned meta, which is also the one surface that survives a collapse), whether this
+ *    load's design reached the bus (`resolver  registered` / `resolver  absent`), and whether the
+ *    design could recognise the frames it was handed (`unrecognised  none`, or the reason — also
+ *    delivered once through `ctx.ui.notify`).
  *
  *    The card behaves like a host card (N10–N14): clicking the HEADER folds the section (the bridge
- *    owns that, and persists it), the header's right-aligned meta is the live selection, and the rows
- *    are inert — the design is chosen on the `Cards` line, not from here, so neither row carries an
- *    `onClick` and the pointer cannot change anything.
+ *    owns that, and persists it) and the header's right-aligned meta is the live selection — printed
+ *    once, so the value never appears twice. The design is chosen on the `Cards` line, so the report
+ *    rows carry no `onClick`; the section's ONE action row is the demo below.
  *
- *    The section also shows the DEMO below: the toggle's stored value and the button's press count,
- *    as plain `demo toggle  on|off` and `demo presses  N` rows, so a plugin's own state is visible.
+ *    The section also shows the DEMO below: the toggle's stored value as a plain
+ *    `demo toggle  on|off` row, and a CLICKABLE `demo presses` action row whose right-aligned meta
+ *    is the button's press count. Clicking it increments the count once and repaints the section
+ *    (and hover paints it with the host's own role), so both the plugin's state and the pointer
+ *    handling are visible without a debug build.
  *
  * D. The demo category — through the bridge, as a `registerRows` registration. ONE provider (stable
  *    id, replaced in place on `/reload`) adds a category no host code had to know about — `Card
@@ -145,6 +148,8 @@ const SECTION_TITLE = "CARD BASH";
  * anyway, but a reader should copy a label, never the dotted id above.
  */
 const SECTION_ROW_LABEL = "card bash";
+/** The section's one action row; the button's count rides it as the right-aligned meta. */
+const SECTION_PRESSES_LABEL = "demo presses";
 
 /**
  * The DEMO category: one provider, one new `Card bash` category, exactly two rows as the user reads
@@ -1110,6 +1115,7 @@ function demoProvider(store: BridgeStoreLike | undefined, repaint: (() => void) 
 function bashDesignSection(
   store: BridgeStoreLike | undefined,
   demoStore: BridgeStoreLike | undefined,
+  repaint: (() => void) | undefined,
   designRegistered: () => boolean,
   cardStyleRegistered: () => boolean,
 ): SidebarSectionLike {
@@ -1121,18 +1127,10 @@ function bashDesignSection(
     // own `stats` / `agents` lines.
     rowLabel: SECTION_ROW_LABEL,
     // The right-aligned meta: the same value the `Cards` row writes, so the two surfaces cannot
-    // disagree. Read per frame, which is what makes it LIVE (N14).
+    // disagree. Read per frame, which is what makes it LIVE (N14). This is the ONE place the
+    // selection is printed; a second body row above the reports only repeated it.
     meta: () => selectedLabel(),
     lines: () => [
-      // A structured row (N10–N12): the icon, the label and the value in the dimmer secondary
-      // column. NO `onClick`: the design is chosen on its `Cards` line, and a row acts only when the
-      // plugin says it does, so the pointer cannot change anything here.
-      {
-        glyph: readSelection(store) === NATIVE_VALUE ? "○" : "◉",
-        label: "selected",
-        meta: selectedLabel(),
-        tone: readSelection(store) === NATIVE_VALUE ? "muted" : "accent",
-      },
       // A plain string, inert on purpose: it reports whether this load's design reached the bus.
       // The per-CARD mount count is the bridge's own diagnostic (`/bridge-status`), not a plugin's.
       `resolver  ${designRegistered() ? "registered" : "absent"}`,
@@ -1143,10 +1141,21 @@ function bashDesignSection(
       // is refused, then the reason, once — a card is re-rendered on every pass, so a count would say
       // nothing. The same reason is delivered once through `ctx.ui.notify` (`recordUnrecognised`).
       `unrecognised  ${unrecognisedText()}`,
-      // The demo's visible effect: the toggle's stored value and how many times its button ran.
-      // Plain string rows, rebuilt every frame, so the user sees the change without opening a file.
+      // The demo's toggle value: a plain string row, rebuilt every frame, so the user sees the change
+      // without opening a file.
       `demo toggle  ${readDemoToggle(demoStore)}`,
-      `demo presses  ${readDemoPresses(demoStore)}`,
+      // The section's ONE action row (N12): the count is the right-aligned meta, and a click
+      // increments the example's own store ONCE and asks the bridge to repaint the section. The
+      // bridge draws it like the host's own clickable rows — and paints it with the host's hover
+      // role — so the live pointer path can be verified without a debug build.
+      {
+        label: SECTION_PRESSES_LABEL,
+        meta: String(readDemoPresses(demoStore)),
+        onClick: () => {
+          writeDemo(demoStore, DEMO_PRESSES_KEY, readDemoPresses(demoStore) + 1);
+          requestSurfaceRepaint(repaint);
+        },
+      },
     ],
     // Visible on install: a section needs no extra step from the plugin or the user.
     defaultVisible: true,
@@ -1437,6 +1446,7 @@ export default function bashCardExample(pi: ExtensionApiLike): () => void {
         bashDesignSection(
           store,
           demoStore,
+          api.requestRepaint,
           () => state.designRegistered,
           () => state.cardStyleRegistered,
         ),

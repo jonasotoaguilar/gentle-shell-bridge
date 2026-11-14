@@ -45,9 +45,10 @@
  * own-property spread carries every field; a class instance whose methods live on the prototype
  * would need a prototype-preserving wrapper, which no host rail requires today.
  *
- * `render`/`cardGroups` delegate first and only then add. `handleMouse` delegates to the host's own
- * handler and consults our targets only where the host declined, so the original is never replaced.
- * `cardGroups` returns the host's own layout object untouched when nothing contributes.
+ * `render`/`cardGroups` delegate first and only then add. `handleMouse` delegates every event to the
+ * host's own handler, and answers a MOVE over a row this contributor rendered first — because the
+ * host's part handler never declines a move (see `mouseThrough`). Every other event reaches the
+ * contributor only where the host declined, so the host's own targets always win.
  *
  * ## Markers and idempotency
  *
@@ -171,9 +172,11 @@ export interface RailContributor {
    */
   digest?(): string;
   /**
-   * Our own mouse targets; consulted only after the host's own handler declined the event. The
-   * event's `y` is in the PART's frame, so `position.startRow` says which of those rows is the first
-   * one this contributor rendered. Absent when no frame has been rendered at that width yet.
+   * Our own mouse targets. A MOVE over a row this contributor rendered is offered here FIRST (the
+   * host's own part handler answers every move inside its frame, so waiting for it to decline would
+   * never reach us); every other event is offered here only after the host's own handler declined,
+   * so the host's own targets win wherever it has one. The event's `y` is in the PART's frame, so
+   * `position` says which of those rows are this contributor's.
    */
   handleMouse?(event: unknown, position?: RailContributionPosition): RailMouseResult | undefined;
 }
@@ -182,6 +185,13 @@ export interface RailContributor {
 export interface RailContributionPosition {
   /** The index of the contributor's first row in the part's own `render(width)` output. */
   startRow?: number;
+  /**
+   * One past the contributor's last row in the same frame (absent together with `startRow`). The
+   * wrapper uses it to recognise a MOVE over its own rows: the host's part handler answers every
+   * move inside its frame (`lib/native-pointer-region.ts:80-88`, `extensions/gentle-shell.ts:2732-2741`),
+   * so the rows the host did not draw are exactly `[startRow, endRow)`.
+   */
+  endRow?: number;
 }
 
 /**
@@ -741,7 +751,25 @@ function groupsThrough(
   };
 }
 
-/** Delegate mouse dispatch to the host's own handler; our targets answer only where it declined. */
+/**
+ * Delegate mouse dispatch to the host's own handler, and answer the rows we drew.
+ *
+ * A MOVE over our own rows goes to the contributor FIRST. The host's part handler is reachable
+ * proof of why: the real `footer` part is a `NativePointerRegion`
+ * (`extensions/gentle-shell.ts:2766`) whose `onHover`
+ * (`extensions/gentle-shell.ts:2732-2741`, reached from `lib/native-pointer-region.ts:80-88`) claims
+ * or clears the shared pointer and always returns `{ handled: true }` — the layout hands the part
+ * every inflated row of its frame (`lib/shell-sidebar-layout.ts:245-259`) and the part answers all of
+ * them. So "consult the host first and only then our targets" meant our appended rows never saw a
+ * move at all. Our rows are exactly `[startRow, endRow)`, which the host's own targets never cover
+ * (they live inside the host's own lines), so asking the contributor first for those rows cannot
+ * take the pointer from a host card.
+ *
+ * Every other event keeps the host first: its targets win wherever it has one, and it DECLINES a
+ * click or a press on a row it does not own (`extensions/gentle-shell.ts:2747-2757`), which is how a
+ * contributed row's click reaches us today. When the contributor declines a move over our rows the
+ * host still runs, so its own hover is cleared exactly as it would be for any row it does not own.
+ */
 function mouseThrough(
   key: string,
   original: Rail,
@@ -752,6 +780,12 @@ function mouseThrough(
   const hostHandler = original.handleMouse;
   if (sidebarState().generation !== generation) {
     return typeof hostHandler === "function" ? hostHandler.call(original, event) : undefined;
+  }
+
+  const position = contributionPosition(memo, event);
+  if (isMoveOverContribution(event, position)) {
+    const own = contributorMouse(key, event, position);
+    if (own !== undefined) return own;
   }
 
   if (typeof hostHandler === "function") {
@@ -766,14 +800,36 @@ function mouseThrough(
     if (result !== undefined) return result;
   }
 
+  return contributorMouse(key, event, position);
+}
+
+/** Ask the contributor, recording a throw instead of letting it reach the host's dispatch. */
+function contributorMouse(
+  key: string,
+  event: unknown,
+  position: RailContributionPosition,
+): RailMouseResult | undefined {
   const contributor = sidebarState().contributor;
   if (contributor?.handleMouse === undefined) return undefined;
   try {
-    return contributor.handleMouse(event, contributionPosition(memo, event));
+    return contributor.handleMouse(event, position);
   } catch (error) {
     recordFailure(key, "handleMouse", error);
     return undefined; // a broken target must not break the host's dispatch
   }
+}
+
+/** `true` when the event is a bare pointer move inside the rows this contributor rendered. */
+function isMoveOverContribution(
+  event: unknown,
+  position: RailContributionPosition,
+): boolean {
+  if (!isRecord(event) || event.type !== "move") return false;
+  const y = event.y;
+  if (typeof y !== "number" || !Number.isFinite(y)) return false;
+  const start = position.startRow;
+  const end = position.endRow;
+  return start !== undefined && end !== undefined && y >= start && y < end;
 }
 
 /**
@@ -793,7 +849,10 @@ function contributionPosition(
   if (typeof width !== "number") return {};
   const entry = memo.get(width);
   if (entry === undefined) return {};
-  return { startRow: entry.nativeLength };
+  return {
+    startRow: entry.nativeLength,
+    endRow: entry.nativeLength + (entry.contribution?.lines.length ?? 0),
+  };
 }
 
 /**

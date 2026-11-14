@@ -295,7 +295,7 @@ test("an older bridge object without registerToolDesign keeps the section and sa
   assert.deepEqual(calls, [], "a surface the bridge never promised is not warned about");
   assert.deepEqual(snapshotToolDesigns("bash"), [], "and no design is registered");
   assert.deepEqual(surfaceCounts(), [0, 1], "the section still registers");
-  assert.equal(sectionOf().lines(context())[1], "resolver  absent");
+  assert.equal(sectionOf().lines(context())[0], "resolver  absent", "the resolver report is now the first body row");
 
   dispose();
 });
@@ -325,22 +325,28 @@ test("the Cards line appears with no extra wiring, and the section reads the liv
   assert.equal(section.rowLabel, "card bash");
   assert.equal(section.meta?.(context()), "native", "the header count is the live selection");
 
-  const [selected, resolver] = section.lines(context());
-  const row = selected as SectionRow;
-  assert.equal(row.label, "selected");
-  assert.equal(row.meta, "native");
-  assert.equal(row.glyph, "○");
-  assert.equal(row.tone, "muted");
-  assert.equal(row.onClick, undefined, "the design is chosen in Cards, not from this row");
-  assert.equal(resolver, "resolver  registered", "a plain string row: the design is on the bus");
+  const lines = section.lines(context());
+  assert.equal(
+    lines.some((line) => typeof line !== "string" && line.label === "selected"),
+    false,
+    "the live selection rides the header meta, never a duplicate body row",
+  );
+  assert.equal(lines[0], "resolver  registered", "a plain string row: the design is on the bus");
+  const presses = lines.find(
+    (line): line is SectionRow => typeof line !== "string" && line.label === "demo presses",
+  );
+  assert.equal(presses?.onClick === undefined, false, "the section's one action row is the demo");
 
   setToolDesignSelection("bash", "bash-card.bash-heading");
 
   assert.equal(section.meta?.(context()), "bash heading", "the same section object reads the value");
-  const after = section.lines(context())[0] as SectionRow;
-  assert.equal(after.meta, "bash heading");
-  assert.equal(after.glyph, "◉");
-  assert.equal(after.tone, "accent");
+  assert.equal(
+    section
+      .lines(context())
+      .some((line) => typeof line !== "string" && line.label === "selected"),
+    false,
+    "and selecting a design still adds no second copy of the value",
+  );
 
   // The selection lives in the BRIDGE's own file, not in one of the example's.
   const stored = JSON.parse(
@@ -375,6 +381,14 @@ const sectionStrings = (): string[] =>
   sectionOf()
     .lines(context())
     .filter((line): line is string => typeof line === "string");
+
+/** The `demo presses` ACTION row's live meta, read through the real section. */
+const pressesMeta = (): string | undefined =>
+  sectionOf()
+    .lines(context())
+    .find(
+      (line): line is SectionRow => typeof line !== "string" && line.label === "demo presses",
+    )?.meta;
 
 const demoStoreValues = (): Record<string, unknown> => {
   const document = JSON.parse(
@@ -421,7 +435,11 @@ test("a plugin adds its OWN category with a toggle and a button, through one pro
 
   const section = sectionStrings();
   assert.equal(section.includes("demo toggle  off"), true, "the sidebar shows the live value");
-  assert.equal(section.includes("demo presses  0"), true);
+  assert.equal(
+    pressesMeta(),
+    "0",
+    "the clickable `demo presses` row carries the live count as its right-aligned meta",
+  );
 });
 
 test("choosing the demo toggle persists it and the sidebar shows the new value", async () => {
@@ -454,7 +472,7 @@ test("the demo button counts its presses in the section, through the example's s
   await button.action(inlineHelpers);
   await button.action(inlineHelpers);
 
-  assert.equal(sectionStrings().includes("demo presses  2"), true, "Enter increments the counter");
+  assert.equal(pressesMeta(), "2", "Enter increments the counter");
   assert.equal(demoStoreValues().demoPresses, 2, "and the count is persisted");
 });
 
@@ -480,7 +498,7 @@ test("a second registration replaces the demo provider instead of stacking a cat
   assert.equal(demoRows().length, 3, "one category, one toggle line, one button");
   const section = sectionStrings();
   assert.equal(section.includes("demo toggle  on"), true, "the stored toggle survives the reload");
-  assert.equal(section.includes("demo presses  1"), true, "and so does the press count");
+  assert.equal(pressesMeta(), "1", "and so does the press count");
 });
 
 test("an older bridge without registerRows keeps the design and section, and adds no category", async () => {

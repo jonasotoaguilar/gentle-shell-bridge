@@ -36,6 +36,7 @@ import {
 import { getTransformFrameOutcomes, type TransformFrameCounts } from "./transform-pipeline.ts";
 import { getPluginLineReport, type PluginLineReport } from "./plugin-lines.ts";
 import { getGentlePiPresence } from "./presence.ts";
+import { getToolDesignAdoptionDiagnostics } from "./tool-design-adoption.ts";
 import {
   TOOL_DESIGN_NATIVE,
   getToolDesignConflicts,
@@ -174,6 +175,12 @@ export interface StatusToolDesignTool {
   wrapper: "mounted" | "not mounted";
   /** Only when mounted: how many card components were built through the wrapper this process. */
   cards?: number;
+  /**
+   * How many card components were ADOPTED after construction this process (S10): the path that
+   * reaches a card when a resolver ahead of the bridge answered the tool without calling `next()`.
+   * Absent when no card was adopted, so a resolver-only session keeps its historical line.
+   */
+  adopted?: number;
 }
 
 /** The tool-design surface, reported only when the process has something to say (see below). */
@@ -538,6 +545,7 @@ function describeCardStyles(): StatusCardStyles | undefined {
 function describeToolDesigns(): StatusToolDesigns | undefined {
   const tools = toolNamesWithDesigns();
   const wiring = getToolDesignWiringDiagnostics();
+  const adoption = getToolDesignAdoptionDiagnostics();
   const conflicts = getToolDesignConflicts();
   const failures = getToolDesignFailures();
   if (tools.length === 0) return undefined;
@@ -545,6 +553,7 @@ function describeToolDesigns(): StatusToolDesigns | undefined {
     tools: tools.map((tool) => {
       const selection = resolveToolDesignSelection(tool);
       const wrapped = wiring.wrappedCards.find((entry) => entry.tool === tool);
+      const adopted = adoption.adoptedCards.find((entry) => entry.tool === tool);
       return {
         tool,
         designs: snapshotToolDesigns(tool).map((design) => ({
@@ -563,6 +572,7 @@ function describeToolDesigns(): StatusToolDesigns | undefined {
         ...(wrapped === undefined
           ? { wrapper: "not mounted" as const }
           : { wrapper: "mounted" as const, cards: wrapped.cards }),
+        ...(adopted === undefined ? {} : { adopted: adopted.cards }),
       };
     }),
     ...(wiring.lastOutcome === undefined
@@ -935,7 +945,14 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
         entry.wrapper === "mounted"
           ? `wrapper mounted on ${entry.cards} ${entry.cards === 1 ? "card" : "cards"}`
           : "wrapper not mounted";
-      lines.push(`  - ${entry.tool}: ${entry.selection}, ${wrapper}`);
+      // S10/T16: which path reached this tool's cards — the resolver (the bridge was ahead in the
+      // chain) or adoption (a resolver ahead of it answered without calling next()). Both may be
+      // non-zero: old cards adopted after construction, new cards resolved through the wrapper.
+      const adopted =
+        entry.adopted === undefined
+          ? ""
+          : `, adopted ${entry.adopted} ${entry.adopted === 1 ? "card" : "cards"}`;
+      lines.push(`  - ${entry.tool}: ${entry.selection}, ${wrapper}${adopted}`);
       for (const design of entry.designs) {
         const description = design.description === undefined ? "" : ` — ${design.description}`;
         lines.push(`      ${design.id} "${design.label}"${description}`);

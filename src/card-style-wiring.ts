@@ -66,6 +66,7 @@ import { transformCardLines } from "./card-style-transform.ts";
 import { getRepaintHost, recordSurfaceReach, type PaintSurface } from "./repaint.ts";
 import { isRecord } from "./rows.ts";
 import { rowOrigins } from "./row-origin.ts";
+import { adoptToolCards } from "./tool-design-adoption.ts";
 import { applyTransforms } from "./transform-pipeline.ts";
 
 /** The layout protocol symbol, exactly as `pi-tui` defines it (`layout-node.js:1`). */
@@ -317,6 +318,21 @@ function wrapComponent(component: Renderable, surface: PaintSurface): InstallCar
   const state = wiringState();
   const generation = state.generation;
   const wrapper = function (this: unknown, width: number): readonly string[] {
+    // S10: a tool design is adopted AFTER construction, on every conversation pass, BEFORE the host
+    // renders its children. That is the path that survives the resolver order: when an earlier
+    // resolver answers a tool without calling `next()`, the bridge's resolver never runs, but this
+    // wrapper already holds the container whose children are the cards. Adoption stamps its own
+    // marker, so the resolver path and this path never stack on one card. A disabled transform (an
+    // older generation) is a pass-through and adopts nothing, exactly as it transforms nothing.
+    if (surface === "conversation" && wiringState().generation === generation) {
+      try {
+        adoptToolCards(component);
+      } catch {
+        // `adoptToolCards` is written not to throw, and this is the last line of defence: a failure
+        // in the adoption path must never take the host's render loop down. The host's own rows are
+        // drawn exactly as they would have been.
+      }
+    }
     // The host's own render always runs first: a host failure stays the host's to report.
     const lines = current.call(component, width);
     if (wiringState().generation !== generation) return lines;

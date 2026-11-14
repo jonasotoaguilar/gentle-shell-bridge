@@ -218,7 +218,7 @@ One command, `/bridge-status`, reporting:
 | Card style surfaces | per surface (`conversation`, `rail`): whether the selected style reached it and what its last frame did there (`transformed N cards`, `pass-through (native / missing / no card)`, `failed` with the style and message); `not reached` carries the attach outcome (`no-layout-root`, `no-sidebar`, `no-rail`, …). Emitted with the card-style block |
 | Last repaint | the most recent repaint a bridge-owned write requested: the surfaces, the cause (`section "loon.music" → hidden`, `card style → loon.cute`) and `repainted` or `unavailable` with the reason. Omitted until such a write happens |
 | Row name rejections | every line name and row label the bridge refused (`rows`, `section` or `card style`), with the surface, the registration `id`, the field (`line name`/`row label`), the offending string VERBATIM and the rule it broke; omitted when nothing was rejected |
-| Tool designs | every tool with designs: the selection in force (`native` or a design id, `<id> (missing: not registered)` when it no longer exists), whether the one resolver has mounted a card for it (`wrapper mounted on 2 cards` / `wrapper not mounted`), each registered design's id, label and description; then the resolver's last outcome and how many designs it registered, and any conflicts or failures. Omitted when the process registered no design |
+| Tool designs | every tool with designs: the selection in force (`native` or a design id, `<id> (missing: not registered)` when it no longer exists), whether the one resolver has mounted a card for it (`wrapper mounted on 2 cards` / `wrapper not mounted`), how many cards the post-construction adoption pass reached for it (`adopted 1 card`, S10), each registered design's id, label and description; then the resolver's last outcome and how many designs it registered, and any conflicts or failures. Omitted when the process registered no design |
 | Plugin lines | one entry per plugin that registered (`rows`, `section`, `card style`, `transform` or `tool design`): its row name and whether it was `derived from package "@acme/loon-kit"` or an `explicit name`, the registrations `accepted` and `rejected`, any later `name conflict` that declared a different name for the same plugin (with the name kept), and whether the line is `set` or, with the reason, `no line set`. The header also says when the host's `setStatus` was unavailable. Omitted when no plugin registered so far |
 
 A menu that opened without the bridge's rows must show up here — armed-but-uncaptured,
@@ -1054,6 +1054,31 @@ keeps one registry per name, no name is special-cased, and a design declared for
 card yet applies as soon as Pi builds one: Pi resolves renderers when the card is CONSTRUCTED, and the
 bridge's one resolver is installed for the whole session.
 
+### When the bridge is not first in the chain (S10)
+
+Pi composes tool-renderer resolvers in **extension load order** (`runner.js:550-553`) and exposes no
+API to reorder them (`loader.js:298-302` only pushes). A resolver loaded before this package decides
+first, and one that answers WITHOUT calling `next()` hides the bridge's resolver completely. The
+host's own quiet bash resolver does exactly that while `Card content` is `minimal`
+(`extensions/quiet-tools.ts:910-914`), which is why a selected design could still leave every card
+drawing `$ …`.
+
+The design therefore has a second path: after Pi constructs a card, the bridge adopts it. The
+conversation component the bridge already wraps for card styles has Pi's `ToolExecutionComponent`s as
+children; each carries `toolName` and the `toolDefinition` Pi resolved for it. On every conversation
+render pass, before the host renders its children, the bridge replaces that card's `toolDefinition`
+with the same wrapper the resolver path uses (so the frame and the live-selection rule are
+identical), marks the wrapper so the two paths cannot stack, and invalidates the card so its stored
+renderer re-runs through the design. Cards Pi rebuilds (reload, `/tree`, session switch) are new
+children and are adopted on the next pass. A card of a tool with no designs is never touched; a card
+whose `toolDefinition` is missing or refuses the assignment is reported in `/bridge-status` and drawn
+by the host.
+
+This does not replace the resolver path: when the bridge IS ahead in the chain its resolver wraps the
+renderers at construction, and adoption then recognises the marker and adds nothing. `/bridge-status`
+counts both per tool (`wrapper mounted on N cards`, `adopted N cards`), so the next failure says
+which path ran.
+
 ### Selection, and the default
 
 The selected design per tool is a row in `/gentle:customize` → `Cards`: one line per tool, named from
@@ -1096,6 +1121,11 @@ wrappers, and why a plugin must never call `pi.registerToolRenderer` itself for 
 - **Sections join the rail after the native cards, never between them.** The host's status
   sections are unreachable (a closure), so "interleaved with `CHANGES`" is not offered; the
   limit is documented rather than faked.
+- **Resolver order is not ours.** Pi composes tool-renderer resolvers in extension load order and
+  offers no reordering API, so a resolver ahead of this package that does not call `next()` hides the
+  resolver path. Adoption after construction exists for exactly that case (S10); it depends on Pi's
+  `ToolExecutionComponent` carrying `toolName` and a writable `toolDefinition`, and reports the card
+  as an `(adoption)` failure instead of throwing when it does not.
 - The sidebar surface has been proven against a fake host that models the real rail shape
   (`test/fake-sidebar.ts`), not in a running TUI. In particular, whether the widget Pi hands
   the `tui` through renders nothing visible is **unconfirmed** (see

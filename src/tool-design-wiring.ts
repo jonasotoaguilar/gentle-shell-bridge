@@ -134,10 +134,29 @@ const WRAPPED_RENDERERS: ReadonlyArray<{ member: "renderCall" | "renderResult"; 
 ];
 
 /**
+ * Own property on a renderers object THIS package wrapped: the resolver path
+ * (`./tool-design-wiring.ts`) and the adoption path (`./tool-design-adoption.ts`) share it, so a card
+ * is wrapped exactly once no matter which path reached it first.
+ */
+export const TOOL_RENDERERS_WRAPPED: unique symbol = Symbol.for(
+  "gentle-shell-bridge.tool-designs.renderers-wrapped.v1",
+);
+
+/**
  * A copy of the host's renderers with the call/result renderer wrapped. Everything else — including
  * `renderShell`, which decides whether the host frames the card itself — is the host's own value.
+ *
+ * The copy is stamped with `TOOL_RENDERERS_WRAPPED`, and an already-stamped object comes back
+ * untouched: the resolver path and the adoption path cooperate instead of stacking two wrappers (and
+ * two design applications) around one card.
  */
-function wrapRenderers(renderers: ToolRenderersLike, tool: string): ToolRenderersLike {
+export function wrapRenderers(
+  renderers: ToolRenderersLike,
+  tool: string,
+  origin: ToolRendererWrapperOrigin = "resolver",
+): ToolRenderersLike {
+  // Already wrapped by the other path: wrapping again would apply the design twice.
+  if (Object.hasOwn(renderers, TOOL_RENDERERS_WRAPPED)) return renderers;
   const wrapCall = typeof renderers.renderCall === "function";
   const wrapResult = typeof renderers.renderResult === "function";
   // Nothing renderable to wrap: hand the host's own object back rather than a copy nobody needs.
@@ -153,8 +172,13 @@ function wrapRenderers(renderers: ToolRenderersLike, tool: string): ToolRenderer
     const hostRenderer = original as (
       ...args: Record<string, unknown>[]
     ) => Record<string, unknown>;
-    wrapped[member] = wrapRenderer(hostRenderer, tool, themeIndex);
+    wrapped[member] = wrapRenderer(hostRenderer, tool, themeIndex, origin);
   }
+  Object.defineProperty(wrapped, TOOL_RENDERERS_WRAPPED, {
+    value: true,
+    enumerable: false,
+    configurable: true,
+  });
   return wrapped;
 }
 
@@ -162,16 +186,24 @@ function wrapRenderers(renderers: ToolRenderersLike, tool: string): ToolRenderer
  * Wrap one host renderer: call it with the host's own arguments and `this` (a host failure stays the
  * host's), then wrap the component it returned. A non-component answer is returned untouched.
  */
+/**
+ * Which path produced a wrapper: the resolver (`./tool-design-wiring.ts`'s own registration) or the
+ * post-construction adoption pass (`./tool-design-adoption.ts`). Only the resolver path is counted
+ * as "the resolver wrapped this card", so `/bridge-status` can say which path reached what (T16).
+ */
+export type ToolRendererWrapperOrigin = "resolver" | "adoption";
+
 function wrapRenderer(
   original: (...args: Record<string, unknown>[]) => Record<string, unknown>,
   tool: string,
   themeIndex: number,
+  origin: ToolRendererWrapperOrigin,
 ): (...args: Record<string, unknown>[]) => Record<string, unknown> {
   return function (this: unknown, ...args: Record<string, unknown>[]): Record<string, unknown> {
     const component = original.apply(this, args);
     // The theme is the host's own opaque object at the documented index of this renderer's arguments
     // (`renderCall`: second, `renderResult`: third); the bridge only forwards it.
-    return wrapComponent(component, tool, args[themeIndex]);
+    return wrapComponent(component, tool, args[themeIndex], origin);
   };
 }
 
@@ -186,6 +218,7 @@ function wrapComponent(
   component: Record<string, unknown>,
   tool: string,
   theme: Record<string, unknown> | undefined,
+  origin: ToolRendererWrapperOrigin,
 ): Record<string, unknown> {
   if (!isRecord(component) || typeof component.render !== "function") return component;
   // SAFETY: a record whose own `render` is callable is exactly the Pi component contract
@@ -193,9 +226,10 @@ function wrapComponent(
   // object; it only calls `render`/`invalidate`/`handleMouse` and reads two booleans.
   const child = component as unknown as Renderable;
   const hostRender = child.render;
-  // A card is now mounted through the wrapper: `/bridge-status` can answer "is this card even
-  // wrapped?" per tool instead of leaving the user to attach a debugger.
-  recordWrappedCard(tool);
+  // A card is now mounted through the resolver's wrapper: `/bridge-status` can answer "is this card
+  // even wrapped?" per tool instead of leaving the user to attach a debugger. The adoption path
+  // records its own count (`./tool-design-adoption.ts`), so the two numbers stay separate.
+  if (origin === "resolver") recordWrappedCard(tool);
 
   const wrapper = {
     render(width: number): string[] {

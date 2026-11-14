@@ -786,6 +786,34 @@ same component on every frame. A card built while the design was unselected must
 follow a later selection, so the wrapper reads the LIVE selection on every pass; with no selection
 (or a selection whose design was disposed) it returns the host's own array instance, byte for byte.
 
+### When an earlier resolver answers first (S10)
+
+Pi composes resolvers in extension load order (`runner.js:550-553`); `loader.js:298-302` only pushes,
+so there is no reordering API. A resolver loaded before this package that answers WITHOUT calling
+`next()` — the host's quiet bash resolver while `Card content` is `minimal`
+(`extensions/quiet-tools.ts:910-914`) — hides `toolDesignResolver` completely. The user's install has
+gentle-pi first and this bridge last, which is why a resolver-only design never reached a card
+(L3/E6).
+
+`src/tool-design-adoption.ts` is the second path. The conversation wrapper from
+`src/card-style-wiring.ts` already holds Pi's chat container, whose children are
+`ToolExecutionComponent`s; each carries `toolName` and the `toolDefinition` Pi resolved
+(`tool-execution.js`, constructor near line 37-45). On every conversation render, BEFORE the host
+renders its children, the adoption pass looks at each child: a string `toolName` with at least one
+registered design is adopted by replacing its `toolDefinition` with the same `wrapRenderers` wrapper
+the resolver path uses, then invalidating the card so its stored renderer re-runs through the design
+(`invalidate()` → `updateDisplay()`, `tool-execution.js:64-68,164-175`). `wrapRenderers` stamps every
+wrapper with `TOOL_RENDERERS_WRAPPED`, and both paths check it, so a card the resolver already
+wrapped is reported `already` and never wrapped twice. New cards (`/tree`, reload, session switch)
+are new children and are adopted on the next pass, and because the wrapper reads the live selection
+on every frame, `native` and a later selection both apply to the same already-constructed card (S2).
+
+Every absence is reported: a child that is not a card, a `toolName` that is not a string and a tool
+with no designs are ignored; a missing, non-object, unwrappable or unwritable `toolDefinition` is
+recorded as an `(adoption)` failure and the host's own card is drawn; a throwing `invalidate` is
+recorded once and the wrapped definition still applies on the next frame. The pass never throws into
+Pi's render loop.
+
 ### Per tool name, never per bash
 
 `src/tool-designs.ts` keeps one registry per tool name and nothing else: no known-tool list, no
@@ -802,10 +830,11 @@ one INTEGRATIONS line and the same accepted/rejected counts.
 ### What it reports
 
 `/bridge-status` lists every tool with designs, its live selection, whether the wrapper has mounted
-a card for it (`wrapper mounted on 2 cards` — the answer to "is this card even wrapped?"), the
-conflicts a replacement or a duplicate label produced, and the designs that threw. Failures are
-deduplicated by (tool, id, message): a design that throws on every frame is one fact, not one line
-per frame.
+a card for it (`wrapper mounted on 2 cards` — the answer to "is this card even wrapped?" via the
+resolver), how many cards the adoption pass reached (`adopted 1 card` — the answer when a resolver
+ahead of the bridge answered first), the conflicts a replacement or a duplicate label produced, and
+the designs that threw. Failures are deduplicated by (tool, id, message): a design that throws on
+every frame is one fact, not one line per frame.
 
 ## Limits
 

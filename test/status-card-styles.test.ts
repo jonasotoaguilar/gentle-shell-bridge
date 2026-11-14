@@ -137,6 +137,8 @@ test("the block reports mode, styles in order, selection, last frame and the dow
     '  - loon.broken "broken" (registration order)',
     'card style selection: loon.cute "cute"',
     "card style frame: transformed 1 card",
+    "card style surface conversation: reached (chat wrapped), last frame transformed 1 card",
+    "card style surface rail: not reached (not attempted), last frame none",
     "card style wiring: chat wrapped",
     "card style failures: 1",
     "  - loon.broken: top exploded",
@@ -159,6 +161,8 @@ test("a stale selection is reported as missing, never rendered (S12)", () => {
     "card styles: separate, 0 registered",
     "card style selection: loon.cute (missing: not registered)",
     "card style frame: pass-through (missing: a disposed style)",
+    "card style surface conversation: reached (chat wrapped), last frame pass-through (missing: a disposed style)",
+    "card style surface rail: not reached (not attempted), last frame none",
     "card style wiring: chat wrapped",
     "card style note: a downstream post-processor can strip or override this frame; " +
       "the bridge cannot prevent it.",

@@ -29,6 +29,16 @@
 /** The host's own state key: shared across copies, and the seam the bridge intercepts. */
 export const SIDEBAR_STATE_KEY: symbol = Symbol.for("gentle-pi.experimental-sidebar.state");
 
+/**
+ * The host's terminal-side frame cache (`lib/shell-sidebar-layout.ts:97-107`). `invalidateSidebar(tui)`
+ * bumps `tui.terminal[CACHE].revision`; the layout's memo re-prepares the rail whenever the revision
+ * it stored no longer matches, which is the only way a part-owner's write reaches the screen.
+ */
+export const SIDEBAR_CACHE_KEY: symbol = Symbol.for("gentle-pi.experimental-sidebar.cache");
+
+/** The layout protocol symbol, exactly as `pi-tui` defines it (`layout-node.js:1`). */
+export const LAYOUT_NODE: symbol = Symbol.for("@earendil-works/pi-tui/layout-node");
+
 /** The rail keys the layout actually paints, in paint order (`shell-sidebar-layout.ts:344`). */
 const RAIL_KEYS = ["todo", "jobs", "agents", "footer"] as const;
 
@@ -224,6 +234,134 @@ export function resetSidebar(): void {
   const existing = terminal[SIDEBAR_STATE_KEY];
   if (isFakeState(existing)) existing.parts.clear();
   delete terminal[SIDEBAR_STATE_KEY];
+  delete terminal[SIDEBAR_CACHE_KEY];
+}
+
+/** What the host's memo compares against after a part-owner write (`invalidateSidebar`). */
+export function cacheRevision(): number {
+  const cache = terminal[SIDEBAR_CACHE_KEY];
+  return isCache(cache) ? cache.revision : 0;
+}
+
+function isCache(value: unknown): value is { revision: number } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { revision?: unknown }).revision === "number"
+  );
+}
+
+/**
+ * The two section cards a transparent float rail paints, at width 40.
+ *
+ * Both were produced by running gentle-shell's own `lib/shell-card.ts` (read-only) exactly the way
+ * `sectionCardRows` does (`lib/shell-sidebar-layout.ts:36-47`): `floatRows` over `cardTop`, one
+ * `cardLine` per body row, and `cardBottom`, with the host's role→SGR mapping (`border`→90,
+ * `accent`→95, `hint`→dim, background `\u001b[48;5;236m`). They are the bytes the rail really
+ * frames, so a test that restyles them proves the repaint against host output, not against a shape
+ * this package invented.
+ *
+ * `RAIL_HOST_CARD` is a host section (`STATS`, two body rows); `RAIL_BRIDGE_CARD` is a
+ * bridge-contributed one (`Music`, two body rows). Both carry the header as a content row directly
+ * after the opener — the layout puts the title and the body in ONE card, so no separator row appears.
+ */
+export const RAIL_HOST_CARD: readonly string[] = [
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m\u001b[90m                                     \u001b[39m\u001b[49m ",
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m\u001b[90m \u001b[39m\u001b[95m▾ STATS\u001b[39m\u001b[90m                           \u001b[39m\u001b[90m  \u001b[39m\u001b[49m ",
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m native row 1                       \u001b[90m \u001b[39m\u001b[49m ",
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m native row 2                       \u001b[90m \u001b[39m\u001b[49m ",
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m\u001b[90m                                     \u001b[39m\u001b[49m ",
+];
+
+export const RAIL_BRIDGE_CARD: readonly string[] = [
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m\u001b[90m                                     \u001b[39m\u001b[49m ",
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m\u001b[90m \u001b[39m\u001b[95m▾ Music\u001b[39m\u001b[90m                           \u001b[39m\u001b[90m  \u001b[39m\u001b[49m ",
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m track one                          \u001b[90m \u001b[39m\u001b[49m ",
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m track two                          \u001b[90m \u001b[39m\u001b[49m ",
+  " \u001b[48;5;236m\u001b[90m▎\u001b[39m\u001b[90m                                     \u001b[39m\u001b[49m ",
+];
+
+/** What `LAYOUT_NODE()` returns for a stack / scroll view, narrowed to what a walk reads. */
+export interface FakeLayoutNode {
+  type: string;
+  entries?: ReadonlyArray<{ component?: unknown }>;
+  component?: unknown;
+}
+
+export interface FakeRailTuiOptions {
+  /** What the host's rail component renders: every section card of the whole rail. */
+  rail: Rail;
+  /** The rail's content width, as `ScrollView.getContentWidth` reports it. */
+  contentWidth?: number;
+}
+
+/**
+ * A `tui` whose layout tree is the host's fullscreen rail, reachable the way the host mounts it.
+ *
+ * The shape is copied from `lib/shell-sidebar-layout.ts:486-499`: the layout root is a `vstack`
+ * holding an `hstack` host whose entries are `[conversation, rail ScrollView]`, and the rail
+ * `ScrollView` reports its child (the rail component that renders the FRAMED rows) through the layout
+ * protocol. `renderRail` is therefore what the layout asks for one frame, and `requestRenderCount`
+ * is what a part-owner's repaint must produce (`extensions/gentle-agents.ts:2147-2148`).
+ */
+export interface FakeRailTui {
+  mode: "fullscreen";
+  terminal: FakeTerminal;
+  layoutRoot: { [LAYOUT_NODE](): FakeLayoutNode };
+  /** Render the rail the way the layout does, and return the component's own array. */
+  renderRail(): string[];
+  /** Every width the rail component was asked to render at. */
+  railWidths: number[];
+  requestRender(): void;
+  requestRenderCount(): number;
+  cacheRevision(): number;
+}
+
+export function createRailTui(options: FakeRailTuiOptions): FakeRailTui {
+  const contentWidth = options.contentWidth ?? DEFAULT_WIDTH;
+  const railWidths: number[] = [];
+  let requestRenders = 0;
+
+  const rail: Rail = {
+    ...options.rail,
+    render: (width: number) => {
+      railWidths.push(width);
+      return options.rail.render(width);
+    },
+  };
+  const left = {
+    render: () => [] as string[],
+    [LAYOUT_NODE]: (): FakeLayoutNode => ({ type: "vstack", entries: [] }),
+  };
+  const scroll = {
+    getContentWidth: () => contentWidth,
+    render: () => rail.render(contentWidth),
+    [LAYOUT_NODE]: (): FakeLayoutNode => ({ type: "scroll", component: rail }),
+  };
+  const hstackHost = {
+    render: () => [] as string[],
+    [LAYOUT_NODE]: (): FakeLayoutNode => ({
+      type: "hstack",
+      entries: [{ component: left }, { component: scroll }],
+    }),
+  };
+  const layoutRoot = {
+    [LAYOUT_NODE]: (): FakeLayoutNode => ({ type: "vstack", entries: [{ component: hstackHost }] }),
+  };
+
+  return {
+    mode: "fullscreen",
+    terminal,
+    layoutRoot,
+    renderRail: () => rail.render(contentWidth),
+    railWidths,
+    requestRender: () => {
+      requestRenders += 1;
+      // The host's own render loop asks the layout for a frame; nothing here schedules a timer.
+    },
+    requestRenderCount: () => requestRenders,
+    cacheRevision: () => cacheRevision(),
+  };
 }
 
 /**

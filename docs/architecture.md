@@ -494,6 +494,38 @@ marker and bumps the generation, so a wrapper foreign code retained becomes a pa
 than an injector. The same rule governs a retained *style*: a disposed style resolves to `missing`,
 and `missing` is the pass-through.
 
+### The rail: a second surface, one transform
+
+The rail frames its own cards — `sectionCardRows`/`headerParts` over `floatRows`/`cardTop`/
+`cardLine` (`lib/shell-sidebar-layout.ts:36-47`), host sections and contributed sections through the
+same call — and it frames them AFTER a part hands over its rows. A part therefore cannot restyle its
+own card, and wrapping the contributed part would only ever reach the rows it contributed. The
+reachable seam is one level up: the framed rows are the child of the rail's `ScrollView` in the
+layout tree (`lib/shell-sidebar-layout.ts:486-499`; `ScrollView[LAYOUT_NODE]()` reports its child,
+`pi-tui/dist/components/scroll-view.js:191-192`), so wrapping that component's `render(width)` sees
+every rail frame the host produced — its own sections and ours, in one place.
+
+`src/card-style-wiring.ts` walks that tree by SHAPE (the root's layout node → the `hstack` → its
+second entry → that scroll view's child), never by index into the root, and requires the candidate to
+expose both a layout protocol and a `render`. The wrapper is the conversation's wrapper with one
+difference: the rail runs ONLY the card-style repaint. The registered transcript transforms are the
+conversation's extension point (their contract is "the conversation's rows"); handing them the rail
+would let a plugin corrupt a surface it never claimed. Every absence is a reported outcome
+(`no-layout-root`, `no-sidebar`, `no-rail`), recorded per surface for `/bridge-status`.
+
+### A write repaints its surface
+
+The rail and the conversation both display bridge-owned state: a section's visibility, and the
+card-style selection. Persisting is not painting — gentle-shell re-renders a rail part only when its
+digest changes or its layout revision moves (`lib/shell-sidebar-layout.ts:310-350`), so a
+bridge-owned row used to change the store and leave the screen alone until something else repainted
+it. `src/repaint.ts` performs the two steps gentle-shell's own part owners perform
+(`lib/shell-sidebar-layout.ts:105-107`, `extensions/gentle-agents.ts:2147-2148`), synchronously,
+inside the row's `action()`: bump `tui.terminal[CACHE].revision` (the documented
+`invalidateSidebar(tui)` effect, reached through the host's published symbol because this package
+cannot import the host's modules) and call `tui.requestRender()`. No timer, no poll, no retry, and no
+frame when the write changed nothing. An unavailable path is recorded and reported, not swallowed.
+
 ### The conflict that cannot be won
 
 A post-processor downstream of this bridge can wrap the chat container's `render` and strip any box

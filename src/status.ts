@@ -26,6 +26,13 @@ import { resolveCardStyleSelection } from "./card-styles.ts";
 import { getCaptureDiagnostics, type CaptureOutcome } from "./capture.ts";
 import { getHookDiagnostics } from "./hook.ts";
 import { snapshotNotices, type NoticeLevel } from "./notices.ts";
+import {
+  PAINT_SURFACES,
+  getRepaintDiagnostics,
+  getSurfaceReach,
+  type PaintSurface,
+  type RepaintTrigger,
+} from "./repaint.ts";
 import { getTransformFrameOutcomes } from "./transform-pipeline.ts";
 import { getLastRowBuild, type RowBuildRecord } from "./rows.ts";
 import {
@@ -110,14 +117,30 @@ export type StatusCardStyleSelection =
   | { kind: "style"; id: string; label: string }
   | { kind: "missing"; id: string };
 
+/** One surface the card style paints, with what it last did there (R4). */
+export interface StatusSurfaceEntry {
+  surface: PaintSurface;
+  /** Whether the transform was attached to this surface. */
+  reached: boolean;
+  /** Only when it was not: the attach outcome (`no-layout-root`, `no-sidebar`, `no-rail`, ...). */
+  reason?: string;
+  /** The last frame this surface painted through the transform; `none` before it ran once. */
+  frame: CardStyleFrameOutcome | { kind: "none" };
+}
+
 /** The card-style surface, reported only when there is something to say (see `collectStatus`). */
 export interface StatusCardStyles {
   /** `extended`: the host's own `Card style` line was found and grown. `separate`: the fallback. */
   mode: CardStyleRowMode;
   styles: StatusCardStyleEntry[];
   selection: StatusCardStyleSelection;
-  /** The most recent frame's outcome; `none` before the transform ever ran. */
+  /** The most recent CONVERSATION frame's outcome; `none` before the transform ever ran. */
   frame: CardStyleFrameOutcome | { kind: "none" };
+  /**
+   * Per-surface reach and last frame (R4): the conversation and the rail are separate surfaces that
+   * share one transform, so "the style is selected but the sidebar looks untouched" is answerable.
+   */
+  surfaces: StatusSurfaceEntry[];
   wiring: CardStyleWiringDiagnostics;
   failures: CardStyleTransformFailure[];
 }
@@ -152,6 +175,12 @@ export interface StatusSnapshot {
   sidebarFailures?: SidebarFailure[];
   /** Absent when the sidebar backend was never installed (reported as "not armed"). */
   sidebar?: StatusSidebarEntry;
+  /**
+   * The last repaint a bridge-owned write requested (R3/R4): the surfaces, the cause and whether the
+   * host was actually asked for a frame. Absent until such a write happens, so a session that never
+   * toggled anything keeps its historical output byte for byte.
+   */
+  lastRepaint?: RepaintTrigger;
   /**
    * Every buffered bridge notice, delivered or still pending. Absent when there is none, so the
    * report for a clean session keeps its historical output exactly.
@@ -265,6 +294,8 @@ export function collectStatus(): StatusSnapshot {
   }
   const cardStyles = describeCardStyles();
   if (cardStyles !== undefined) snapshot.cardStyles = cardStyles;
+  const lastRepaint = describeLastRepaint();
+  if (lastRepaint !== undefined) snapshot.lastRepaint = lastRepaint;
   // The transform pipeline, in the order the wrapper runs it. Nothing here calls a transform: the
   // outcomes are the ones the last frame already recorded.
   const transforms = describeTransforms();
@@ -315,6 +346,16 @@ function describeCardStyles(): StatusCardStyles | undefined {
           ? { kind: "missing", id: selection.id }
           : { kind: "style", id: selection.style.id, label: selection.style.label },
     frame: frame === undefined ? { kind: "none" } : frame,
+    surfaces: PAINT_SURFACES.map((surface) => {
+      const reach = getSurfaceReach(surface);
+      const outcome = getCardStyleLastOutcome(surface);
+      return {
+        surface,
+        reached: reach?.reached === true,
+        ...(reach?.reason === undefined ? {} : { reason: reach.reason }),
+        frame: outcome === undefined ? { kind: "none" as const } : outcome,
+      };
+    }),
     wiring,
     failures,
   };
@@ -345,6 +386,17 @@ function describeTransforms(): StatusTransformEntry[] | undefined {
   });
 }
 
+/**
+ * The last repaint a bridge-owned write requested (R3/R4), or `undefined` before one happened.
+ *
+ * The guard is the same discipline as every other block: a session that never toggled anything keeps
+ * its historical report exactly. A trigger whose outcome is `unavailable` is the interesting case —
+ * the write landed and the screen did not move — so its reason is reported verbatim.
+ */
+function describeLastRepaint(): RepaintTrigger | undefined {
+  return getRepaintDiagnostics().lastTrigger;
+}
+
 function formatCardSelection(selection: StatusCardStyleSelection): string {
   switch (selection.kind) {
     case "native":
@@ -372,10 +424,24 @@ function formatCardFrame(frame: StatusCardStyles["frame"]): string {
 }
 
 function formatCardWiring(wiring: CardStyleWiringDiagnostics): string {
-  if (wiring.wrapped > 0) return "chat wrapped";
+  // Which COMPONENTS carry the transform. The rail is named only once it was wrapped — its failures
+  // have their own per-surface line below (`formatCardSurface`), so nothing is hidden by keeping this
+  // line about the conversation's state, which is what it has always answered.
+  const parts: string[] = [];
+  if ((wiring.railWrapped ?? 0) > 0) parts.push("rail wrapped");
+  if (wiring.wrapped > 0) parts.push("chat wrapped");
+  if (parts.length > 0) return parts.join(", ");
   if (wiring.lastOutcome === undefined) return "not armed";
   const reason = wiring.lastReason === undefined ? "" : `: ${wiring.lastReason}`;
   return `not wrapped (${wiring.lastOutcome}${reason})`;
+}
+
+/** One surface's line: whether the style reached it, and what its last frame did there (R4). */
+function formatCardSurface(entry: StatusSurfaceEntry): string {
+  const reached = entry.reached
+    ? `reached (${entry.surface === "conversation" ? "chat wrapped" : "rail wrapped"})`
+    : `not reached (${entry.reason ?? "not attempted"})`;
+  return `card style surface ${entry.surface}: ${reached}, last frame ${formatCardFrame(entry.frame)}`;
 }
 
 /**
@@ -584,6 +650,7 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
     }
     lines.push(`card style selection: ${formatCardSelection(card.selection)}`);
     lines.push(`card style frame: ${formatCardFrame(card.frame)}`);
+    for (const surface of card.surfaces) lines.push(formatCardSurface(surface));
     lines.push(`card style wiring: ${formatCardWiring(card.wiring)}`);
     if (card.failures.length > 0) {
       lines.push(`card style failures: ${card.failures.length}`);
@@ -598,6 +665,13 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
       "card style note: a downstream post-processor can strip or override this frame; " +
         "the bridge cannot prevent it.",
     );
+  }
+
+  if (snapshot.lastRepaint !== undefined) {
+    const trigger = snapshot.lastRepaint;
+    const outcome =
+      trigger.outcome === "repainted" ? "repainted" : `unavailable: ${trigger.reason ?? "no reason recorded"}`;
+    lines.push(`last repaint: ${trigger.surfaces.join(", ")} for ${trigger.cause} (${outcome})`);
   }
 
   if (snapshot.transforms !== undefined) {

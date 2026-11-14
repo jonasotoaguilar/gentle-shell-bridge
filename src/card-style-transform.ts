@@ -66,6 +66,7 @@
  */
 
 import { resolveCardStyleSelection, type CardStyleSelection } from "./card-styles.ts";
+import type { PaintSurface } from "./repaint.ts";
 import { isRecord } from "./rows.ts";
 import type { CardStyleRegistration } from "./types.ts";
 
@@ -103,7 +104,12 @@ export type CardStyleFrameOutcome =
 
 interface TransformState {
   failures: CardStyleTransformFailure[];
-  lastOutcome?: CardStyleFrameOutcome;
+  /**
+   * The most recent frame per SURFACE (R4). The conversation and the rail repaint through this one
+   * transform, so "the style is selected but the sidebar looks untouched" has an answer per surface
+   * instead of one shared last-writer.
+   */
+  lastOutcomes: Partial<Record<PaintSurface, CardStyleFrameOutcome>>;
 }
 
 /** Process-global, like every other piece of bridge state (`./bus.ts` explains why). */
@@ -114,11 +120,15 @@ function transformHost(): Record<symbol, TransformState | undefined> {
   return globalThis as unknown as Record<symbol, TransformState | undefined>;
 }
 
+function isTransformStateLike(value: unknown): value is TransformState {
+  return isRecord(value) && Array.isArray(value.failures) && isRecord(value.lastOutcomes);
+}
+
 function transformState(): TransformState {
   const host = transformHost();
   const existing = host[TRANSFORM_STATE];
-  if (isRecord(existing) && Array.isArray(existing.failures)) return existing as TransformState;
-  const created: TransformState = { failures: [] };
+  if (isTransformStateLike(existing)) return existing;
+  const created: TransformState = { failures: [], lastOutcomes: {} };
   host[TRANSFORM_STATE] = created;
   return created;
 }
@@ -128,9 +138,15 @@ export function getCardStyleTransformFailures(): CardStyleTransformFailure[] {
   return transformState().failures.map((failure) => ({ ...failure }));
 }
 
-/** What the last frame did, or `undefined` before the transform ran once. */
-export function getCardStyleLastOutcome(): CardStyleFrameOutcome | undefined {
-  const outcome = transformState().lastOutcome;
+/**
+ * What the last frame did on one surface, or `undefined` before that surface ran this transform once.
+ * The conversation is the default because it is the surface that existed first; `/bridge-status`
+ * asks for both.
+ */
+export function getCardStyleLastOutcome(
+  surface: PaintSurface = "conversation",
+): CardStyleFrameOutcome | undefined {
+  const outcome = transformState().lastOutcomes[surface];
   return outcome === undefined ? undefined : { ...outcome };
 }
 
@@ -138,11 +154,11 @@ export function getCardStyleLastOutcome(): CardStyleFrameOutcome | undefined {
 export function resetCardStyleTransformForTests(): void {
   const state = transformState();
   state.failures.length = 0;
-  delete state.lastOutcome;
+  state.lastOutcomes = {};
 }
 
-function recordOutcome(outcome: CardStyleFrameOutcome): void {
-  transformState().lastOutcome = outcome;
+function recordOutcome(surface: PaintSurface, outcome: CardStyleFrameOutcome): void {
+  transformState().lastOutcomes[surface] = outcome;
 }
 
 /** Record one failure, once per (style, message): a style that throws every frame is one fact. */
@@ -478,43 +494,53 @@ function repaintCard(
 }
 
 /** Resolve the selection, recording what it means instead of ever throwing. */
-function activeStyle(): CardStyleRegistration | undefined {
+function activeStyle(surface: PaintSurface): CardStyleRegistration | undefined {
   let selection: CardStyleSelection;
   try {
     selection = resolveCardStyleSelection();
   } catch (error) {
     const message = errorMessage(error);
     recordFailure("(selection)", message);
-    recordOutcome({ kind: "failed", styleId: "(selection)", message });
+    recordOutcome(surface, { kind: "failed", styleId: "(selection)", message });
     return undefined;
   }
   if (selection.kind === "native") {
-    recordOutcome({ kind: "pass-through", reason: "native" });
+    recordOutcome(surface, { kind: "pass-through", reason: "native" });
     return undefined;
   }
   if (selection.kind === "missing") {
     // S12: a selection nobody owns must not render chrome that no longer exists.
-    recordOutcome({ kind: "pass-through", reason: "missing" });
+    recordOutcome(surface, { kind: "pass-through", reason: "missing" });
     return undefined;
   }
   return selection.style;
 }
 
 /**
- * Rewrite every float card in `lines` with the selected style's chrome (S3), or return `lines`
- * itself when there is nothing to do or anything at all went wrong (S6).
+ * Rewrite every float card in `lines` with the selected style's chrome (S3, R1), or return `lines`
+ * itself when there is nothing to do or anything at all went wrong (S6, R2).
+ *
+ * One function serves every surface: the conversation wrapper (`./card-style-wiring.ts`) calls it
+ * with `conversation`, the rail wrapper with `rail`, and the frame is treated identically — the
+ * grammar, the clipping and the pass-through are the same code (R1: no second copy of the
+ * transform). `surface` only decides WHERE the frame outcome is recorded, so `/bridge-status` can
+ * answer for both.
  *
  * The returned array is the input instance whenever the frame was not changed: `native`, no
  * selection, a selection naming a style that no longer exists, no card in the frame, or a throw.
  */
-export function transformCardLines(lines: string[], width: number): string[] {
-  const style = activeStyle();
+export function transformCardLines(
+  lines: string[],
+  width: number,
+  surface: PaintSurface = "conversation",
+): string[] {
+  const style = activeStyle(surface);
   if (style === undefined) return lines;
 
   try {
     const cards = findCards(lines);
     if (cards.length === 0) {
-      recordOutcome({ kind: "pass-through", reason: "no-card" });
+      recordOutcome(surface, { kind: "pass-through", reason: "no-card" });
       return lines;
     }
 
@@ -526,12 +552,12 @@ export function transformCardLines(lines: string[], width: number): string[] {
       cursor = card.closer + 1;
     }
     output.push(...lines.slice(cursor));
-    recordOutcome({ kind: "transformed", styleId: style.id, cards: cards.length });
+    recordOutcome(surface, { kind: "transformed", styleId: style.id, cards: cards.length });
     return output;
   } catch (error) {
     const message = errorMessage(error);
     recordFailure(style.id, message);
-    recordOutcome({ kind: "failed", styleId: style.id, message });
+    recordOutcome(surface, { kind: "failed", styleId: style.id, message });
     return lines;
   }
 }

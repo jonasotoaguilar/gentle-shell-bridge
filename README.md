@@ -9,7 +9,7 @@ each other when more than one wants to add a settings row.
 **Status: released as `0.3.0`.** The package exists and runs. It is a manifest-backed Pi
 package (`pi.extensions` → `./src/extension.ts`) loaded from TypeScript sources through
 jiti, so there is no build step and no `dist/`; it registers a `bridge-status` command and
-carries a `node --test` suite of 390 tests, 26 of them end-to-end through the public API and
+carries a `node --test` suite of 422 tests, 26 of them end-to-end through the public API and
 the real extension entry, 8 driving the worked example's transform through a real
 conversation wrapper, and 22 pinning the publication announcement in both load orders. The capture
 technique was proven in the real TUI by a 76-line
@@ -154,8 +154,12 @@ in the host's strictly validated `visual-customization.json`.
 
 ## Quick start: a card style
 
-A plugin can add a third card style to gentle-shell's conversation cards, on the host's own
-`Card style` line, without touching the host. The bridge owns detection; the style owns drawing.
+A plugin can add a third card style to gentle-shell's cards, on the host's own `Card style` line,
+without touching the host. The bridge owns detection; the style owns drawing. A style is one global
+choice, so it paints every card surface the host frames — the **conversation** and the fullscreen
+**rail** (host sections like `CHANGES` and contributed sections alike) — and `native` restores the
+host's own frames on both. The rail is covered by the same `transformCardLines` the conversation
+uses, so a plugin registers nothing extra for it.
 
 ```ts
 import { registerCardStyle } from "gentle-shell-bridge";
@@ -382,7 +386,12 @@ For card styles it reports the line mode (`extended` when the host's own line wa
 (including a disposed one, as `missing`), what the last frame did (`transformed N cards`,
 `pass-through (native | missing | no card)`, or `failed` with the style and message), the per-style
 failures, whether the conversation component was wrapped, and the reminder that a downstream
-post-processor can override the frame.
+post-processor can override the frame. Per surface it also says whether the style reached it and what
+its last frame did there (`card style surface rail: reached (rail wrapped), last frame transformed 3
+cards`, or `not reached (no-layout-root)`), and it reports the last repaint a bridge-owned write
+requested — `last repaint: rail for section "loon.music" → hidden (repainted)` — including the reason
+when no frame could be asked for. A visibility toggle and a card-style selection repaint
+synchronously, before the action returns; nothing polls.
 
 For transcript transforms it reports the registered pipeline in order — `order 10` or `registration
 order` — and what the last frame did with each one: `applied`, `skipped`, `failed` with the message,
@@ -417,7 +426,7 @@ registered, so a session that never used the pipeline keeps the historical repor
   not tool metadata: a plugin that needs the call's arguments or the result object still has to use
   `pi.registerToolRenderer` for rows that are yet to be built. A throwing transform is isolated per
   frame; a slow one runs on every frame, which the bridge cannot bound.
-- **Tests cover a fake host, not the real TUI.** 390 tests run under `node --test`; 26 of
+- **Tests cover a fake host, not the real TUI.** 422 tests run under `node --test`; 26 of
   them are end-to-end through the public API and the extension entry, against a fake host
   that models `gentle-shell.ts:3550-3562` and a fake sidebar that models
   `lib/shell-sidebar.ts` and the layout's card frame. The capture technique is verified in the

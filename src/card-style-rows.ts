@@ -44,7 +44,9 @@ import {
   resolveCardStyleSelection,
   setCardStyleSelection,
 } from "./card-styles.ts";
+import { refreshCardStyleSurfaces } from "./card-style-wiring.ts";
 import { recordNotice } from "./notices.ts";
+import { requestSurfaceRepaint } from "./repaint.ts";
 import { cardStyleRowLabelText } from "./row-labels.ts";
 import { isRecord } from "./rows.ts";
 import type { CardStyleRegistration, CustomizeRow, RowPreview, RowProvider } from "./types.ts";
@@ -157,8 +159,24 @@ function previewFor(style: CardStyleRegistration): RowPreview {
  * user's choice.
  *
  * `current()` reads the persisted selection live (so the bullet cannot lie), `action()` persists
- * FIRST and lets the host's repaint follow, and `preview()` is literal.
+ * FIRST and then repaints both card surfaces before returning (`selectStyle`, R3) rather than waiting
+ * for an unrelated frame, and `preview()` is literal.
  */
+/**
+ * Select a style and repaint both surfaces (R3).
+ *
+ * Persistence happens FIRST, then the rail's transform is (re)attached if it never was, then the host
+ * is asked for a frame — all synchronously, before the action returns, and nothing at all when the
+ * stored selection is already the one picked: a press that changes nothing must not cost a frame.
+ * The conversation and the rail both paint chrome from this value, so both are repainted.
+ */
+function selectStyle(id: string): void {
+  if (getCardStyleSelection() === id) return;
+  setCardStyleSelection(id);
+  refreshCardStyleSurfaces();
+  requestSurfaceRepaint({ cause: `card style → ${id}`, surfaces: ["conversation", "rail"] });
+}
+
 function styleRow(style: CardStyleRegistration, setting: string): CustomizeRow {
   return {
     category: HOST_CARD_STYLE_CATEGORY,
@@ -169,7 +187,7 @@ function styleRow(style: CardStyleRegistration, setting: string): CustomizeRow {
       current: () => getCardStyleSelection() === style.id,
     },
     preview: () => previewFor(style),
-    action: () => setCardStyleSelection(style.id),
+    action: () => selectStyle(style.id),
   };
 }
 
@@ -187,7 +205,7 @@ function nativeRow(setting: string): CustomizeRow {
       title: "Cards · native",
       sample: "native: the bridge does not touch the conversation",
     }),
-    action: () => setCardStyleSelection(CARD_STYLE_NATIVE),
+    action: () => selectStyle(CARD_STYLE_NATIVE),
   };
 }
 
@@ -243,7 +261,7 @@ function wrapHostRow(row: CustomizeRow): CustomizeRow {
         recordActionFailure(value, error);
         result = undefined;
       } finally {
-        setCardStyleSelection(CARD_STYLE_NATIVE);
+        selectStyle(CARD_STYLE_NATIVE);
       }
       if (!isThenable(result)) return undefined;
       // An async setter's rejection arrives after the call returns; the selection is already native,

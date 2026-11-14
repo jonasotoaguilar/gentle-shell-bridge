@@ -31,6 +31,8 @@
  */
 
 import { registerRows, snapshotSections } from "./bus.ts";
+import { refreshCardStyleSurfaces } from "./card-style-wiring.ts";
+import { requestSurfaceRepaint } from "./repaint.ts";
 import { sectionRowLabels } from "./row-labels.ts";
 import type { CustomizeRow, RowPreview, SidebarSection } from "./types.ts";
 import { getSectionVisibility, isSectionVisible, setSectionVisible } from "./visibility.ts";
@@ -77,7 +79,20 @@ function toggleRow(section: SidebarSection, label: string, value: SectionValue):
     // Persist FIRST and synchronously; the host's repaint runs after this returns and re-reads
     // `current()`, so the bullet cannot land on a value that was never written. The store is keyed
     // by the section id, never by the label.
-    action: () => setSectionVisible(section.id, shown),
+    //
+    // Then REPAINT the rail before returning (R3): writing the store alone changes nothing on screen
+    // until the host is told, which is why a bridge row used to lag behind the host's own rows by
+    // seconds. A press that would store the value already in force changes nothing and asks for no
+    // frame.
+    action: () => {
+      if (isSectionVisible(getSectionVisibility(), section) === shown) return;
+      setSectionVisible(section.id, shown);
+      refreshCardStyleSurfaces();
+      requestSurfaceRepaint({
+        cause: `section ${JSON.stringify(section.id)} → ${shown ? "shown" : "hidden"}`,
+        surfaces: ["rail"],
+      });
+    },
   };
 }
 

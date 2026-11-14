@@ -190,6 +190,8 @@ One command, `/bridge-status`, reporting:
 | Section failures | the most recent sidebar frame's failing sections with `id`, `phase` (`lines`/`meta`) and message |
 | Sidebar | `intercepted (rail wrapped)`, `intercepted (rail pending)`, `no-sidebar-state`, or `not armed` with the reason the wiring could not acquire a `tui` |
 | Transforms | every registered transcript transform in pipeline order (`order 3` or `registration order`) with the last frame's outcome: `applied`, `skipped`, `failed` with the message, or `not run`; omitted when no transform is registered |
+| Card style surfaces | per surface (`conversation`, `rail`): whether the selected style reached it and what its last frame did there (`transformed N cards`, `pass-through (native / missing / no card)`, `failed` with the style and message); `not reached` carries the attach outcome (`no-layout-root`, `no-sidebar`, `no-rail`, …). Emitted with the card-style block |
+| Last repaint | the most recent repaint a bridge-owned write requested: the surfaces, the cause (`section "loon.music" → hidden`, `card style → loon.cute`) and `repainted` or `unavailable` with the reason. Omitted until such a write happens |
 | Row name rejections | every line name and row label the bridge refused (`rows`, `section` or `card style`), with the surface, the registration `id`, the field (`line name`/`row label`), the offending string VERBATIM and the rule it broke; omitted when nothing was rejected |
 
 A menu that opened without the bridge's rows must show up here — armed-but-uncaptured,
@@ -624,6 +626,34 @@ The host's own rows keep the host's `current()` and `action()`, wrapped in exact
 `current()` reports `false` while a registered style is selected (one bullet at a time), and
 `action()` also returns the bridge to native rendering (below). The bridge never reimplements
 `neon`/`float` and never writes the host's `card-style.json`.
+
+### Which surfaces a style reaches
+
+A style is one global choice, so it paints **both** surfaces the host frames cards on:
+
+- **the conversation** — the chat component, whose `render(width)` the bridge wraps;
+- **the rail** — the fullscreen sidebar, whose section cards the host frames itself
+  (`lib/shell-sidebar-layout.ts:36-47`) and whose framed rows the bridge repaints through the same
+  `transformCardLines` the conversation uses. Host sections (`CHANGES`, `AGENTS`, …) and the
+  sections a plugin contributed are restyled alike, because the rail frames them with one function.
+
+`native` is the pass-through on both: the host's own frames reach the screen as the same array
+instance the host produced. A plugin registers nothing extra for the rail — the style it already
+declared is the whole change (the example's `plain` is the proof), and `/bridge-status` reports each
+surface separately (`card style surface conversation: …`, `card style surface rail: …`) so "the
+conversation changed but the sidebar did not" is answerable.
+
+The rail is restyled only where the host already drew a `float` frame: a `neon` rail, a panel
+surface, or any row the bridge cannot prove is a card passes through untouched.
+
+### A selection repaints, synchronously
+
+Pressing a value writes the selection and then repaints, before the action returns: the host's own
+`invalidateSidebar` step (its terminal-side cache revision) and `requestRender()`. A press that
+selects the value already stored requests no frame. The same rule covers a section's shown/hidden
+toggle, which repaints the rail. When no `tui` has been captured, or it has no `requestRender`, the
+write still lands and `/bridge-status` reports `last repaint: … (unavailable: …)` — a write that
+reached no surface is never silent.
 
 ### The way back to host rendering
 

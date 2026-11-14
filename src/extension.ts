@@ -10,11 +10,14 @@
  *    publication on `pi.events` (`gentle-shell-bridge:ready`), once per process and never for an
  *    incompatible slot (`announceBridgeReady`). A plugin therefore needs no path, no environment
  *    variable and no import.
- * 2. arm the row bridge on `session_start`, only when the context has a UI. Arming is already
- *    idempotent (the capture target and the hook registry carry non-enumerable markers), so this
- *    module adds no second guard layer: a double load, a `/reload` or a rebind all resolve to
- *    "already armed". The same event flushes the notices buffered before any context existed
- *    through `ctx.ui.notify` — the in-TUI channel — exactly once per message.
+ * 2. arm the row bridge on `session_start`, only when the context has a UI AND the required host
+ *    package `gentle-pi` is present at RUNTIME (`pi.getCommands()` names `gentle:customize`, see
+ *    `./presence.ts`). Arming is already idempotent (the capture target and the hook registry carry
+ *    non-enumerable markers), so this module adds no second guard layer: a double load, a `/reload`
+ *    or a rebind all resolve to "already armed". The same event flushes the notices buffered before
+ *    any context existed through `ctx.ui.notify` — the in-TUI channel — exactly once per message.
+ *    Without `gentle-pi` the bridge arms NOTHING, delivers one warning naming the package and stays
+ *    quiet on later events while the absence lasts (S9, T12): the check runs before any arming.
  * 3. install the sidebar surface: the `Sections` rows provider (needs no `tui`) and a
  *    `ui.setWidget` factory whose only job is to be handed the real `tui` (see `armSidebar`).
  * 4. register the `status` command and print the formatter output.
@@ -31,6 +34,7 @@
 import { armBridge } from "./arm.ts";
 import { announceBridgeReady, publishBridgeApi, type BridgeEventBus } from "./api.ts";
 import { flushNotices } from "./notices.ts";
+import { checkGentlePi, warnMissingGentlePi } from "./presence.ts";
 import { isRecord } from "./rows.ts";
 import { installCardStyleRows } from "./card-style-rows.ts";
 import { installCardStyleTransform, installRailCardStyleTransform } from "./card-style-wiring.ts";
@@ -40,6 +44,8 @@ import { installSidebarBackend, noteSidebarUnavailable, type SidebarTuiLike } fr
 import { setRepaintHost } from "./repaint.ts";
 import { clearPluginStatus, installPluginStatus } from "./plugin-lines.ts";
 import { installSectionRail } from "./sidebar-render.ts";
+import { installToolDesignRows } from "./tool-design-rows.ts";
+import { installToolDesignResolver, type ToolDesignResolver } from "./tool-design-wiring.ts";
 import { collectStatus, formatStatus } from "./status.ts";
 
 /**
@@ -154,6 +160,18 @@ export function armSidebar(ui: unknown): SidebarArmResult {
   return { outcome: "widget-installed" };
 }
 
+/** One entry of Pi's command list, as this module reads it: only the name is ever inspected. */
+export interface BridgeCommandEntry {
+  readonly name?: string;
+}
+
+/**
+ * Pi's command list (`pi.getCommands()`). The host is a TRUST BOUNDARY: `./presence.ts` re-validates
+ * every shape (a non-array answer, an entry without a name, a throwing accessor), so nothing here
+ * relies on the declared type being honoured.
+ */
+export type BridgeCommandList = readonly BridgeCommandEntry[];
+
 /** The part of Pi's `ExtensionAPI` this extension uses. */
 export interface BridgeExtensionApi {
   on(event: "session_start" | "session_shutdown", handler: BridgeSessionHandler): void;
@@ -161,8 +179,22 @@ export interface BridgeExtensionApi {
     name: string,
     command: { description?: string; handler: BridgeCommandHandler },
   ): void;
+  /**
+   * Pi's command list (`docs/extensions.md`): the runtime evidence of which extensions are loaded.
+   * The bridge reads it for the REQUIRED host package (S9): an entry named `gentle:customize` means
+   * `gentle-pi` is there. Optional, because a bare harness may expose no command surface at all —
+   * which is MISSING, not an error.
+   */
+  getCommands?(): BridgeCommandList;
   /** Pi's cross-extension bus (`docs/extensions.md:1965-1972`); absent only in a bare harness. */
   events?: BridgeEventBus;
+  /**
+   * Pi's tool-renderer hook (`docs/extensions.md:2123`;
+   * `dist/core/extensions/types.d.ts:546`): the sanctioned way to choose how a tool's card is drawn.
+   * Optional, so a bare harness stays a valid host — a missing hook is a reported outcome, never a
+   * throw inside `session_start`.
+   */
+  registerToolRenderer?(resolver: ToolDesignResolver): void;
 }
 
 export default function gentleShellBridge(pi: BridgeExtensionApi): void {
@@ -177,10 +209,25 @@ export default function gentleShellBridge(pi: BridgeExtensionApi): void {
     // Without a UI there is no customize menu to reach, so there is nothing to arm. There is also
     // no `notify` to show a buffered notice with: those stay pending for the next UI session.
     if (ctx.hasUI !== true) return;
+
+    // S9/T12 — the REQUIRED host package, checked at RUNTIME and BEFORE anything is armed. Every
+    // extension is loaded before `session_start`, so this answer is real; the check runs again on
+    // every later event, which is how a host that appears late is picked up (and how a host that
+    // disappears again is reported). `checkGentlePi` records the answer for `/bridge-status` and
+    // decides the warning budget; a disabled bridge warns once per absence and then stays silent.
+    const presence = checkGentlePi(pi);
     // The in-TUI diagnostics channel. A notice produced at module load (an incompatible API slot)
     // has been waiting for this moment; delivered notices stay in the buffer, so `/bridge-status`
     // keeps reporting them afterwards.
     flushNotices(ctx.ui);
+    if (!presence.present) {
+      // Nothing below this line runs: no capture, no rows, no resolver, no widget, no footer line
+      // (S9). The one warning names the missing package; the reason rides with it.
+      if (presence.warnNow) {
+        warnMissingGentlePi(ctx.ui, presence.reason ?? "the host does not advertise gentle-pi");
+      }
+      return;
+    }
     armBridge(ctx.ui);
     // The `Sections` provider needs no `tui`, so it is installed even when the rail cannot be
     // reached: the user can still see and toggle a section. Re-installing is idempotent — the bus
@@ -190,6 +237,16 @@ export default function gentleShellBridge(pi: BridgeExtensionApi): void {
     // registered only while the host's own line cannot be extended (the capture decides that, and
     // disposes this provider the moment it extends the host's line instead).
     installCardStyleRows();
+    // The per-tool DESIGN bus (S4, S5, S7), at this same arming point:
+    //
+    // - the customize rows need no `tui`, so they are installed here like every other row surface;
+    // - the ONE `pi.registerToolRenderer` resolver is installed here too, and nowhere else. Pi
+    //   resolves renderers when it CONSTRUCTS a card, so this is early enough for every card of the
+    //   session; returning `next()` composes with gentle-shell instead of replacing it. Both calls
+    //   are idempotent through process-global markers, so a second load or a rebind registers
+    //   neither twice.
+    installToolDesignRows();
+    installToolDesignResolver(pi);
     armSidebar(ctx.ui);
     // The ONE INTEGRATIONS line each plugin gets (I1–I6). A plugin that registered before any `ui`
     // existed is painted here; a plugin that registers later repaints its own key in place. A host

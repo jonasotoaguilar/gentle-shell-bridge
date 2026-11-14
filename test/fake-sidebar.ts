@@ -76,10 +76,21 @@ export interface Rail {
   dispose?(): void;
 }
 
+/**
+ * The host's shared pointer claim (`SidebarState.hover`, `lib/shell-sidebar.ts:31`): the owner that
+ * currently holds the pointer and the callback the next owner runs to unpaint it.
+ */
+export interface FakeHover {
+  owner: object;
+  clear: () => void;
+}
+
 /** The host's state as it sits on the terminal (`SidebarState`, `lib/shell-sidebar.ts:8-36`). */
 export interface FakeSidebarState {
   active: boolean;
   visibility?: { todo?: boolean };
+  /** One hovered surface at a time, shared across separately loaded extensions. */
+  hover?: FakeHover;
   parts: Map<string, Rail>;
 }
 
@@ -119,22 +130,114 @@ function isFakeState(value: unknown): value is FakeSidebarState {
   );
 }
 
+interface NativeRailOptions {
+  /**
+   * Model the host's own part-level pointer dispatch. `true` for the real `footer`, which the host
+   * wraps in a `NativePointerRegion` (`extensions/gentle-shell.ts:2766`): its `handleMouse` answers
+   * EVERY `move` inside the part's frame, so it never declines one and the bridge's wrapper above it
+   * never sees the event (`lib/native-pointer-region.ts:80-88`,
+   * `extensions/gentle-shell.ts:2732-2741`).
+   */
+  pointerRegion?: boolean;
+}
+
 /**
  * The native `STATS`-style part: two body rows under a `▾ TITLE` header, declared as one card
  * group the way the host's own rails do.
  */
-function nativeRail(title: string, body: readonly string[] = ["native row 1", "native row 2"]): Rail {
+function nativeRail(
+  title: string,
+  body: readonly string[] = ["native row 1", "native row 2"],
+  options: NativeRailOptions = {},
+): Rail {
   const lines = [`▾ ${title}`, ...body];
-  return {
+  const rail: Rail = {
     render: () => [...lines],
     cardGroups: () => ({ groups: [{ start: 0, end: lines.length }] }),
     digest: () => `${title.toLowerCase()}:native`,
     spend: () => ({ runs: 0, tokens: 0, cost: 0 }),
   };
+  if (options.pointerRegion === true) rail.handleMouse = hostPartPointer(lines.length);
+  return rail;
 }
 
-/** Register the host's own `footer` part; callable before or after the bridge armed. */
-export function registerNativeFooter(rail: Rail = nativeRail("FOOTER")): Rail {
+/**
+ * The host's shared pointer transfer (`setSidebarHover`, `lib/shell-sidebar.ts:72-78`): an unchanged
+ * owner keeps the claim without clearing itself, a new owner replaces it and the PREVIOUS owner's
+ * `clear()` runs, and no owner clears whatever is there.
+ *
+ * Exported so a test can perform the host's own "the pointer left the rail" step —
+ * `setSidebarHover(tui)` with no owner (`lib/shell-sidebar-layout.ts:280,447`) — against the same
+ * slot the bridge claims.
+ */
+export function setHostHover(owner?: object, clear?: () => void): void {
+  const state = fakeState();
+  if (state.hover?.owner === owner) return;
+  const previous = state.hover;
+  state.hover = owner !== undefined && clear !== undefined ? { owner, clear } : undefined;
+  previous?.clear();
+}
+
+/** The pointer fields a host mouse event carries, when it has the shape the layout dispatches. */
+function isPointerEvent(event: unknown): event is { type: string; button?: string; y: number } {
+  return (
+    typeof event === "object" &&
+    event !== null &&
+    typeof (event as { type?: unknown }).type === "string" &&
+    typeof (event as { y?: unknown }).y === "number"
+  );
+}
+
+/**
+ * The host's own pointer region around one part, as the real `footer` has one around its status card.
+ *
+ * This is what `NativePointerRegion` does (`lib/native-pointer-region.ts:39,80-88`): a `move` with no
+ * button is handed to the callbacks, and gentle-shell's `onHover` (`extensions/gentle-shell.ts:2732-2741`)
+ * answers EVERY one of them — it claims the shared pointer for a row it owns
+ * (`setSidebarHover(tui, statusRegion, …)`) and clears it otherwise (`setSidebarHover(tui)`), returning
+ * `{ handled: true }` either way. A move over a row the bridge APPENDED to this part is therefore
+ * consumed by the host's region before the bridge's wrapper is reached; that is the model T40 had to
+ * correct. A click is answered only on a row the region owns and declines everywhere else
+ * (`extensions/gentle-shell.ts:2747-2757`), which is why a click on a contributed row works.
+ */
+function hostPartPointer(ownRows: number): (event: unknown) => unknown {
+  const owner = { part: "footer-status-region" };
+  let hoveredRow: number | undefined;
+  return (event) => {
+    if (!isPointerEvent(event)) return undefined;
+    if (event.type === "move" && event.button === "none") {
+      const own = event.y >= 0 && event.y < ownRows;
+      if (own) {
+        setHostHover(owner, () => {
+          hoveredRow = undefined;
+        });
+      } else {
+        // Not one of ours — a contributed row included: the host clears its slot, as
+        // `setSidebarHover(tui)` does, and still reports the move handled.
+        setHostHover();
+      }
+      const next = own ? event.y : undefined;
+      if (next === hoveredRow) return { handled: true };
+      hoveredRow = next;
+      return { handled: true, render: true };
+    }
+    if (event.type === "click") {
+      // The real footer answers only a target row (the section header here) and declines the rest.
+      if (event.button !== "left" || event.y !== 0) return undefined;
+      return { handled: true, render: true };
+    }
+    return undefined;
+  };
+}
+
+/**
+ * Register the host's own `footer` part; callable before or after the bridge armed. The footer is
+ * the part the bridge appends to, and the real one carries a `NativePointerRegion` (see
+ * `hostPartPointer`), so it is modelled by default.
+ */
+export function registerNativeFooter(
+  rail: Rail = nativeRail("FOOTER", undefined, { pointerRegion: true }),
+): Rail {
   return registerNativeRail("footer", rail);
 }
 

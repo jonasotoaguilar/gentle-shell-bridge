@@ -52,6 +52,11 @@ import { getLastRowBuild, resetRowBuildStateForTests } from "../src/rows.ts";
 import { installSectionRows } from "../src/sections-rows.ts";
 import { collectStatus, formatStatus } from "../src/status.ts";
 import { resetStoreStateForTests } from "../src/store.ts";
+import { registerToolDesign, resetToolDesignsForTests } from "../src/tool-designs.ts";
+import {
+  installToolDesignRows,
+  resetToolDesignRowStateForTests,
+} from "../src/tool-design-rows.ts";
 import type { CardFrame, CustomizeRow, SidebarSection } from "../src/types.ts";
 import { createFakeHost, type FakeHost } from "./fake-host.ts";
 
@@ -86,6 +91,8 @@ test.beforeEach(() => {
   resetRowBuildStateForTests();
   resetNoticesForTests();
   resetStoreStateForTests();
+  resetToolDesignsForTests();
+  resetToolDesignRowStateForTests();
   disableCaptureBackend();
 });
 
@@ -427,44 +434,40 @@ test("PRESERVE: a conforming provider row renders exactly as before", () => {
 });
 
 // ---------------------------------------------------------------------------------------------
-// The example (N7, N9)
+// A tool design's line (N7, N9)
 // ---------------------------------------------------------------------------------------------
+//
+// A design is declared per TOOL name, so its line's name is derived from that name, led by the noun
+// the host's own Cards lines use (`Card style`, `Card content`, so `Card bash`) — never from the
+// plugin's module path and never from the design's id. A design's `label` is a VALUE on the line,
+// not a row name, so the shape rule applies to the line and the tool name is what satisfies it. The
+// worked example used to contribute a `Bash rendering` provider row; it contributes a design now,
+// and this fixture pins the naming rule the bus owns.
 
-type SessionHandler = (event: unknown, ctx: { hasUI?: boolean; ui?: unknown }) => void;
-
-interface FakePi {
-  on?: (event: string, handler: SessionHandler) => void;
-  registerToolRenderer?: (resolver: unknown) => void;
-}
-
-test("the example's row reads `Bash rendering`, and its old arrow/colon strings are gone", async () => {
-  publishBridgeApi();
-  const sessionHandlers: SessionHandler[] = [];
-  const pi: FakePi = {
-    registerToolRenderer: () => {},
-    on(_event, handler) {
-      sessionHandlers.push(handler);
-    },
-  };
-
-  const specifier = new URL("../examples/bash-card.ts?row-name", import.meta.url).href;
-  const init = ((await import(specifier)) as { default: (fakePi: FakePi) => () => void }).default;
-  init(pi);
-  const ui = { notify: () => {} };
-  for (const handler of sessionHandlers) handler({}, { hasUI: true, ui });
-
+test("a design's line is named from its tool, and no id reaches a row", () => {
+  registerToolDesign({
+    tool: "bash",
+    id: "loon.bash-heading",
+    label: "bash heading",
+    apply: (lines) => [...lines],
+  });
+  installToolDesignRows();
   const host = menuHost();
+
   host.buildMenu();
 
   assert.ok(
-    host.toggleLines().includes("Bash rendering ● default ○ tool"),
-    `the example's line is a row name: ${host.toggleLines().join(" | ")}`,
+    host.toggleLines().includes("Card bash ● native ○ bash heading"),
+    `the design's line is \`Card <tool>\`: ${host.toggleLines().join(" | ")}`,
   );
-  assert.ok(host.rendered().includes("Bash rendering"), "and so is its row label");
+  for (const line of host.toggleLines()) {
+    const setting = line.split(" ")[0] ?? "";
+    assert.equal(rowNameProblem(setting), undefined, `${setting} must conform`);
+  }
 
   const visible = [...host.rendered(), ...host.toggleLines()].join("\n");
-  assert.equal(visible.includes("Bash card"), false, "no `Bash card` qualifier survives");
-  assert.equal(visible.includes("Bash card:"), false, "no colon form survives");
-  assert.equal(visible.includes("Bash card → Bash rendering"), false, "no arrow form survives");
-  assert.deepEqual(getRowNameRejections(), [], "the example's own rows are accepted");
+  assert.equal(/loon\./u.test(visible), false, "the registration id never reaches a row");
+  assert.equal(/bash-card\./u.test(visible), false, "no dotted id reaches a row");
+  assert.equal(visible.includes("Bash design →"), false, "no arrow form survives");
+  assert.deepEqual(getRowNameRejections(), [], "the derived line name is accepted");
 });

@@ -12,8 +12,9 @@
  *   `←/→ choose · Enter apply` for a focused line whose row defers.
  *
  * `KeyDriver` below is that rule, modelled once and driven over the REAL rows the bridge emits —
- * the `Sections` toggle, the card-style values in both modes (mixed with the host's own), and the
- * real `examples/bash-card.ts` provider rows. It counts the actions it runs, so "a move applies
+ * the `Sections` toggle, the card-style values in both modes (mixed with the host's own), and a
+ * plugin provider's own rows (a fixture with the shape the worked example used to demonstrate).
+ * It counts the actions it runs, so "a move applies
  * nothing" and "Enter applies exactly once" are observations, not assumptions.
  */
 
@@ -361,57 +362,60 @@ test("on the host's line the host's values keep their own field and the bridge's
 });
 
 // ---------------------------------------------------------------------------------------------
-// A plugin's own provider rows (the real example)
+// A plugin's own provider rows (a fixture, not the worked example)
 // ---------------------------------------------------------------------------------------------
+//
+// The example contributes a tool DESIGN now, and the bridge owns the design line: its rows are not a
+// provider's, so the provider path is driven by a fixture with the same shape and the same rules.
+// Nothing here is specific to bash; the values are just two choices on one line.
 
-interface FakePi {
-  on?: (event: string, handler: (event: unknown, ctx: { hasUI?: boolean; ui?: unknown }) => void) => void;
-}
-
-type ExampleInit = (pi: FakePi) => () => void;
-
-const loadExample = async (tag: string): Promise<ExampleInit> => {
-  const specifier = new URL(`../examples/bash-card.ts?${tag}`, import.meta.url).href;
-  const loaded = (await import(specifier)) as { default: ExampleInit };
-  return loaded.default;
-};
-
-test("the example's provider rows move without applying and apply on Enter (A1, A2)", async () => {
+test("a plugin's provider rows move without applying and apply on Enter (A1, A2)", async () => {
   publishBridgeApi();
-  const sessionHandlers: Array<(event: unknown, ctx: { hasUI?: boolean; ui?: unknown }) => void> = [];
-  const init = await loadExample("apply-on-move");
-  init({
-    on(event, handler) {
-      assert.equal(event, "session_start");
-      sessionHandlers.push(handler);
-    },
+  let stored = "native";
+  const values = ["native", "bash heading"];
+  registerRows({
+    id: "loon.apply-on-move",
+    category: "Cards",
+    name: "Loon example",
+    rows: () =>
+      values.map((value) => ({
+        category: "Cards",
+        label: "Bash design",
+        choice: {
+          setting: "Bash design",
+          value,
+          current: (): boolean => stored === value,
+        },
+        action: async (): Promise<void> => {
+          stored = value;
+        },
+      })),
   });
-  sessionHandlers[0]!({}, { hasUI: true, ui: { notify: () => {} } });
 
   const rows = buildRows(ctx()).rows;
-  const rendering = rows.filter((row) => row.choice?.setting === "Bash rendering");
+  const design = rows.filter((row) => row.choice?.setting === "Bash design");
   assert.deepEqual(
-    rendering.map((row) => row.choice?.value),
-    ["default", "tool"],
-    "the example's two values are on one line",
+    design.map((row) => row.choice?.value),
+    ["native", "bash heading"],
+    "the provider's two values are on one line",
   );
 
   const keys = keyDriver(() => rows);
-  keys.focus("Bash rendering");
+  keys.focus("Bash design");
 
   await keys.arrow(1);
 
-  assert.equal(keys.focused().choice?.value, "tool", "the cursor moved onto tool");
+  assert.equal(keys.focused().choice?.value, "bash heading", "the cursor moved onto the other value");
   assert.equal(keys.actions(), 0, "moving applied nothing");
-  assert.equal(rendering[0]?.choice?.current(), true, "the stored mode is still default");
-  assert.equal(rendering[1]?.choice?.current(), false);
-  assert.equal(keys.line(), "Bash rendering ● default  › tool");
+  assert.equal(design[0]?.choice?.current(), true, "the stored value is still the first one");
+  assert.equal(design[1]?.choice?.current(), false);
+  assert.equal(keys.line(), "Bash design ● native  › bash heading");
 
   await keys.enter();
 
   assert.equal(keys.actions(), 1, "Enter applied exactly once");
-  assert.equal(rendering[0]?.choice?.current(), false, "and the stored mode became tool");
-  assert.equal(rendering[1]?.choice?.current(), true);
+  assert.equal(design[0]?.choice?.current(), false, "and the stored value became the other one");
+  assert.equal(design[1]?.choice?.current(), true);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -463,5 +467,11 @@ test("the build defers every provider choice on a copy, never mutating the provi
   assert.equal(built[1], alreadyDeferring, "an authored false already conforms: no copy is needed");
   assert.equal(explicitImmediate.choice?.applyOnMove, true, "an authored true is not mutated either");
   assert.equal(built[2]?.choice?.applyOnMove, false, "but the emitted copy defers");
-  assert.equal(built[3], plain, "a row without a choice is carried as the provider's own object");
+  // A row without a choice is a BUTTON row (S16). The bridge hands the host a copy so it can contain
+  // a failing `action`; nothing else about it changes and the provider's object is never mutated.
+  assert.notEqual(built[3], plain, "a button row is a copy, so its action can be contained (S16)");
+  assert.equal(built[3]?.label, plain.label, "its label is carried as the same reference");
+  assert.notEqual(built[3]?.action, plain.action, "its action is the contained wrapper");
+  assert.equal(built[3]?.choice, undefined, "no choice is invented for a button");
+  assert.deepEqual(Object.keys(plain).sort(), ["action", "category", "label"], "the provider's row is not mutated");
 });

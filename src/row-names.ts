@@ -22,6 +22,17 @@
  * `ROW_NAME_MARKS`: an arrow, a colon, a dot, a pipe, a slash or a bracket. Those are the characters
  * that make a name read as a path, a key or a breadcrumb instead of a name.
  *
+ * ## The one reserved category (S15)
+ *
+ * A second, unrelated rule lives here because it needs the SAME report: `Keymaps` is the host's own
+ * interaction (key capture, `keymaps.json`, a category footer promising `Enter assign`) and is
+ * closed to plugins. A provider registered with that category is refused at registration
+ * (`./bus.ts`), and a single row whose own category is that page is dropped at build time
+ * (`./rows.ts`) — the shapes are different, the channel is one, and a reader of
+ * `/bridge-status` finds every refused row in one list instead of learning a second report. The
+ * comparison is trimmed and case-insensitive (`Keymaps`, ` keymaps `, `KEYMAPS`), because they all
+ * name the same page; a near miss (`Keymap`, `Key maps`) is an ordinary category of its own.
+ *
  * ## Reject and report, never rewrite
  *
  * The bridge does NOT sanitize a name: `Bash card → Bash rendering` staying in a report as
@@ -63,8 +74,11 @@ export const ROW_NAME_MARKS: readonly string[] = [
   "}",
 ];
 
-/** The two ways a name can break the rule; `reason` names it in words. */
-export type RowNameRule = "mark" | "words";
+/**
+ * The ways a row can be refused, with `reason` naming it in words: a structural `mark`, the
+ * `words` limit, or the `reserved category` rule (S15).
+ */
+export type RowNameRule = "mark" | "words" | "reserved category";
 
 export interface RowNameProblem {
   rule: RowNameRule;
@@ -81,8 +95,54 @@ const WORD_RULE = "a row name is one to three plain words";
 /** Where a rejected name came from: a provider's rows, a section, a card style. */
 export type RowNameSurface = "rows" | "section" | "card style";
 
-/** Which part of a row carried it: `choice.setting`, or the row's visible label. */
-export type RowNameField = "line name" | "row label";
+/**
+ * Which part of a row carried it: `choice.setting`, the row's visible label, or the `category` it
+ * asked for (the one reserved-category case).
+ */
+export type RowNameField = "line name" | "row label" | "category";
+
+/**
+ * The categories the host owns and works differently (S15): `Keymaps` captures keys and writes
+ * `keymaps.json`, and its page footer promises `Enter assign` (`lib/visual-customize-view.ts:40`,
+ * `lib/keymaps-customize.ts:49-68`). A plugin row there would be advertised as an assignable binding
+ * and could never honour it, so the whole page is closed until the host opens it.
+ */
+export const RESERVED_CATEGORIES: readonly string[] = ["Keymaps"];
+
+/** Why a reserved category is closed, quoted by every refusal so the reason stands on its own. */
+export const RESERVED_CATEGORY_RULE =
+  "works differently in the host (its own key capture and footer); not open to plugins yet";
+
+/**
+ * The reserved category this value names, or `undefined` when a plugin may use it. Compared trimmed
+ * and case-insensitively: the host's page is a literal string, and `KEYMAPS` would render a second
+ * page next to the host's own, so a near match is refused instead of creating a twin.
+ */
+export function reservedCategory(category: unknown): string | undefined {
+  if (typeof category !== "string") return undefined;
+  const wanted = category.trim().toLowerCase();
+  return RESERVED_CATEGORIES.find((reserved) => reserved.toLowerCase() === wanted);
+}
+
+/**
+ * Drop one provider row that asked for a reserved category, and record the refusal verbatim (S15).
+ * Returns `true` when the row was refused, so the caller drops exactly that row and keeps its
+ * siblings. A conforming category records nothing and returns `false`.
+ */
+export function rejectReservedCategory(providerId: string, category: unknown): boolean {
+  const reserved = reservedCategory(category);
+  if (reserved === undefined) return false;
+  const value = typeof category === "string" ? category : String(category);
+  recordRowNameRejection({
+    surface: "rows",
+    id: providerId,
+    field: "category",
+    value,
+    rule: "reserved category",
+    reason: `it is the reserved category ${JSON.stringify(reserved)}, which ${RESERVED_CATEGORY_RULE}`,
+  });
+  return true;
+}
 
 /** One rejected name, kept verbatim so the author can find it and fix it. */
 export interface RowNameRejection {

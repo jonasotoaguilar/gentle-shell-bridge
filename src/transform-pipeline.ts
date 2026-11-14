@@ -53,7 +53,7 @@
 import { snapshotTransforms } from "./bus.ts";
 import { clipToWidth } from "./card-style-transform.ts";
 import { isRecord } from "./rows.ts";
-import type { TransformContext, TranscriptTransform } from "./types.ts";
+import type { RowOrigin, TransformContext, TranscriptTransform } from "./types.ts";
 
 /** What the pipeline did with one transform in the most recent frame. */
 export type TransformFrameStatus = "applied" | "skipped" | "failed";
@@ -268,11 +268,21 @@ function clipResult(next: readonly string[], current: readonly string[], width: 
 /**
  * Run the registered transforms over the frame, in order, and return the rows to draw (S2, S3, S4).
  *
+ * `rows` is the frame's row origin (S1, `./row-origin.ts`): which host child drew each row, one entry
+ * per row, or an empty array when the origin is unknown. It is handed to every transform in `ctx`
+ * and never READ here — the pipeline is a pass-through for it, so a transform that ignores the field
+ * produces the same bytes it did before the field existed, and a frame whose origin is unknown is
+ * simply a frame with no identity (never a skipped frame, never a throw).
+ *
  * The returned array is the input instance whenever the frame was not changed: no transform
  * registered, every transform a no-op, or every transform failing. The frame's outcome record is
  * replaced here, once per frame.
  */
-export function applyTransforms(lines: string[], width: number): string[] {
+export function applyTransforms(
+  lines: string[],
+  width: number,
+  rows: readonly RowOrigin[] = [],
+): string[] {
   let transforms: TranscriptTransform[];
   try {
     transforms = snapshotTransforms();
@@ -292,6 +302,7 @@ export function applyTransforms(lines: string[], width: number): string[] {
     let reported: ReportedCounts | undefined;
     const ctx: TransformContext = {
       width,
+      rows,
       report: (counts): void => {
         // F4: telemetry is diagnostics. Sanitising reads primitives only, and this guard means no
         // report — however malformed — can reach the frame the host is waiting for.

@@ -20,9 +20,16 @@
  *    already reads for `parts`);
  * 2. store `{ owner, clear }`, clearing the previous owner first — the host's own semantics.
  *
- * What is NOT reachable is `NativePointerRegion`, and it is not needed: the host dispatches a hit on
- * the part to the part's own `handleMouse` with the coordinates already mapped into the part's frame
+ * What is NOT reachable is `NativePointerRegion`, and it is not needed — but its behaviour is what
+ * decides who sees an event first. The host dispatches a hit on the part to the part's own
+ * `handleMouse` with the coordinates already mapped into the part's frame
  * (`lib/shell-sidebar-layout.ts:245-259`), which is where the section pointer handler reads them.
+ * That part handler is a `NativePointerRegion` around the host's own card
+ * (`extensions/gentle-shell.ts:2766`), whose `onHover` claims or clears the pointer and always
+ * returns `{ handled: true }` (`extensions/gentle-shell.ts:2732-2741`). So a MOVE over a row the
+ * bridge appended is consumed by the host unless the rail wrapper offers it to the contributor
+ * first; `./sidebar.ts`'s `mouseThrough` does exactly that for the rows the contributor rendered,
+ * and keeps the host first for every other event.
  *
  * This module is internal: `src/index.ts` does not re-export it.
  */

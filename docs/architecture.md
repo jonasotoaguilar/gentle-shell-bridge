@@ -142,6 +142,42 @@ Two boundaries around that rule:
   generation, so a wrapper that foreign code kept a reference to becomes a pass-through
   instead of injecting into a menu after the backend was switched off.
 
+### A brand-new page, and why the early step is provisional (S18, S20)
+
+`categoryRows()` filters `options.rows` live (`lib/visual-customize-view.ts:391-393`), but the page
+*list* is derived once, in the constructor (`this.categories = [...new Set(options.rows.map(row =>
+row.category ?? "Settings"))]`, `:387`). A row that joins an existing page therefore appears after a
+late push; a row naming a new page never could, because nothing can select a page the list does not
+hold (E8). The capture backend therefore has two moments: it pushes the providers' rows when the probe
+observes that `map`, provisionally, and the end of the factory decides.
+
+- **The proof.** Nothing is written to an array that is not proven at *that* `map` call, and the proof
+  runs on **every** call (the host may map its rows to labels first). The callback must derive
+  `row.category ?? "Settings"` for the array's own rows, `"Settings"` for a synthetic row with no
+  category and a sentinel page for a synthetic row naming one, and must not throw. The same callback is
+  then run over the rows about to be appended, **before** they are pushed, so the host's own `map` can
+  never throw because of a bridge row.
+- **The reconciliation.** If the late decision picks the same array, the rows stay and the build reports
+  `injected`. If it picks another array, the session proved several (ambiguous), or the factory returned
+  a promise, the rows, the `Card style` splice and the marker are removed from the early array and the
+  previous behaviour applies exactly. When exactly one captured array proves itself the menu's rows it is
+  the target by evidence, so a merely row-like array mapped beside it no longer makes the build
+  ambiguous; two proven arrays, or two unproven ones, still do.
+- **The rollback.** A factory that throws leaves no trace. The session stack and the patched
+  `Array.prototype.map` are restored first and unconditionally, and every rollback step is best effort
+  and never throws (E10: a host that froze its rows and then threw used to make the rollback throw,
+  replace the host's error and leave `map` patched). A session only ever rolls back its own array, so a
+  nested factory's rollback cannot touch the outer menu's rows.
+
+Net guarantee: after any factory invocation, no array holds bridge rows except the one the late decision
+chose. Costs, stated: for the duration of the factory an array that satisfies the proof can hold bridge
+rows, visible only to code running inside that factory; the host's category mapper runs once more per
+row-like `map` call and once per appended row; when a guess is rolled back the providers are built twice
+for that menu build; and the proof is pinned to the host's default `Settings`, so a host that renames it
+degrades to the late path (no new page) rather than guessing. Not reviewed by anyone: rollback when the
+host reorders or removes our rows or pushes its own after them (Proxy arrays included), and a stale
+`cardStyleRowMode()` after a rolled-back guess.
+
 ## 6. Why one bridge beats N wrappers
 
 Two independent map-swapping wrappers chain badly. Whichever installs its patch last sees
@@ -198,9 +234,9 @@ otherwise leaves the slot absent.
 - After any action the view requests its own re-render
   (`lib/visual-customize-view.ts:579`), so a plugin that persists inside `action()` sees an
   updated `●` without asking for a repaint.
-- `category` is typed to a closed union of existing categories
-  (`lib/visual-customize-view.ts:105`); full row shape at `:107-128`, inline helpers at
-  `:129-140`.
+- `category` is TYPED as a closed union of existing categories
+  (`lib/visual-customize-view.ts:105`) but at runtime any string is a page, because the view derives
+  its page list from the rows (`:387`); full row shape at `:107-128`, inline helpers at `:129-140`.
 
 The bridge's own rows obey the same rule. Its `Sections` and card-style rows put a human label in
 `choice.setting` (`music`, `plain`) and in the row's `label` — never a registration id, which would
@@ -425,11 +461,26 @@ inert and declines (so the host's own dispatch continues). The header is always 
 the section.
 
 The hover claim uses the host's own published slot rather than a private channel: `SidebarState.hover`
-is declared as "shared across separately loaded extensions" (`lib/shell-sidebar.ts:37`), and
+is declared as "shared across separately loaded extensions" (`lib/shell-sidebar.ts:31`), and
 `src/section-pointer.ts` stores `{ owner, clear }` there with the host's own semantics — the previous
 owner's `clear()` runs when the owner changes, and the host's "pointer left the rail" call
 (`setSidebarHover(tui)` with no owner) clears ours. `NativePointerRegion` itself is not reachable and
 is not needed: the dispatch it adapts is the one the bridge already receives.
+
+**Who sees a move first (S21).** The host's own region answers EVERY move inside its frame with
+`{ handled: true }` — it looks the row up, paints the target and, with no target, clears and still
+reports handled (`lib/native-pointer-region.ts:80-88`, `extensions/gentle-shell.ts:2732-2741`). A click
+is the different path: with no target it returns `undefined` (`:2747-2757`), which is why folding a
+section worked while NOTHING in a contributed section ever highlighted. The wrapper used to offer the
+event to the host first and only ask the contributor when the host declined, so the host swallowed
+every move. It now offers a MOVE whose `y` falls inside the contribution's own row range —
+`[startRow, endRow)`, both recorded by the render that preceded the event — to the contributor first,
+and falls through to the host when the contributor declines, so the host still clears its own hover on
+our inert rows. Every other event keeps the host first. This cannot steal a host card's pointer: a host
+target only ever lives inside the host's own lines, which end where `startRow` begins. Pinned by
+`test/sidebar-hover.test.ts`, including "the host's own row keeps the pointer" and "one click, one
+call" (`N12`). Under tmux, zellij or screen the host forwards no plain move events at all
+(`lib/shell-hover.ts`'s platform note), so hover cannot be checked there.
 
 ### Repaint and the digest (N13, N14)
 
@@ -460,7 +511,7 @@ author's text: a section or card style whose `rowLabel` breaks the shape is not 
 provider row whose line name or label breaks it is dropped as `buildRows` stages it — absent from the
 host's array and from the build record `collectStatus()` reads, so it is not part of the effective
 set. The rejected string is recorded verbatim with the rule it broke and `/bridge-status` prints both
-under `row name rejections`. Derivation from `title`/`label` applies the same shape (marks become
+under `row rejections`. Derivation from `title`/`label` applies the same shape (marks become
 word breaks with the rest of the punctuation; the result is clamped), so a derived name can never be
 rejected.
 
@@ -710,12 +761,38 @@ from a row's `action()`. The bridge already wraps that component for card styles
 layer is a widening of a proven path rather than a new interception: one loop, one place to clip, one
 place to isolate a throw, and one place `/bridge-status` reads.
 
-That is also why the worked example retired its `pi.registerToolRenderer` resolver: a resolver draws
-its own component from the tool's arguments, while a transform can only restyle what the host
-already drew. Keeping both would have meant two different pictures of the same card — the transform
-for history, the resolver for new rows — which is exactly the asymmetry the feature exists to remove.
-The transform is the single owner there, and `test/example-transform.test.ts` proves that a card
-drawn before the switch and one drawn after it are byte-identical.
+A transform draws what the host already drew, so history and new rows are one picture. A tool
+DESIGN (§16) is the other half of the same idea: the bridge owns Pi's one renderer resolver, hands a
+design the rows the host's own card produced, and reads the live selection on every render pass, so
+a design chosen after a card was drawn repaints that card instead of waiting for the next one.
+
+### The cost of a switch, and why it is one plain frame (S13)
+
+The live-selection rule is also what makes an invalidation unnecessary. The wrapper renders the
+host's component and applies the selection to the rows it answered with, and the host's own card
+cache (`ToolCardRows`, `cards-bash-v2` `extensions/quiet-tools.ts:612-624`) sits BELOW that wrapper:
+it keys its frame on width, the host's style and whether the card is running, never on a design, so a
+cached hit still reaches the design on every pass. A switch therefore needs no cache dropped: it is
+one differential `requestRender()`, which is what the host's own `Card style` switch does
+(`extensions/gentle-shell.ts:3409-3412`).
+
+T4 originally made `requestRepaint()` a full repaint — `tui.invalidate()` then
+`requestRender(force = true)` — because a setting seemed unable to reach a drawn card otherwise. On a
+real transcript that is the freeze the user reported: at 600 children the invalidate re-parses 300
+Markdown messages (730 ms for the frame against 21 ms without it) and the forced frame clears the
+screen and scrollback and rewrites the whole buffer (6.9 MB). Numbers and the exact scenario are in
+[contract.md](contract.md) §14, "What a switch costs"; `test/tool-design-cost.test.ts` bounds the
+result by call counts — no tree invalidation, no prose re-parse, one differential frame, at most one
+selection read per card per frame — so the bound cannot flake on a busy machine. Nothing else was
+changed: the persisted selection is still read per card per frame (3.5 µs, measured) and adoption
+still invalidates each card once when it wraps it.
+
+S19 applied the same measurement to the second path. `requestSurfaceRepaint()` — a bridge-owned row,
+such as a bridge card style or a section toggle — no longer invalidates the tree or forces the frame;
+the `/bridge-status` wording is unchanged (the cause line never claimed a full repaint). Per-surface
+proof and numbers are in [contract.md](contract.md) §14, "What a bridge-owned switch costs". The reason
+it is safe is the same ordering: a bridge style is applied ABOVE the host's own frame caches, so a cached
+host frame is restyled rather than frozen, and the host's rail memo already keys on the section digest.
 
 ### Ordering, isolation and the width
 
@@ -751,11 +828,110 @@ it does reaches the frame:** the counts are collected in the call that already p
 none at all, loses counts and never a frame. `/bridge-status` prints the counts on the transform's
 own line, and the block is still absent entirely when no transform is registered.
 
-The worked example reports `float` (the host's frame), `plain` (its own frame) and `neon` (the
-host's outlined frame — the bridge's repaint is `float`-only, so a neon card reaches a transform
-untouched and the example's grammar is the only thing that can recognise it) as shape names, so the
+A transform that reads `float` cards and the host's `neon` outline reports those two names (the
+bridge's card-style repaint is `float`-only, so a neon card reaches a transform untouched), so the
 next step after a real-TUI report is data-driven: a `skipped` line with candidates and no
 recognition names a grammar gap, and recognition with `0 rewritten` names a setting.
+
+## 16. The tool-design bus (S4–S7)
+
+### One resolver, because Pi composes
+
+`pi.registerToolRenderer(resolver)` (`dist/core/extensions/types.d.ts:546`) is the sanctioned way to
+choose how a tool's card is drawn. Resolvers COMPOSE — Pi chains every extension's resolver
+(`dist/core/extensions/runner.js:550-553`) — so two plugins that each called it would each wrap the
+other's component and neither could see the other's choice. The bridge therefore registers exactly
+ONE resolver while arming (`installToolDesignResolver`, from the same `session_start` that arms the
+rows and the sidebar) and returns `next()`'s renderers untouched for a tool with no design.
+
+### The wrapper keeps the frame
+
+For a tool that HAS at least one design the resolver returns a copy of the host's renderers whose
+`renderCall`/`renderResult` wrap the component the host built. Every other member — `renderShell`
+included, which decides whether the host frames the card itself — is the host's own value. The
+wrapper's `render(width)` is:
+
+```
+hostComponent.render(width) → design.apply(rows, { width, tool, theme, part }) → rows
+```
+
+so the chrome (`neon`, `float`, whatever the host's Card style is) exists before the design sees
+anything. `invalidate()` and the optional mouse/key-release members are delegated, so the card keeps
+behaving exactly as the host's did — only the rows can differ.
+
+`part` is `"call"` when this row set came from `renderCall` and `"result"` when it came from
+`renderResult` (S12). The two members are wrapped SEPARATELY, so the design is told which half of the
+card it is drawing instead of having to infer it from the rows: the host draws both with the same
+chrome, and a float result row that begins with `$ ` is indistinguishable from a float heading.
+
+Wrapping even when nothing is selected is deliberate. Pi resolves the renderers ONCE per card, when
+it constructs it (`interactive-mode.js:1816-1818,2957-2961,3028-3032,3376-3380`), and re-renders that
+same component on every frame. A card built while the design was unselected must still be able to
+follow a later selection, so the wrapper reads the LIVE selection on every pass; with no selection
+(or a selection whose design was disposed) it returns the host's own array instance, byte for byte.
+
+### The `Cards` line is `Card <tool>`
+
+The per-tool selection is a customize line in `Cards`, and the category already names its lines
+`Card <what>` (`Card style`, `Card content`), so a design line follows the same vocabulary rather
+than showing a bare tool name, which reads like a category of its own. `src/tool-design-rows.ts`
+builds it: `Card` plus the tool's readable words (`deriveRowLabel`), at most two of them because the
+row-name rule is one to three plain words (`src/row-names.ts`). A long name keeps its TAIL —
+`mcp__engram__mem_save` reads `Card mem save`, because the leading words are the same for every tool
+of that server — a name with no words reads `Card tool`, and two tools that clamp to the same name
+are told apart with an ordinal (`Card mem save`, `Card mem 2`) exactly the way sections are, so the
+result still passes the shape rule. Nothing persisted moves with the name: the store is keyed by the
+tool name and a value is the design's id, so the line can be renamed without losing a choice.
+
+### When an earlier resolver answers first (S10)
+
+Pi composes resolvers in extension load order (`runner.js:550-553`); `loader.js:298-302` only pushes,
+so there is no reordering API. A resolver loaded before this package that answers WITHOUT calling
+`next()` — the host's quiet bash resolver while `Card content` is `minimal`
+(`extensions/quiet-tools.ts:910-914`) — hides `toolDesignResolver` completely. The user's install has
+gentle-pi first and this bridge last, which is why a resolver-only design never reached a card
+(L3/E6).
+
+`src/tool-design-adoption.ts` is the second path. The conversation wrapper from
+`src/card-style-wiring.ts` already holds Pi's chat container, whose children are
+`ToolExecutionComponent`s; each carries `toolName` and the `toolDefinition` Pi resolved
+(`tool-execution.js`, constructor near line 37-45). On every conversation render, BEFORE the host
+renders its children, the adoption pass looks at each child: a string `toolName` with at least one
+registered design is adopted by replacing its `toolDefinition` with the same `wrapRenderers` wrapper
+the resolver path uses, then invalidating the card so its stored renderer re-runs through the design
+(`invalidate()` → `updateDisplay()`, `tool-execution.js:64-68,164-175`). `wrapRenderers` stamps every
+wrapper with `TOOL_RENDERERS_WRAPPED`, and both paths check it, so a card the resolver already
+wrapped is reported `already` and never wrapped twice. New cards (`/tree`, reload, session switch)
+are new children and are adopted on the next pass, and because the wrapper reads the live selection
+on every frame, `native` and a later selection both apply to the same already-constructed card (S2).
+
+Every absence is reported: a child that is not a card, a `toolName` that is not a string and a tool
+with no designs are ignored; a missing, non-object, unwrappable or unwritable `toolDefinition` is
+recorded as an `(adoption)` failure and the host's own card is drawn; a throwing `invalidate` is
+recorded once and the wrapped definition still applies on the next frame. The pass never throws into
+Pi's render loop.
+
+### Per tool name, never per bash
+
+`src/tool-designs.ts` keeps one registry per tool name and nothing else: no known-tool list, no
+branch on a name. `src/tool-design-rows.ts` turns each tool with designs into one `Cards` line —
+the host's own card (`native`) plus one value per design, in registration order — and persists the
+selection per tool in the bridge's own `bridge-tool-designs` store, never in the host's config. The
+stored value is the design's `id`, so renaming a label never moves the bullet; a selection whose
+design was disposed resolves to `missing` and draws the host's card.
+
+Registration goes through the same attribution as every other surface (`src/plugin-lines.ts`,
+`PluginSurface` includes `"tool design"`), so a plugin that contributes ONLY designs still gets its
+one INTEGRATIONS line and the same accepted/rejected counts.
+
+### What it reports
+
+`/bridge-status` lists every tool with designs, its live selection, whether the wrapper has mounted
+a card for it (`wrapper mounted on 2 cards` — the answer to "is this card even wrapped?" via the
+resolver), how many cards the adoption pass reached (`adopted 1 card` — the answer when a resolver
+ahead of the bridge answered first), the conflicts a replacement or a duplicate label produced, and
+the designs that threw. Failures are deduplicated by (tool, id, message): a design that throws on
+every frame is one fact, not one line per frame.
 
 ## Limits
 
@@ -771,9 +947,11 @@ recognition names a grammar gap, and recognition with `0 rewritten` names a sett
   nothing in the observed chain does that.
 - **Capture is heuristic.** A menu that builds rows through a different array (or not at
   all) yields no capture. Reported, never silent — but not fixed.
-- **No new categories.** The renderer's `category` is a closed union of existing categories
-  (`lib/visual-customize-view.ts:105`) while the bridge's `CustomizeRow.category` is a
-  `string`, so a category gentle-shell does not already render renders nothing.
+- **A new category depends on the capture proof.** The renderer types `category` as a closed union
+  (`lib/visual-customize-view.ts:105`) but derives its pages from the rows at runtime, so a new
+  category appears only when the early injection (see "A brand-new page") ran; a host that renames
+  its default page, or a menu the proof cannot prove, gets the late path and no new page. `Keymaps` is
+  reserved.
 - **Tests exercise a fake host, not the TUI.** The suite runs under `node --test`; the end-to-end
   ones drive a fake host that models `gentle-shell.ts:3550-3562` and a fake sidebar that models
   `lib/shell-sidebar.ts` + `lib/shell-sidebar-layout.ts`'s card frame. The capture technique itself

@@ -91,6 +91,8 @@ const loadEntry = (): Entry => {
   const sessionHandlers: BridgeSessionHandler[] = [];
   const commands: Entry["commands"] = [];
   const pi: BridgeExtensionApi = {
+    // `gentle-pi` is loaded, so the runtime gate is open (S9/T12).
+    getCommands: () => [{ name: "gentle:customize" }],
     on(_event, handler) {
       sessionHandlers.push(handler);
     },
@@ -315,6 +317,7 @@ test("the public entry exports exactly the contract surface and no test seams", 
     "registerCardStyle",
     "registerRows",
     "registerSection",
+    "registerToolDesign",
     "registerTransform",
   ]);
   for (const seam of [

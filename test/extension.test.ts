@@ -51,6 +51,8 @@ const createFakeApi = (): FakeApi => {
   const shutdownHandlers: BridgeSessionHandler[] = [];
   const commands: Array<{ name: string; description?: string; handler: BridgeCommandHandler }> = [];
   const api: BridgeExtensionApi = {
+    // The REQUIRED host package is present: `session_start` arms as before (S9/T12).
+    getCommands: () => [{ name: "gentle:customize" }],
     on(event, handler) {
       if (event === "session_start") {
         sessionHandlers.push(handler);

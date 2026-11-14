@@ -105,7 +105,8 @@ A line the bridge contributes is navigated, not switched under the user's finger
 
 - every row the bridge itself builds — the `Sections` toggle, the card-style values in both modes
   (the host's `Card style` line extended in place, and the fallback `Bridge card style` line)
-  including `native`, and the example's `Bash rendering` — carries `choice.applyOnMove: false`;
+  including `native`, and every value of a tool design's `Cards` line — carries
+  `choice.applyOnMove: false`;
 - `buildRows` enforces it for a plugin's own provider rows too, by shallow-copying the row and its
   `choice` (the provider's objects are never mutated, and every other field is the same reference).
   An authored `applyOnMove: true` is overridden: the bridge owns the integration and the design is
@@ -126,6 +127,18 @@ Other row kinds follow from the same shape:
 - **Inline editor row** — `action` opens `inline.input()`, asks with `inline.confirm()`, or
   captures a key with `inline.capture()`.
 
+### Two kinds of row: toggle and button
+
+A row is one of two first-class kinds. A **toggle** has a `choice`; consecutive rows sharing
+`choice.setting` render as one line. A **button** has a `label` and an `action` and NO `choice`; Enter
+runs the action, the shape of gentle-shell's own `Profiles` and `Reset` rows. A button's label is its
+whole visible text, so the row-name rule below applies to it exactly as to a toggle's label (one to three
+plain words, no structural marks; refused and reported, never rewritten). `preview`, `keyhint` and
+`visible` pass through untouched, and the bridge injects neither a `choice` nor an `applyOnMove`. Its
+one change is the `action`, wrapped so a throw or a rejected promise is contained and recorded once in
+`/bridge-status` under `notices`, while the menu and every other row stay usable; the provider's object
+is never mutated, so the host receives a copy.
+
 ### Row names
 
 `choice.setting` (the line's name) and `label` (the row's text) are what a human reads, so both obey
@@ -134,7 +147,7 @@ ONE shape: **one to three plain words**, title case like the host's own rows (`C
 category already says where the row lives, and the values already say what the choices are:
 
 ```text
-Bash rendering                  OK    a row name: the host's own vocabulary
+Bash design                     OK    a row name: the host's own vocabulary
 Bash card → Bash rendering      BAD   arrow and a repeated qualifier: reads as a breadcrumb
 Bash card: rendering            BAD   colon
 Section: bash-card.status       BAD   prefix plus a dotted id
@@ -147,7 +160,7 @@ The bridge enforces the shape instead of trusting authors; it is never a silent 
   is not part of the effective set;
 - a section or a card style whose `rowLabel` breaks it is **not registered at all**;
 - the offending string is recorded verbatim with the rule it broke, and `/bridge-status` lists it
-  under `row name rejections`. The menu never shows a sanitized version of a name the bridge refused,
+  under `row rejections`. The menu never shows a sanitized version of a name the bridge refused,
   so the exact string in the report is the one to fix.
 
 Derived names (a section `title`, a card style `label`) cannot violate the shape: derivation drops
@@ -217,7 +230,8 @@ One command, `/bridge-status`, reporting:
 | Card style surfaces | per surface (`conversation`, `rail`): whether the selected style reached it and what its last frame did there (`transformed N cards`, `pass-through (native / missing / no card)`, `failed` with the style and message); `not reached` carries the attach outcome (`no-layout-root`, `no-sidebar`, `no-rail`, …). Emitted with the card-style block |
 | Last repaint | the most recent repaint a bridge-owned write requested: the surfaces, the cause (`section "loon.music" → hidden`, `card style → loon.cute`) and `repainted` or `unavailable` with the reason. Omitted until such a write happens |
 | Row name rejections | every line name and row label the bridge refused (`rows`, `section` or `card style`), with the surface, the registration `id`, the field (`line name`/`row label`), the offending string VERBATIM and the rule it broke; omitted when nothing was rejected |
-| Plugin lines | one entry per plugin that registered (`rows`, `section`, `card style` or `transform`): its row name and whether it was `derived from package "@acme/loon-kit"` or an `explicit name`, the registrations `accepted` and `rejected`, any later `name conflict` that declared a different name for the same plugin (with the name kept), and whether the line is `set` or, with the reason, `no line set`. The header also says when the host's `setStatus` was unavailable. Omitted when no plugin registered so far |
+| Tool designs | every tool with designs: the selection in force (`native` or a design id, `<id> (missing: not registered)` when it no longer exists), whether the one resolver has mounted a card for it (`wrapper mounted on 2 cards` / `wrapper not mounted`), how many cards the post-construction adoption pass reached for it (`adopted 1 card`, S10), each registered design's id, label and description; then the resolver's last outcome and how many designs it registered, and any conflicts or failures. Omitted when the process registered no design |
+| Plugin lines | one entry per plugin that registered (`rows`, `section`, `card style`, `transform` or `tool design`): its row name and whether it was `derived from package "@acme/loon-kit"` or an `explicit name`, the registrations `accepted` and `rejected`, any later `name conflict` that declared a different name for the same plugin (with the name kept), and whether the line is `set` or, with the reason, `no line set`. The header also says when the host's `setStatus` was unavailable. Omitted when no plugin registered so far |
 
 A menu that opened without the bridge's rows must show up here — armed-but-uncaptured,
 shape mismatch, or provider failure. A registered section that never appears must show up
@@ -295,16 +309,19 @@ Object.freeze({
   registerSection,
   registerCardStyle,                 // since 0.2.0; optional on an older published object
   registerTransform,                 // since 0.3.0; optional on an older published object
+  registerToolDesign,                // since 0.3.0; optional on an older published object
+  requestRepaint,                    // since 0.3.0; optional on an older published object
   createStore,
 });
 ```
 
 Publication is **first wins**: a compatible object already in the slot is kept and never replaced,
 and the slot is never reset. A consumer gates on the schema string, `version === 1` and the three
-callable members below — `registerCardStyle` and `registerTransform` are NOT part of the gate, so an
-object published by an older copy is still a usable bridge for rows, sections and the store; a plugin
-that needs a later surface checks `typeof api.registerCardStyle === "function"` (or
-`typeof api.registerTransform === "function"`) before calling it. Anything else — another library's
+callable members below — `registerCardStyle`, `registerTransform`, `registerToolDesign` and
+`requestRepaint` are NOT part of the gate, so an object published by an older copy is still a usable
+bridge for rows, sections and the store; a plugin that needs a later surface checks
+`typeof api.registerCardStyle === "function"` (or `registerTransform`, `registerToolDesign`,
+`requestRepaint`) before calling it. Anything else — another library's
 payload, another major, a partial object — is
 **absent**, never an error: the object is not used, the slot is left exactly as it is (never
 overwritten, deleted or reset), and one notice per process names the mismatch. `v1` in the key is
@@ -544,7 +561,7 @@ const dispose: () => void = registerSection({
   same are told apart deterministically (`music`, `music 2`, …) and `/bridge-status` says which one
   moved. A `rowLabel` that breaks the row-name shape (one to three plain words, no arrow, colon,
   dot, pipe, slash or bracket — see §4) is rejected: the section is not registered, and the
-  offending string is reported under `row name rejections`. Nothing is rewritten.
+  offending string is reported under `row rejections`. Nothing is rewritten.
 - `meta(ctx)` — optional right-aligned text. Read per frame, so a value that changes is drawn on the
   next frame without re-registering. A throw drops that section's body (see below).
 - `lines(ctx)` — the body. Evaluated **per frame**, so live state is honest with no redraw API. A row
@@ -698,7 +715,7 @@ values `shown` and `hidden`:
 - the label is the author's `rowLabel`, or `title` made readable (lowercase, words joined, no dots,
   no prefix, clamped to three words); the same string is the row `label` and the line's `setting`.
   An author's `rowLabel` must satisfy the row-name shape (§4): one that does not is rejected, the
-  section is never registered, and the string and the rule appear under `row name rejections`;
+  section is never registered, and the string and the rule appear under `row rejections`;
 - `current()` reads the persisted value live, so the `●` never lies;
 - `action()` persists **first** and returns; the host's own repaint re-reads `current()`;
 - `preview()` returns a literal depiction of the card in that state, never the host's
@@ -814,7 +831,7 @@ A style is one global choice, so it paints **both** surfaces the host frames car
 
 `native` is the pass-through on both: the host's own frames reach the screen as the same array
 instance the host produced. A plugin registers nothing extra for the rail — the style it already
-declared is the whole change (the example's `plain` is the proof), and `/bridge-status` reports each
+declared is the whole change — and `/bridge-status` reports each
 surface separately (`card style surface conversation: …`, `card style surface rail: …`) so "the
 conversation changed but the sidebar did not" is answerable.
 
@@ -870,7 +887,7 @@ conversation broken.
 - `rowLabel`: optional; the text this style's row reads, used verbatim. Absent, it is derived from
   `label` (lowercase words, no dots, no prefix, at most three words). The same row-name shape as
   every other row applies (§4): one that breaks it is rejected — the style is not registered, and
-  the string and the rule are reported under `row name rejections`. An empty one is rejected too.
+  the string and the rule are reported under `row rejections`. An empty one is rejected too.
   The `id` is never a row label.
 - `frame.top`, `frame.line`, `frame.bottom`: functions. Any failure throws **before** anything is
   stored, like the row and section id rules.
@@ -955,10 +972,9 @@ may report, per frame:
 - `rewritten`: the cards it actually rewrote on this frame (`0` when a setting leaves them alone);
 - `shapes` (optional): which of its shapes matched, by name, and how many times.
 
-A shape name is the transform's own word for a frame it knows; it never carries a line. The worked
-example reports `float` (the host's own card), `plain` (its own chrome) and `neon` (the host's
-outlined card, which the bridge's repaint does not touch because that repaint is `float`-only), so a
-`/bridge-status` line names the grammar that matched instead of leaving the reader to guess.
+A shape name is the transform's own word for a frame it knows; it never carries a line. A plugin
+that reads `float` cards and the host's `neon` outline reports those two names, so a `/bridge-status`
+line names the shape that matched instead of leaving the reader to guess.
 
 The bridge adds the count of lines the transform received and stores the whole record as that
 frame's entry — one record per transform, replaced by the next frame, never accumulated.
@@ -991,7 +1007,7 @@ keeps its report byte for byte:
 
 ```text
 transforms: 2 registered
-  - bash-card-example.bash-cards (order 10): applied, 13 lines, 4 candidates, 1 recognised, 1 rewritten, shapes: float 1
+  - loon.bash-cards (order 10): applied, 13 lines, 4 candidates, 1 recognised, 1 rewritten, shapes: float 1
   - loon.strict (registration order): failed (definitions are missing), 13 lines, 0 candidates, 0 recognised, 0 rewritten
 ```
 
@@ -1001,17 +1017,218 @@ outcome is the LAST frame's, not a history: a report is about what the user is l
 counts after it belong to that same frame — lines received, then what the transform reported — and a
 `not run` transform has none, because no frame has asked it anything yet.
 
+## 14. Tool designs
+
+A **design** decides how ONE tool's card is drawn, without owning the frame. It is declared per tool
+NAME and composed with the host's own card:
+
+```ts
+api.registerToolDesign({
+  tool: "bash",
+  id: "loon.bash-heading",
+  label: "bash heading",                     // the value on the Cards line, not a row name
+  name: "Loon kit",                          // optional INTEGRATIONS name (see §8)
+  description: "heads the card with bash instead of the host's $ mark",
+  preview: () => ({ title: "Cards · bash heading", sample: "╭─ bash npm test ─╮" }),
+  apply(lines, ctx) {                        // the host's rows in, the rows to draw out
+    return lines.map((line) => rewriteTheMarkOnly(line));
+  },
+});
+```
+
+### The convention: lines in, lines out
+
+`apply(lines, ctx)` receives the rows the HOST's own card produced — ANSI sequences, padding, the
+right-aligned hint, the frame's rails, everything — and returns the rows to draw. `ctx` is
+`{ width, tool, theme, part }`: the width the host asked its own component to render at, the tool name
+the design was declared for, the host's opaque theme object, and which half of the card this pass is
+drawing (`"call"` for `renderCall`, `"result"` for `renderResult`).
+
+**`part` is what tells the call from the result.** A card has two components and the host draws both
+with the same chrome, so the rows alone cannot distinguish a heading from output: under the `float`
+style a result body row that begins with `$ ` (a script echoing its commands) sits exactly where a
+heading sits. The bridge wraps the two renderers separately and sets `part` per renderer, so a design
+that must not touch the result returns it unchanged when `ctx.part === "result"` instead of guessing
+from drawn text. The field is additive: a design that never reads it behaves exactly as before.
+
+**The frame is the host's, so the card style is preserved by construction.** With `Card style` on
+`neon` the card is still neon, with `float` it is still float, because the chrome was drawn before the
+design saw a byte of it. The bridge never re-frames, re-measures or clips a design's output (§13's
+width rule is the transform pipeline's); a design keeps the rows it was given exactly as wide as the
+host made them.
+
+Two rules follow from that:
+
+- **Change only what the design is for.** A bash design that heads the card `bash` changes the
+  heading row and nothing else: every other row — every ANSI run, every pad, the hint, the rails —
+  comes back byte-identical. The rows it does change stay the host's rows; they are edited, never
+  rebuilt from a second grammar.
+- **It is declared by tool NAME, not recognised by drawn text.** The bus already knows which tool's
+  card it is wrapping; a design that scans a frame for the word it expects is the fragility this
+  surface replaces (the host retitled the bash card and every drawn-text grammar went blind).
+
+### Declared per tool name (S7)
+
+A design names a tool (`bash`, `write`, `edit`, `mcp__engram__mem_save`, `lsp_navigation`, …). The bus
+keeps one registry per name, no name is special-cased, and a design declared for a tool that has no
+card yet applies as soon as Pi builds one: Pi resolves renderers when the card is CONSTRUCTED, and the
+bridge's one resolver is installed for the whole session.
+
+### When the bridge is not first in the chain (S10)
+
+Pi composes tool-renderer resolvers in **extension load order** (`runner.js:550-553`) and exposes no
+API to reorder them (`loader.js:298-302` only pushes). A resolver loaded before this package decides
+first, and one that answers WITHOUT calling `next()` hides the bridge's resolver completely. The
+host's own quiet bash resolver does exactly that while `Card content` is `minimal`
+(`extensions/quiet-tools.ts:910-914`), which is why a selected design could still leave every card
+drawing `$ …`.
+
+The design therefore has a second path: after Pi constructs a card, the bridge adopts it. The
+conversation component the bridge already wraps for card styles has Pi's `ToolExecutionComponent`s as
+children; each carries `toolName` and the `toolDefinition` Pi resolved for it. On every conversation
+render pass, before the host renders its children, the bridge replaces that card's `toolDefinition`
+with the same wrapper the resolver path uses (so the frame and the live-selection rule are
+identical), marks the wrapper so the two paths cannot stack, and invalidates the card so its stored
+renderer re-runs through the design. Cards Pi rebuilds (reload, `/tree`, session switch) are new
+children and are adopted on the next pass. A card of a tool with no designs is never touched; a card
+whose `toolDefinition` is missing or refuses the assignment is reported in `/bridge-status` and drawn
+by the host.
+
+This does not replace the resolver path: when the bridge IS ahead in the chain its resolver wraps the
+renderers at construction, and adoption then recognises the marker and adds nothing. `/bridge-status`
+counts both per tool (`wrapper mounted on N cards`, `adopted N cards`), so the next failure says
+which path ran.
+
+### Selection, and the default
+
+The selected design per tool is a row in `/gentle:customize` → `Cards`: one line per tool, named from
+the TOOL (never from the plugin or the id) and prefixed with the category's own word, whose values are
+
+1. `native` — **the host's own card, always first and the DEFAULT**, and
+2. every design registered for that tool, in registration order, each shown by its `label`.
+
+**The line name is `Card <tool>`**, the vocabulary the `Cards` category already uses for `Card style`
+and `Card content`: `Card bash`, `Card lsp navigation`, `Card mem save`. A row name is one to three
+plain words (`src/row-names.ts`), so the prefix leaves room for at most two tool words; a longer tool
+name keeps its TAIL (`mcp__engram__mem_save` → `Card mem save`, never `Card mcp engram`), a name that
+derives to no words reads `Card tool`, and two tools that read the same after that clamp are told
+apart with an ordinal (`Card mem save`, `Card mem 2`) that keeps the shape rule. The line's name is
+not persisted and is not identity: the store is keyed by the TOOL name (`bridge-tool-designs` →
+`selections` → `{ "bash": … }`) and a value is the design's `id`, so renaming the line moves nothing
+but the text the user reads.
+
+The stored value is the design's `id`, so renaming a label never loses a user's choice. Changing the
+value repaints the cards already on screen: the wrapper reads the live selection on every render pass,
+so a design chosen after a card was drawn changes that same card. A selection naming a design that is
+no longer registered degrades to the host's own card and is reported as `missing` in
+`/bridge-status`.
+
+### What a switch costs (S13)
+
+That repaint is **one differential frame**: `requestRepaint()` bumps the host's terminal-side cache
+revision (`invalidateSidebar(tui)`'s one step) and calls `tui.requestRender()` with no argument. It
+does **not** call `tui.invalidate()` and does **not** pass `force = true`. The wrapper renders the
+host's component and applies the live selection on top of whatever rows it answers with — including
+rows the host's own frame cache hands back (`ToolCardRows`, `cards-bash-v2`
+`extensions/quiet-tools.ts:612-624`, keys its frame on width, the host's style and whether the card
+is running; the design is not in that key), so no cache has to be dropped for a switch to land.
+
+Measured on real pi-tui and Pi's `ToolExecutionComponent` on transcripts of 50, 200 and 600 children
+(half Markdown assistant messages with a code block and a list, half bash cards; median of 5 runs;
+Node 26; fake terminal that counts the bytes the TUI writes):
+
+| 600 children, one switch | frame | bytes the TUI wrote |
+| --- | ---: | ---: |
+| `requestRender()` — what a switch does now | 21 ms | 0 (the diff finds nothing else) |
+| `tui.invalidate()` + a frame | 730 ms | 0 (every Markdown message re-parsed) |
+| `requestRender(true)` — forced | 33 ms | 6.9 MB (whole buffer cleared and rewritten) |
+| invalidate + force — before S13 | 753 ms | 6.9 MB |
+
+The invalidate is the cost: it clears every mounted component's frame cache, so 300 Markdown
+messages re-parse and re-highlight before the frame can be drawn (`tui.js:585-590`). The force is the
+second: `resetRenderState()` throws away the previous frame, so the TUI clears the screen and
+scrollback and rewrites every row (`tui.js:658-663`). The host's own `Card style` switch never did
+either — it writes its value, bumps the sidebar revision and calls `requestRender()` with no
+argument (`extensions/gentle-shell.ts:3409-3412`) — which is why it never froze.
+
+The other candidates were measured and NOT acted on, because the numbers refused them: reading the
+persisted selection costs 3.5 µs per card per frame (0.35 ms at 100 cards, ~1 ms at 300 — steady, and
+0.1% of the old switch), and adopting a card after construction costs ~0.02 ms and one local
+invalidate per card, once. See `test/tool-design-cost.test.ts`, which pins the result by COUNTING
+calls instead of timing them: a switch invalidates no component, re-parses no Markdown row, requests
+exactly one differential frame, and performs at most one persisted-selection read per card per frame,
+whatever the number of Markdown rows in the transcript.
+
+#### What a bridge-owned switch costs (S19)
+
+`requestSurfaceRepaint()` — the path a bridge-owned row takes (a card style such as the example's
+`plain`, a section toggle) — used to keep the invalidation and the forced frame. It is now the same two
+steps as `requestRepaint()`: the host's sidebar revision and one differential frame. Measured with real
+pi components, with and without `tui.invalidate()` + `requestRender(true)`, the rows are byte-identical
+on the conversation, on a rail host panel and on a bridge section hidden, collapsed and expanded: the
+style is repainted by the wrapper on the host's own already-rendered rows on every pass, and a section
+toggle moves `sectionRailDigest`, which the host's rail memo already keys on.
+
+Median of 7, 600 children, one switch: `plain` 697 ms before / 420 ms after, a host style 306 / 19 ms,
+a rail section toggle 99 / 3 ms. The control that keeps the zeros honest: a host card whose frame key
+omits the style is the only case an invalidation repairs, and it would deserve a LOCAL invalidate on that
+card, never the tree. `test/surface-repaint-cost.test.ts` bounds it by call counts (zero tree
+invalidations, zero prose re-parses, zero card invalidations, one differential frame, at 3 and at 200
+Markdown rows).
+
+Stated residual: switching TO `plain` at 600 children still costs about 420 ms (the style draws 4 rows
+where the host's float card draws 7, so the transcript shrinks by ~270 rows and pi rewrites its buffer,
+and `transformCardLines` re-scans the transcript per pass); switching back costs about 16 ms. The rail
+model in that measurement reproduces the host's memo key (`lib/shell-sidebar-layout.ts:310-350`); it is
+a model, not the host's own module.
+
+### Registration discipline
+
+Same rules as every other surface: `tool` and `id` are validated before anything is stored; a second
+registration with the same (`tool`, `id`) replaces in place and is REPORTED (never a silent takeover);
+two designs of one tool cannot share a visible label; `native` is reserved. A design that throws, or
+returns something that is not an array of strings, loses only its own card — the host's rows are drawn
+— and is reported once per (tool, id, message).
+
+`name` is optional and does the same job as `RowProvider.name` (§2): a single-file extension with no
+owning `package.json` gets an INTEGRATIONS line only if it names itself, and a plugin that contributes
+ONLY designs is attributed like any other — its registrations are `accepted`/`rejected` in the
+report, and its `name` is sticky for the identity (§8).
+
+The bridge registers exactly ONE `pi.registerToolRenderer` resolver for the whole process and fans it
+out to these designs. That is why two plugins contributing designs for the same tool do not stack
+wrappers, and why a plugin must never call `pi.registerToolRenderer` itself for a design.
+
 ## Limits
 
-- `registerRows`, `registerSection`, `registerCardStyle`, `registerTransform`, `createStore`,
-  `bridgeApi`, `isBridgeApi`, `onBridgeApi` and the `gentle-shell-bridge:ready` event are the
-  contract; anything a plugin does inside `action()` beyond
+- `registerRows`, `registerSection`, `registerCardStyle`, `registerTransform`,
+  `registerToolDesign`, `requestRepaint`, `createStore`, `bridgeApi`, `isBridgeApi`, `onBridgeApi`
+  and the `gentle-shell-bridge:ready` event are the contract; anything a plugin does inside `action()` beyond
   calling inline helpers is the plugin's own business.
-- Rows can join existing categories only; `category` is typed to gentle-shell's closed
-  union (`lib/visual-customize-view.ts:105`).
+- **`Keymaps` is reserved.** A provider registered with `category: "Keymaps"` is refused before
+  anything is stored, with an error naming the category and why (its own key capture and footer; not
+  open to plugins yet); the refusal is a rejected registration in the plugin's INTEGRATIONS line and in
+  `/bridge-status`. A single row whose own `category` is `Keymaps` is dropped and reported the same way,
+  and its siblings still render. The comparison is trimmed and case-insensitive: ` keymaps ` and
+  `KEYMAPS` are the same page; `Keymap` and `Key maps` are ordinary categories. `Profiles` and `Reset`
+  are not reserved: a plugin row there renders as an ordinary line. A refusal of one row is listed under
+  `row rejections` but is not counted in the plugin's INTEGRATIONS line (a build cannot reach it; only the
+  registration refusal does).
+- **A new category becomes a page.** The host computes its page list once, in the view's constructor
+  (`lib/visual-customize-view.ts:387`), so the rows must be in the array before that `map` runs; see
+  [architecture.md](architecture.md) "A brand-new page". The cost is stated there. The one residual
+  risk: a host that never derives categories from its menu while another array in the same factory is
+  mapped exactly like the host's page derivation would have its rows injected into the wrong array and
+  report `injected`; the real host derives them at `:387`, and with that shape a competing array stays
+  `ambiguous` and nothing is injected.
 - **Sections join the rail after the native cards, never between them.** The host's status
   sections are unreachable (a closure), so "interleaved with `CHANGES`" is not offered; the
   limit is documented rather than faked.
+- **Resolver order is not ours.** Pi composes tool-renderer resolvers in extension load order and
+  offers no reordering API, so a resolver ahead of this package that does not call `next()` hides the
+  resolver path. Adoption after construction exists for exactly that case (S10); it depends on Pi's
+  `ToolExecutionComponent` carrying `toolName` and a writable `toolDefinition`, and reports the card
+  as an `(adoption)` failure instead of throwing when it does not.
 - The sidebar surface has been proven against a fake host that models the real rail shape
   (`test/fake-sidebar.ts`), not in a running TUI. In particular, whether the widget Pi hands
   the `tui` through renders nothing visible is **unconfirmed** (see
@@ -1023,7 +1240,8 @@ counts after it belong to that same frame — lines received, then what the tran
 - The runtime handshake is proven under `node --test` with a simulated process (a reset
   `globalThis`, a fake `pi.events` and a freshly loaded example per scenario), not by two live Pi
   extensions loading in either order inside one real session. What it pins: the announcement's name,
-  payload and once-per-process rule, and that an early plugin registers all four surfaces from it.
+  payload and once-per-process rule, and that an early plugin registers every surface it contributes
+  from it.
 - The announcement is only as good as Pi's bus: a host without `pi.events` gets no event, which is
   why the symbol remains the authority and the example reports that state honestly instead of
   waiting for something that cannot arrive.
@@ -1032,9 +1250,15 @@ counts after it belong to that same frame — lines received, then what the tran
 - Card styles are proven against a fake conversation component that reproduces gentle-shell's
   `float` output, never in a running Pi TUI; the downstream-override conflict above is a property of
   a real session the fake cannot reproduce.
-- `registerCardStyle` and `registerTransform` are optional on the published object: an object
-  published by a copy older than that surface passes the gate but lacks it, so a plugin that needs
-  one checks `typeof api.registerCardStyle === "function"` (or `registerTransform`) first.
+- `registerCardStyle`, `registerTransform`, `registerToolDesign` and `requestRepaint` are optional
+  on the published object: an object published by a copy older than that surface passes the gate but
+  lacks it, so a plugin that needs one checks `typeof api.registerCardStyle === "function"` (or
+  `registerTransform`, `registerToolDesign`, `requestRepaint`) first.
+- A design receives ROWS, a width and the PART it is drawing (`call` or `result`), never a renderer
+  object and never the theme's shape. `part` is one of two literals; a design that ignores it is
+  byte-identical to one written before the field existed, and a context produced by an older copy of
+  the bridge carries no `part` at all — a design reads it as unknown (`ctx.part === "result"` is
+  simply false) and keeps working.
 - A transform is a per-frame pass, so a slow transform is a slow frame; the bridge isolates its
   failures and clips its width, and can bound nothing else. It sees lines, never tool metadata.
 - The API is released (`0.3.0`). The `v1` symbol is the compatibility boundary: a breaking

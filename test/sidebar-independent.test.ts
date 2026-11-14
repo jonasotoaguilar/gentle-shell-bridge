@@ -121,6 +121,8 @@ const loadEntry = (): Entry => {
   const sessionHandlers: BridgeSessionHandler[] = [];
   const commands: Entry["commands"] = [];
   const pi: BridgeExtensionApi = {
+    // `gentle-pi` is present, so `session_start` arms and reports it (S9/T12).
+    getCommands: () => [{ name: "gentle:customize" }],
     on(_event, handler) {
       sessionHandlers.push(handler);
     },
@@ -255,6 +257,7 @@ test("B3: a row-only session through the entry keeps the pre-feature status outp
 
   assert.deepEqual(printStatus(entry), [
     "gentle-shell-bridge status",
+    "gentle-pi: present",
     "providers: none",
     "backend: capture",
     "last capture: injected 0 rows",

@@ -12,6 +12,7 @@ import {
   resetCardStylesForTests,
   resetSectionsForTests,
   resetTransformsForTests,
+  snapshotSections,
 } from "../src/bus.ts";
 import gentleShellBridge, {
   type BridgeCommandContext,
@@ -28,8 +29,26 @@ import {
   resetPluginLinesForTests,
 } from "../src/plugin-lines.ts";
 import { rowNameProblem } from "../src/row-names.ts";
+import { setRepaintHost, resetRepaintForTests } from "../src/repaint.ts";
+import { resetSectionPanelForTests, setSectionTheme } from "../src/section-panel.ts";
+import { resetSectionPointerForTests } from "../src/section-pointer.ts";
+import {
+  SIDEBAR_RAIL_KEY,
+  disableSidebarBackend,
+  installSidebarBackend,
+  resetSidebarStateForTests,
+} from "../src/sidebar.ts";
+import { installSectionRail, resetSectionFailuresForTests } from "../src/sidebar-render.ts";
 import { collectStatus, formatStatus } from "../src/status.ts";
 import { resetStoreStateForTests } from "../src/store.ts";
+import {
+  fakeState,
+  fakeTerminal,
+  fakeTui,
+  registerNativeFooter,
+  renderSidebar,
+  resetSidebar,
+} from "./fake-sidebar.ts";
 
 /**
  * The integration line is proven against a FAKE footer: an object with `setStatus(key, text)` that
@@ -80,6 +99,8 @@ const createFakePi = (): FakePi => {
   const shutdowns: BridgeSessionHandler[] = [];
   const commands: Array<{ name: string; handler: BridgeCommandHandler }> = [];
   const api: BridgeExtensionApi = {
+    // `gentle-pi` is present, so `session_start` installs the INTEGRATIONS surface (S9/T12).
+    getCommands: () => [{ name: "gentle:customize" }],
     on(event, handler) {
       if (event === "session_start") sessions.push(handler);
       else if (event === "session_shutdown") shutdowns.push(handler);
@@ -805,20 +826,154 @@ test("the example installed under the Pi distribution registers one identity and
 
   assert.deepEqual(
     [...footer.statuses.values()],
-    ["Bash card · ready"],
-    "four surfaces, one identity, one row — and no `Pi coding agent` row",
+    ["Card bash · ready"],
+    "the design, the demo provider, the section and the card style: one identity, one row",
   );
   assert.equal(footer.statuses.size, 1);
   assert.equal(new Set(footer.calls.map((entry) => entry.key)).size, 1);
   const report = getPluginLineReport();
   assert.equal(report.plugins.length, 1);
-  assert.equal(report.plugins[0].name, "Bash card");
+  assert.equal(report.plugins[0].name, "Card bash");
   assert.equal(report.plugins[0].nameSource, "explicit");
   assert.ok(
     report.plugins[0].key.startsWith(`${PLUGIN_LINE_PREFIX}bash-card.`),
     "the key names the plugin module, never the Pi distribution (I10, I11)",
   );
-  assert.equal(report.plugins[0].accepted, 4, "rows, section, card style and transform");
+  assert.equal(
+    report.plugins[0].accepted,
+    4,
+    "the bash design, the demo row provider, the CARD BASH section and the plain card style",
+  );
   assert.equal(report.plugins[0].rejected.length, 0);
   assert.equal(report.plugins[0].nameConflicts.length, 0);
+});
+
+/** The example's OWN store value, read the way a user reads the file (`bash-card.json`). */
+const storedPresses = (configHome: string): unknown => {
+  const document = JSON.parse(
+    readFileSync(join(configHome, "gentle-shell-bridge", "bash-card.json"), "utf8"),
+  ) as { values?: Record<string, unknown> };
+  return document.values?.demoPresses;
+};
+
+/** The `demo presses` row of the example's section, as it is drawn right now. */
+const pressesRow = (
+  section: { lines(ctx: { theme: undefined; configHome: string }): unknown[] },
+  configHome: string,
+): { label?: string; meta?: string; onClick?: () => void } | undefined => {
+  const row = section.lines({ theme: undefined, configHome }).find(
+    (candidate) =>
+      typeof candidate === "object" &&
+      candidate !== null &&
+      (candidate as { label?: unknown }).label === "demo presses",
+  );
+  return row as { label?: string; meta?: string; onClick?: () => void } | undefined;
+};
+
+test("T42: the example's `demo presses` row is clickable, prints once, and hovers through the host's rail", async () => {
+  const configHome = mkdtempSync(join(tmpdir(), "gsb-example-demo-"));
+  scratchDirs.push(configHome);
+  const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+  process.env.GENTLE_PI_CONFIG_HOME = configHome;
+  try {
+    resetSidebar();
+    resetSidebarStateForTests();
+    resetSectionFailuresForTests();
+    resetSectionPanelForTests();
+    resetSectionPointerForTests();
+    resetRepaintForTests();
+    disableSidebarBackend();
+
+    // The real entry: the example's default export, loaded from its own file, registers the section
+    // through the published bridge object exactly as Pi loads it.
+    publishBridgeApi();
+    const installed = new URL("../examples/bash-card.ts", import.meta.url);
+    const sessionHandlers: Array<
+      (event: unknown, ctx: { hasUI?: boolean; ui?: unknown }) => void
+    > = [];
+    const loaded = (await import(
+      `${pathToFileURL(installed.pathname).href}?load=${String(Date.now())}`
+    )) as {
+      default: (pi: {
+        on?: (event: string, handler: (event: unknown, ctx: { hasUI?: boolean; ui?: unknown }) => void) => void;
+      }) => () => void;
+    };
+    const dispose = loaded.default({
+      on(_event, handler) {
+        sessionHandlers.push(handler);
+      },
+    });
+    try {
+      sessionHandlers[0]({}, { hasUI: true, ui: createFakeFooter().ui });
+
+      const section = snapshotSections().find((candidate) => candidate.id === "bash-card.status");
+      assert.ok(section !== undefined, "the example registered its section through the real entry");
+      const ctx = { theme: undefined, configHome };
+      assert.equal(section.meta?.(ctx), "native", "the header meta is the live selection");
+      assert.equal(
+        section
+          .lines(ctx)
+          .some((row) => typeof row !== "string" && row.label === "selected"),
+        false,
+        "the selection is printed once, never as a duplicate body row",
+      );
+
+      const presses = pressesRow(section, configHome);
+      assert.ok(presses !== undefined, "the demo presses row is a structured row");
+      assert.equal(presses.meta, "0", "its meta is the live press count");
+      assert.equal(typeof presses.onClick, "function", "and it is a clickable action row");
+
+      presses.onClick?.();
+      assert.equal(storedPresses(configHome), 1, "one action, one stored increment");
+      assert.equal(pressesRow(section, configHome)?.meta, "1", "the next frame reads the new count");
+      presses.onClick?.();
+      assert.equal(storedPresses(configHome), 2, "and one more action, one more increment");
+
+      // The same row, mounted on the host's rail: hover paints it, a click runs it once.
+      let renders = 0;
+      setRepaintHost({
+        terminal: fakeTerminal(),
+        requestRender: () => {
+          renders += 1;
+        },
+      });
+      setSectionTheme({
+        fg: (role: string, text: string) => (role === "warning" ? `\u001b[33m${text}\u001b[39m` : text),
+        bold: (text: string) => text,
+      });
+      registerNativeFooter();
+      installSidebarBackend(() => fakeTui());
+      installSectionRail();
+      renderSidebar();
+
+      const rail = fakeState().parts.get(SIDEBAR_RAIL_KEY);
+      const frame = rail?.render(40) ?? [];
+      const y = frame.findIndex((row) => row.includes("demo presses"));
+      assert.ok(y > 0, "the action row is inside the host part's frame");
+      assert.ok(!frame[y]?.includes("\u001b[33m"), "it starts idle");
+
+      const before = renders;
+      assert.deepEqual(
+        rail?.handleMouse?.({ type: "move", button: "none", x: 4, y, width: 40, height: 40 }),
+        { handled: true, render: true },
+        "the row answers a hover through the host's dispatch",
+      );
+      assert.equal(renders, before + 1, "one frame is asked for");
+      assert.ok(
+        (rail?.render(40) ?? [])[y]?.includes("\u001b[33m"),
+        "and it is painted with the host's hover role",
+      );
+
+      assert.deepEqual(
+        rail?.handleMouse?.({ type: "click", button: "left", x: 4, y, width: 40, height: 40 }),
+        { handled: true, render: true },
+      );
+      assert.equal(storedPresses(configHome), 3, "one rail click, one increment");
+    } finally {
+      dispose();
+    }
+  } finally {
+    if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+    else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+  }
 });

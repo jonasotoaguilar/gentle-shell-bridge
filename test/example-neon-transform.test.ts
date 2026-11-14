@@ -42,8 +42,8 @@ import { resetToolDesignWiringForTests } from "../src/tool-design-wiring.ts";
 import type { CustomizeRow, InlineHelpers } from "../src/types.ts";
 import { createFakeHost } from "./fake-host.ts";
 import {
-  HOST_BASH_NEON_CALL,
-  HOST_BASH_NEON_RESULT,
+  BASH_MINIMAL_NEON_CALL,
+  BASH_MINIMAL_NEON_RESULT,
   stripAnsi,
 } from "./fake-transcript.ts";
 
@@ -202,21 +202,25 @@ async function startWorld(tag: string): Promise<World> {
   };
 }
 
-/** The host's neon top rule with `bash` in place of `$`, three rule columns fewer. */
+/**
+ * The host's neon top rule with `bash` in place of `$`, three rule columns fewer: the host's bytes are
+ * `test/fake-transcript.ts`'s `BASH_MINIMAL_NEON_CALL[0]`, and the rule's own `─` fill is what gives
+ * the word its three extra columns back.
+ */
 const DESIGNED_NEON_TOP =
-  "\u001b[90m╭\u001b[39m\u001b[90m─ \u001b[39m\u001b[95mbash npm test\u001b[39m" +
-  "\u001b[37m (timeout 30s)\u001b[39m\u001b[90m ──────────\u001b[39m \u001b[2mctrl+o to expand\u001b[39m" +
-  " \u001b[90m╮\u001b[39m";
+  "\u001b[95m╭\u001b[39m\u001b[95m─ \u001b[39m\u001b[95mbash \u001b[95m\u001b[1mnpm test\u001b[22m\u001b[39m" +
+  "\u001b[37m (timeout 30s)\u001b[39m\u001b[39m\u001b[95m ──────────\u001b[39m \u001b[2mctrl+o to expand\u001b[39m" +
+  " \u001b[95m╮\u001b[39m";
 
 test("T10: the neon outline stays neon, and only the mark changes", async () => {
   const world = await startWorld("neon-design");
-  const renderers = fakeRenderers(HOST_BASH_NEON_CALL, HOST_BASH_NEON_RESULT);
+  const renderers = fakeRenderers(BASH_MINIMAL_NEON_CALL, BASH_MINIMAL_NEON_RESULT);
   const resolved = world.resolver("bash", () => renderers);
   assert.ok(resolved !== undefined);
   const call = mount(resolved, "renderCall");
   const result = mount(resolved, "renderResult");
 
-  assert.deepEqual(call.render(60), [...HOST_BASH_NEON_CALL], "the host's neon rule, unchanged");
+  assert.deepEqual(call.render(60), [...BASH_MINIMAL_NEON_CALL], "the host's neon rule, unchanged");
 
   await world.pick("bash heading");
   const output = call.render(60);
@@ -225,17 +229,17 @@ test("T10: the neon outline stays neon, and only the mark changes", async () => 
   assert.equal(output[0], DESIGNED_NEON_TOP, "`bash` where the host printed `$`");
   assert.equal(
     stripAnsi(output[0]).length,
-    stripAnsi(HOST_BASH_NEON_CALL[0]).length,
+    stripAnsi(BASH_MINIMAL_NEON_CALL[0]).length,
     "the rule is exactly as wide as the host made it",
   );
   assert.ok(stripAnsi(output[0]).startsWith("╭─ bash npm test"), "the outline is still the outline");
   assert.ok(stripAnsi(output[0]).endsWith(" ctrl+o to expand ╮"), "and the hint is still the hint");
 
   const body = result.render(60);
-  assert.deepEqual(body, [...HOST_BASH_NEON_RESULT], "every body row is byte-identical");
+  assert.deepEqual(body, [...BASH_MINIMAL_NEON_RESULT], "every body row is byte-identical");
   assert.equal(
     body[body.length - 1],
-    HOST_BASH_NEON_RESULT[HOST_BASH_NEON_RESULT.length - 1],
+    BASH_MINIMAL_NEON_RESULT[BASH_MINIMAL_NEON_RESULT.length - 1],
     "the closing rule is the host's own",
   );
 
@@ -245,11 +249,11 @@ test("T10: the neon outline stays neon, and only the mark changes", async () => 
 test("T10: the design leaves a body row that carries `$` inside text alone", async () => {
   const world = await startWorld("neon-content-dollar");
   const result = [
-    "\u001b[90m│\u001b[39m export PATH=$HOME/bin                              \u001b[90m│\u001b[39m",
-    HOST_BASH_NEON_RESULT[1],
-    HOST_BASH_NEON_RESULT[2],
+    "\u001b[95m│\u001b[39m \u001b[37mexport PATH=$HOME/bin\u001b[39m                              \u001b[95m│\u001b[39m",
+    BASH_MINIMAL_NEON_RESULT[1],
+    BASH_MINIMAL_NEON_RESULT[2],
   ];
-  const renderers = fakeRenderers(HOST_BASH_NEON_CALL, result);
+  const renderers = fakeRenderers(BASH_MINIMAL_NEON_CALL, result);
   const resolved = world.resolver("bash", () => renderers);
   assert.ok(resolved !== undefined);
   const mounted = mount(resolved, "renderResult");
@@ -262,7 +266,7 @@ test("T10: the design leaves a body row that carries `$` inside text alone", asy
 
 test("T10: the host's own card restores the neon rule byte for byte", async () => {
   const world = await startWorld("neon-native");
-  const renderers = fakeRenderers(HOST_BASH_NEON_CALL, HOST_BASH_NEON_RESULT);
+  const renderers = fakeRenderers(BASH_MINIMAL_NEON_CALL, BASH_MINIMAL_NEON_RESULT);
   const resolved = world.resolver("bash", () => renderers);
   assert.ok(resolved !== undefined);
   const call = mount(resolved, "renderCall");
@@ -271,7 +275,7 @@ test("T10: the host's own card restores the neon rule byte for byte", async () =
   assert.equal(call.render(60)[0], DESIGNED_NEON_TOP);
 
   await world.pick("native");
-  assert.deepEqual(call.render(60), [...HOST_BASH_NEON_CALL]);
+  assert.deepEqual(call.render(60), [...BASH_MINIMAL_NEON_CALL]);
 
   world.dispose();
 });

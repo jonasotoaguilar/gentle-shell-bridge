@@ -43,8 +43,53 @@ returns the lines to draw, so whatever `Card style` is selected survives by cons
 `neon` the card stays neon, with `float` it stays float. The example changes exactly two things on
 the heading row — the mark, and the fill it gives back so the row keeps the host's width — and every
 other byte of every other row (ANSI, padding, hint, rails, body) comes back identical:
-`test/example-bash-identity.test.ts` and `test/example-neon-transform.test.ts` assert that byte for
-byte in both styles.
+`test/example-bash-identity.test.ts`, `test/example-neon-transform.test.ts` and
+`test/example-bash-matrix.test.ts` assert that byte for byte.
+
+### The whole matrix: every card style × every card content (S11)
+
+The user's requirement, verbatim:
+
+> tambien las tools redisenada (en este caso tool bash) personalizadas deberia ser compatibles con
+> card style float/neon (o agregados) y card content default/minimal
+
+`test/example-bash-matrix.test.ts` drives the registered design through the real bus over every cell,
+and every fixture it uses was produced by running the installed host's and pi's own code — the
+derivation, file and line per fixture, is the comment block in `test/fake-transcript.ts`:
+
+| card style | card content | the heading row the host draws | the design's row | reachable? |
+| ---------- | ------------ | ------------------------------ | ---------------- | ---------- |
+| `float` | `minimal` | ` ▎ $ npm test (timeout 30s) …… ctrl+o to expand   ` | ` ▎ bash npm test (timeout 30s) …… ctrl+o to expand   ` | yes — `extensions/quiet-tools.ts:910-914` |
+| `neon` | `minimal` | `╭─ $ npm test (timeout 30s) ────── ctrl+o to expand ╮` | `╭─ bash npm test (timeout 30s) ────── ctrl+o to expand ╮` | yes — same renderer, `lib/shell-card.ts:105-108` |
+| `float` | `default` | ` $ npm test (timeout 30s)` inside pi's `Box` | ` bash npm test (timeout 30s)` | yes — pi's native renderer (`core/tools/renderers/bash.js`) |
+| `neon` | `default` | identical to the cell above | identical | yes, and the same rows: nothing on pi's path reads `cardStyle()` |
+| ADDED (`registerCardStyle`) | `minimal` | the float rows, repainted by `src/card-style-transform.ts` | the design's word survives the repaint | yes |
+| ADDED (`registerCardStyle`) | `default` | pi's native rows | unchanged | **no** — the repaint's grammar is float's ` ▎ ` (`src/card-style-transform.ts:189-196`), so a registered style cannot reach pi's native card |
+
+How the design finds the heading, without parsing frame chrome it does not own:
+
+1. the heading is the component's first row that carries a letter, a digit or the mark;
+2. the mark must be the row's first non-decoration character, followed by a space — `PATH=$HOME` and
+   `$(date)` are never prompts;
+3. no blank row may precede it: pi's native RESULT component opens with a `Spacer` row, and that one
+   row is what tells a native result from a native call;
+4. the row may not begin with the outline frame's side or closing rule (`│`, `╰`): a heading is on
+   the card's top, so a `$` on an outline body row is output;
+5. the word's three extra columns come out of the row's widest padding/rule fill, so the row keeps
+   the host's width exactly; when no run is wide enough the row is left as the host drew it.
+
+**Limits, stated rather than hidden.** (a) In the `float` cell the call and the result are separate
+components drawn with the same chrome, and the bridge hands `apply` rows without a call/result role,
+so a float RESULT whose first body row begins with `$ ` (a command echoing a prompt) sits exactly
+where a heading sits and is rewritten; the other two cells exclude it (blank row / `│` side).
+(b) A command containing a wider run of spaces than the frame's own fill would have those spaces
+shortened instead of the fill. (c) The heading must be in the first row of content: a host that puts
+a second row of chrome above its heading would be reported as unrecognised, not guessed at.
+
+**A frame the design cannot prove** comes back byte-identical and is reported once: the `BASH CARD`
+section carries an `unrecognised  <reason>` row (`none` until it happens) and the same reason is
+delivered once through `ctx.ui.notify`. That is the honest answer the earlier iterations were missing
+— a design that recognises nothing now says so instead of looking installed.
 
 The design is registered for the tool name `bash`, and the `Cards` line it produces appears with no
 extra wiring: `bash  ○ native  ○ bash heading`. The first value is the bridge's own `native` — the
@@ -54,8 +99,9 @@ bridge reads the live selection on every render pass. A `read` card is never tou
 declared per tool name, and the bus has no bash-specific branch.
 
 The **`BASH CARD`** section is the second surface: the host draws the card and owns the collapse
-control, and the section body reports live state — which value is selected for `bash`, and whether
-this load's design reached the bridge (`resolver  registered` / `resolver  absent`). It needs no
+control, and the section body reports live state — which value is selected for `bash`, whether this
+load's design reached the bridge (`resolver  registered` / `resolver  absent`), and whether the
+design could recognise the frames it was handed (`unrecognised  none`, or the reason). It needs no
 extra wiring either: registering the section is what adds its `Sections` toggle.
 
 Copy the file into `~/.pi/agent/extensions/` and `/reload` to load it; the `bash` line defaults to

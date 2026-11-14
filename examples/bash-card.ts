@@ -24,7 +24,18 @@
  *
  *    The design changes exactly two things, both on the heading row: the `$` mark becomes `bash`, and
  *    the frame's fill loses the three columns the longer mark added, so the row keeps the width the
- *    host made it. Every other row is the byte-for-byte host row.
+ *    host made it. Every other row is the byte-for-byte host row. `test/example-bash-matrix.test.ts`
+ *    drives that claim over the whole matrix the user named (S11): `float`, `neon` and a style ADDED
+ *    through `registerCardStyle`, crossed with card content `minimal` and `default` — where the host's
+ *    resolver calls `next()` and pi's native renderer draws rows that look nothing like a gentle-shell
+ *    card. The table of what the host draws in each cell, and the source lines each fixture came from,
+ *    is the comment block above the fixtures in `test/fake-transcript.ts`.
+ *
+ *    Finding the heading never parses the frame's chrome: the design takes the component's first row
+ *    that carries content and the host's `$` mark as its first non-decoration character, and refuses
+ *    two shapes that cannot be a heading — a mark after a blank row (pi's native result component
+ *    opens with a `Spacer` row) and a mark on the outline frame's side or closing rule. The two limits
+ *    that rule leaves are stated in the section header below and in README.md; the one shape it cannot *    prove is drawn exactly as the host drew it and reported, instead of being guessed at.
  *
  *    `default` is not a design: the customize line of every tool starts with the reserved value
  *    `native`, the host's own card, so installing this file changes no rendering until the user picks
@@ -34,8 +45,10 @@
  *    gentle-shell's fullscreen sidebar, drawn by the host's own frame, and the same registration
  *    gives it a `Sections` toggle in `/gentle:customize` with no row, setting or store written by
  *    this file. It reports the LIVE design state: which value is selected for `bash` (the header's
- *    right-aligned meta and the `selected` row) and whether this load's design reached the bus
- *    (`resolver  registered` / `resolver  absent`).
+ *    right-aligned meta and the `selected` row), whether this load's design reached the bus
+ *    (`resolver  registered` / `resolver  absent`), and whether the design could recognise the
+ *    frames it was handed (`unrecognised  none`, or the reason — also delivered once through
+ *    `ctx.ui.notify`).
  *
  *    The card behaves like a host card (N10–N14): clicking the HEADER folds the section (the bridge
  *    owns that, and persists it), the header's right-aligned meta is the live selection, and the rows
@@ -215,18 +228,54 @@ interface ExtensionEventsLike {
 // The design: `bash` where the host prints its bare `$` mark
 // ---------------------------------------------------------------------------------------------
 //
-// The design only ever looks at the card's FIRST content row, because that is where a tool card's
-// heading is: the frame's padding rows carry no letters, and the heading is the first row that does.
-// On that row it looks for the host's mark — a `$` preceded only by frame decoration — and leaves
-// the card alone when it finds none (a `read` card, a body row, a bash result that carries no mark).
+// WHAT THE HOST REALLY DRAWS (S11/T17; the fixtures in `test/fake-transcript.ts` carry the source
+// lines, and `test/example-bash-matrix.test.ts` drives every cell):
 //
-// The heading mark is replaced and the row's fill shrinks by the same number of columns, so the row
-// keeps the width the host gave it. Nothing else on the row moves: the ANSI run that carried the
-// mark still carries the word, the hint stays right-aligned, and every other row is untouched.
+// | card style | card content | the heading row the host draws                          |
+// | ---------- | ------------ | ------------------------------------------------------- |
+// | `float`    | `minimal`    | ` ▎ $ npm test (timeout 30s) …… ctrl+o to expand   `      |
+// | `neon`     | `minimal`    | `╭─ $ npm test (timeout 30s) ────── ctrl+o to expand ╮` |
+// | any        | `default`    | `$ npm test (timeout 30s)      …padding…` (pi's native row) |
+//
+// So the mark is `$` in every cell, and only the amount of frame around it changes. The design
+// therefore keys on the MARK and on its POSITION, never on a frame's shape, colour or fill:
+//
+// 1. the heading is the component's first row that carries a letter, a digit or the mark;
+// 2. the mark must be the first non-decoration character on that row, followed by a space — a `$`
+//    inside a command or an output line (`PATH=$HOME`, `$(date)`) is never a prompt;
+// 3. the rows before it, when there are any, must be frame decoration and must NOT include a blank
+//    row: pi's native RESULT component starts with a blank `Spacer` row (`Spacer(1)` in
+//    `dist/core/tools/renderers/bash.js`), and a bash result is not a heading — that one row is what
+//    tells the two components apart in the `default` cell;
+// 4. the row must not begin with the outline frame's SIDE or CLOSING rule (`│`, `╰`): a heading is
+//    always on the card's top, so a `$` on a body row of the `neon` card (`cat script.sh` printing a
+//    prompt) is output, not a heading. In the `float` cell the top row and a body row share both
+//    chrome and position, so a float body row that begins with `$ ` is the one shape this design
+//    cannot tell from a heading — the bridge hands `apply` rows without a call/result role. That is
+//    the documented limit (README, `test/example-bash-matrix.test.ts`); it costs no data and no
+//    width, and no other cell has it.
+//
+// The word replaces the mark and the row's padding or rule fill gives back the columns it adds, so
+// the row keeps the width the host made it. When there is no fill to take them from — a heading whose
+// command fills the row — the design does NOT grow the row: it returns the frame byte for byte and
+// reports that once, through the same two channels the rest of this file uses (`ctx.ui.notify` and
+// the BASH CARD section), instead of silently drawing nothing the way the first iterations did.
+//
+// The three limits this rule leaves, all of them stated in README.md and pinned by
+// `test/example-bash-matrix.test.ts`: a `float` RESULT body row that begins with `$ ` is
+// indistinguishable from a heading (point 4); the fill is the row's WIDEST run, so a command carrying
+// a wider run of spaces than the frame's fill would have those shortened instead; and a heading is
+// only looked for in the component's first content row, so a chrome that adds a second row above the
+// heading is reported as unrecognised rather than guessed at.
 
 /** The heading mark the host prints, and the word the design puts in its place. */
 const MARK = "$";
 const WORD = "bash";
+/** Columns the replacement adds, which the row's own fill has to give back. */
+const WORD_COLUMNS = WORD.length - MARK.length;
+
+/** The outline frame's side and closing rules: a `$` on such a row is output, never a heading. */
+const FRAME_BODY_STARTS: ReadonlySet<string> = new Set(["│", "╰"]);
 
 /** One visible character of a row and where it starts in the raw string (ANSI skipped). */
 interface VisibleChar {
@@ -270,8 +319,38 @@ function isWordCharacter(char: string): boolean {
   return /[\p{L}\p{N}]/u.test(char);
 }
 
+/** The columns a reader sees: the row's visible characters, ANSI ignored. */
+function visibleWidth(line: string): number {
+  return visibleChars(line).length;
+}
+
+/**
+ * Why a frame the design was handed is not a bash heading. Each reason carries a short label (the
+ * BASH CARD row the user reads) and a full sentence (the one-time notice).
+ */
+const UNRECOGNISED = {
+  /** The mark sits on a row of the outlined frame's body, not on the card's top. */
+  bodyRow: {
+    short: "outline body row",
+    detail: "the mark is on an outline body row, never on the card's top",
+  },
+  /** A blank row comes first: pi's native result component opens with one. */
+  blankFirst: {
+    short: "blank row first",
+    detail: "a blank row comes before the mark, as pi's native result component draws",
+  },
+  /** The word's columns cannot be taken back without growing the row. */
+  noRoom: {
+    short: "no fill",
+    detail: `the row has no padding or rule fill to take the word's ${WORD_COLUMNS} columns from`,
+  },
+} as const;
+
+/** One reason a frame was refused. */
+type Unrecognised = (typeof UNRECOGNISED)[keyof typeof UNRECOGNISED];
+
 /** The card's heading mark: which row it is on, where it starts, and how many columns it costs. */
-interface HeadingMark {
+interface HeadingSite {
   row: number;
   /** Raw offset of the mark in the row, so the word replaces the mark and nothing else. */
   raw: number;
@@ -279,52 +358,155 @@ interface HeadingMark {
   extra: number;
 }
 
+/** What the design could make of one component's rows. Every outcome is a reported answer. */
+type Recognition =
+  | { kind: "heading"; site: HeadingSite }
+  | { kind: "none" }
+  | { kind: "unrecognised"; reason: Unrecognised };
+
 /**
- * The mark the design replaces, or `undefined` when the card has none.
- *
- * The heading is the first row that carries a letter, a digit or the mark itself; a frame-only row
- * (padding, a closing rule) has none of them. The mark qualifies only when everything before it is
- * frame decoration — whitespace, the `▎` rail, the `╭─` corners and rule — so a `$` inside a command
- * or an output line is never rewritten as if it were the prompt.
+ * Where the heading is, or why it cannot be proved. The rule is in the header of this section:
+ * content position first, then the mark, then the two shapes that prove the row is not a heading.
  */
-function headingMark(lines: readonly string[]): HeadingMark | undefined {
-  for (const [row, line] of lines.entries()) {
-    const chars = visibleChars(line);
-    // A frame-only row (padding, a closing rule) has neither a letter nor the mark, so it cannot be
-    // the heading; the first row that has either one is where the mark lives.
-    if (!chars.some((entry) => isWordCharacter(entry.char) || entry.char === MARK)) continue;
-    const mark = chars.find((entry) => entry.char === MARK);
-    if (mark === undefined) return undefined;
-    const before = chars
-      .slice(0, chars.indexOf(mark))
-      .map((entry) => entry.char)
-      .join("");
-    if (!/^[^\p{L}\p{N}]*$/u.test(before)) return undefined;
-    return { row, raw: mark.raw, extra: WORD.length - MARK.length };
+function headingSite(lines: readonly string[]): Recognition {
+  let row = -1;
+  let chars: VisibleChar[] = [];
+  for (const [index, line] of lines.entries()) {
+    const candidates = visibleChars(line);
+    if (!candidates.some((entry) => isWordCharacter(entry.char) || entry.char === MARK)) continue;
+    row = index;
+    chars = candidates;
+    break;
   }
-  return undefined;
+  // No content at all (a padding row, a closing rule): there is nothing to recognise, and nothing
+  // to report — this is what a card's last component looks like when the command printed nothing.
+  if (row < 0) return { kind: "none" };
+
+  const markIndex = chars.findIndex((entry) => entry.char === MARK);
+  // Content without the host's mark: another tool's card, or a bash result. Silently the host's.
+  if (markIndex < 0) return { kind: "none" };
+  const mark = chars[markIndex];
+  if (mark === undefined) return { kind: "none" };
+
+  // A `$` on the outline's side or closing rule is output that happens to start with a prompt.
+  const first = chars.find((entry) => entry.char.trim() !== "");
+  if (first !== undefined && FRAME_BODY_STARTS.has(first.char)) {
+    return { kind: "unrecognised", reason: UNRECOGNISED.bodyRow };
+  }
+
+  // A blank row before the mark means this component is not the card's top: pi's native result
+  // component opens with a `Spacer` row, so its first output row sits exactly where a heading sits.
+  for (const previous of lines.slice(0, row)) {
+    if (visibleChars(previous).every((entry) => entry.char.trim() === "")) {
+      return { kind: "unrecognised", reason: UNRECOGNISED.blankFirst };
+    }
+  }
+
+  // The mark must be the row's first non-decoration character (frame padding, a bar, a rule), and a
+  // prompt rather than a shell expansion: `$HOME`, `$(date)` and `a$b` are not the mark.
+  const before = chars
+    .slice(0, markIndex)
+    .map((entry) => entry.char)
+    .join("");
+  if (!/^[^\p{L}\p{N}]*$/u.test(before)) return { kind: "none" };
+  const after = chars[markIndex + 1];
+  if (after !== undefined && after.char !== " ") return { kind: "none" };
+
+  return { kind: "heading", site: { row, raw: mark.raw, extra: WORD_COLUMNS } };
 }
 
 /**
- * Give back the columns the longer mark added, by shortening the row's longest run of padding —
- * `float`'s space fill, `neon`'s rule fill. A row with no such run keeps its content and is returned
- * as it is: this design never truncates what the host drew.
+ * Give back the columns the longer mark added, out of the row's own fill: `float`'s space fill,
+ * `neon`'s rule fill, pi's trailing padding. The fill is the row's WIDEST run of spaces or rules,
+ * which is what the host paints it with in every cell (`cardTop`'s ` ${fill}` and `cardLine`'s
+ * padding), and a run no wider than the columns needed is not a fill at all: `undefined` means the
+ * row must not be touched. Between equally wide runs the one with no letter or digit beside it wins,
+ * so the command text is the last thing this design would shorten; that preference is the documented
+ * second limit — a command carrying a wider run of spaces than the frame's fill would have those
+ * shortened instead.
  */
-function shortenFill(line: string, columns: number): string {
-  let best: { start: number; length: number } | undefined;
-  for (const run of line.matchAll(/ +|─+/gu)) {
-    const start = run.index ?? 0;
-    if (best === undefined || run[0].length > best.length) best = { start, length: run[0].length };
+function shortenFill(line: string, columns: number): string | undefined {
+  const chars = visibleChars(line);
+  interface Run {
+    start: number;
+    length: number;
+    /** No letter or digit on either side: unmistakably padding, never part of the words. */
+    bounded: boolean;
   }
-  if (best === undefined || best.length <= columns) return line;
-  const cut = best.start + best.length - columns;
-  return `${line.slice(0, cut)}${line.slice(cut + columns)}`;
+  const runs: Run[] = [];
+  for (let index = 0; index < chars.length; index += 1) {
+    const char = chars[index]?.char;
+    if (char !== " " && char !== "─") continue;
+    let end = index;
+    // A fill is one CONTIGUOUS raw run: the host closes the styled run it belongs to before the
+    // padding, the hint and the rule that follow, so a space on the other side of an escape sequence
+    // belongs to a different part of the row and is never merged into it.
+    while (
+      end + 1 < chars.length &&
+      chars[end + 1]?.char === char &&
+      chars[end + 1]?.raw === (chars[end]?.raw ?? 0) + 1
+    ) {
+      end += 1;
+    }
+    const before = chars[index - 1]?.char;
+    const after = chars[end + 1]?.char;
+    runs.push({
+      start: index,
+      length: end - index + 1,
+      bounded:
+        (before === undefined || !isWordCharacter(before)) &&
+        (after === undefined || !isWordCharacter(after)),
+    });
+    index = end;
+  }
+  if (runs.length === 0) return undefined;
+  const widest = Math.max(...runs.map((run) => run.length));
+  // As wide as the columns needed (or narrower) would empty the fill: the row keeps its bytes.
+  if (widest <= columns) return undefined;
+  const candidates = runs.filter((run) => run.length === widest);
+  const chosen = candidates.find((run) => run.bounded) ?? candidates[0];
+  if (chosen === undefined) return undefined;
+
+  let shortened = line;
+  for (let index = chosen.start + chosen.length - 1; index >= chosen.start + chosen.length - columns; index -= 1) {
+    const at = chars[index]?.raw;
+    if (at === undefined) return undefined;
+    shortened = `${shortened.slice(0, at)}${shortened.slice(at + 1)}`;
+  }
+  return shortened;
 }
 
 /**
- * The design's whole behaviour: find the heading mark, swap it for the word, keep the row's width.
- * Rows the design has nothing to do with — a body row, a closing rule, another tool's card — are
- * returned as they came, byte for byte.
+ * Every reason a frame was drawn unchanged, in the order it was first seen, deduplicated: the same
+ * card is re-rendered on every frame, so a count would grow without telling the user anything.
+ */
+const unrecognisedFrames: Unrecognised[] = [];
+
+/**
+ * Record (once) that a frame the design was handed was left exactly as the host drew it. Both
+ * channels this example owns are used: the TUI notice (delivered on the next `session_start`, and
+ * only once per reason) and the live BASH CARD row below.
+ */
+function recordUnrecognised(reason: Unrecognised): void {
+  if (unrecognisedFrames.some((entry) => entry.short === reason.short)) return;
+  unrecognisedFrames.push(reason);
+  recordNotice(
+    `[bash-card] one bash card frame was left exactly as the host drew it: ${reason.detail}. The ` +
+      "design only rewrites a heading it can prove, and never a row it cannot keep the width of; the " +
+      "BASH CARD sidebar section reports this live.",
+  );
+}
+
+/** The live report the BASH CARD section shows: `none`, or the last reason a frame was refused. */
+function unrecognisedText(): string {
+  return unrecognisedFrames.at(-1)?.short ?? "none";
+}
+
+/**
+ * The design's whole behaviour: prove where the heading is, swap the mark for the word, keep the
+ * row's width. Rows the design has nothing to do with — a body row, a closing rule, another tool's
+ * card — are returned as they came, byte for byte; a frame it cannot prove is returned unchanged and
+ * reported once.
  */
 function applyBashHeading(lines: readonly string[], ctx: ToolDesignContextLike): string[] {
   // The tool name is the bridge's, and it is the same one this file declared; a design that
@@ -332,14 +514,25 @@ function applyBashHeading(lines: readonly string[], ctx: ToolDesignContextLike):
   // answer rather than rewriting a card the design was not for.
   if (ctx.tool !== TOOL_NAME) return [...lines];
 
-  const mark = headingMark(lines);
-  if (mark === undefined) return [...lines];
-  const row = lines[mark.row];
+  const recognition = headingSite(lines);
+  if (recognition.kind === "unrecognised") {
+    recordUnrecognised(recognition.reason);
+    return [...lines];
+  }
+  if (recognition.kind === "none") return [...lines];
+
+  const { site } = recognition;
+  const row = lines[site.row];
   if (row === undefined) return [...lines];
 
-  const replaced = `${row.slice(0, mark.raw)}${WORD}${row.slice(mark.raw + MARK.length)}`;
-  const balanced = shortenFill(replaced, mark.extra);
-  return [...lines.slice(0, mark.row), balanced, ...lines.slice(mark.row + 1)];
+  const replaced = `${row.slice(0, site.raw)}${WORD}${row.slice(site.raw + MARK.length)}`;
+  const balanced = shortenFill(replaced, site.extra);
+  if (balanced === undefined || visibleWidth(balanced) !== visibleWidth(row)) {
+    // Growing the row would break the frame the host drew, so the host's row stands.
+    recordUnrecognised(UNRECOGNISED.noRoom);
+    return [...lines];
+  }
+  return [...lines.slice(0, site.row), balanced, ...lines.slice(site.row + 1)];
 }
 
 /** A literal depiction for `/gentle:customize`'s preview, every row the same 25 columns. */
@@ -432,6 +625,10 @@ function bashDesignSection(
       // A plain string, inert on purpose: it reports whether this load's design reached the bus.
       // The per-CARD mount count is the bridge's own diagnostic (`/bridge-status`), not a plugin's.
       `resolver  ${designRegistered() ? "registered" : "absent"}`,
+      // The live answer to "did the design recognise the cards it was handed?". `none` until a frame
+      // is refused, then the reason, once — a card is re-rendered on every pass, so a count would say
+      // nothing. The same reason is delivered once through `ctx.ui.notify` (`recordUnrecognised`).
+      `unrecognised  ${unrecognisedText()}`,
     ],
     // Visible on install: a section needs no extra step from the plugin or the user.
     defaultVisible: true,

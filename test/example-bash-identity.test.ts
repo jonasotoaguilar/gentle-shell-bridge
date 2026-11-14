@@ -41,7 +41,11 @@ import { resetToolDesignRowStateForTests } from "../src/tool-design-rows.ts";
 import { resetToolDesignWiringForTests } from "../src/tool-design-wiring.ts";
 import type { CustomizeRow, InlineHelpers } from "../src/types.ts";
 import { createFakeHost } from "./fake-host.ts";
-import { HOST_BASH_CALL, HOST_BASH_RESULT, stripAnsi } from "./fake-transcript.ts";
+import {
+  BASH_MINIMAL_FLOAT_CALL,
+  BASH_MINIMAL_FLOAT_RESULT,
+  stripAnsi,
+} from "./fake-transcript.ts";
 
 let configHome: string;
 let previousConfigHome: string | undefined;
@@ -216,11 +220,16 @@ async function startWorld(tag: string): Promise<World> {
   };
 }
 
-/** The heading row with the host's `$` mark replaced by `bash`, and three fill columns fewer. */
+/**
+ * The heading row with the host's `$` mark replaced by `bash`, and three fill columns fewer.
+ * The host's bytes are `test/fake-transcript.ts`'s `BASH_MINIMAL_FLOAT_CALL[1]`: the mark sits inside
+ * the title run the host painted, so the word replaces one character and the row's space fill — not
+ * the hint, not the rail — gives the three extra columns back.
+ */
 const DESIGNED_FLOAT_HEADING =
-  " \u001b[48;5;236m\u001b[90m▎\u001b[39m\u001b[90m \u001b[39m\u001b[95mbash npm test\u001b[39m" +
-  "\u001b[37m (timeout 30s)\u001b[39m\u001b[90m         \u001b[39m \u001b[2mctrl+o to expand\u001b[39m" +
-  " \u001b[90m  \u001b[39m\u001b[49m ";
+  " \u001b[48;5;236m\u001b[95m▎\u001b[39m\u001b[95m \u001b[39m\u001b[95mbash \u001b[95m\u001b[1mnpm test\u001b[22m\u001b[39m" +
+  "\u001b[37m (timeout 30s)\u001b[39m\u001b[39m\u001b[95m         \u001b[39m \u001b[2mctrl+o to expand\u001b[39m" +
+  " \u001b[95m  \u001b[39m\u001b[49m ";
 
 // ---------------------------------------------------------------------------------------------
 // The default: the host's own card, no intervention
@@ -244,7 +253,7 @@ test("T10/S8: the design appears on the `bash` Cards line beside the host's own 
 
 test("T10: with the host's own card selected, the resolver draws the host's rows unchanged", async () => {
   const world = await startWorld("native-bytes");
-  const renderers = fakeRenderers(HOST_BASH_CALL, HOST_BASH_RESULT);
+  const renderers = fakeRenderers(BASH_MINIMAL_FLOAT_CALL, BASH_MINIMAL_FLOAT_RESULT);
   const resolved = world.resolver("bash", () => renderers);
   assert.ok(resolved !== undefined);
 
@@ -256,8 +265,8 @@ test("T10: with the host's own card selected, the resolver draws the host's rows
 
   assert.equal(call.render(60), hostCall, "the host's own ARRAY instance, not a copy");
   assert.equal(result.render(60), hostResult, "both renderers, byte for byte");
-  assert.deepEqual(call.render(60), [...HOST_BASH_CALL]);
-  assert.deepEqual(result.render(60), [...HOST_BASH_RESULT]);
+  assert.deepEqual(call.render(60), [...BASH_MINIMAL_FLOAT_CALL]);
+  assert.deepEqual(result.render(60), [...BASH_MINIMAL_FLOAT_RESULT]);
 
   world.dispose();
 });
@@ -268,7 +277,7 @@ test("T10: with the host's own card selected, the resolver draws the host's rows
 
 test("T10: the `bash` design changes the heading mark and nothing else, byte for byte", async () => {
   const world = await startWorld("designed-bytes");
-  const renderers = fakeRenderers(HOST_BASH_CALL, HOST_BASH_RESULT);
+  const renderers = fakeRenderers(BASH_MINIMAL_FLOAT_CALL, BASH_MINIMAL_FLOAT_RESULT);
   const resolved = world.resolver("bash", () => renderers);
   assert.ok(resolved !== undefined);
   const call = mount(resolved, "renderCall");
@@ -278,13 +287,25 @@ test("T10: the `bash` design changes the heading mark and nothing else, byte for
 
   const output = call.render(60);
 
-  assert.equal(output.length, HOST_BASH_CALL.length, "the frame keeps its row count");
+  assert.equal(output.length, BASH_MINIMAL_FLOAT_CALL.length, "the frame keeps its row count");
   assert.equal(output[1], DESIGNED_FLOAT_HEADING, "the heading mark is `bash`");
-  assert.equal(stripAnsi(output[1]).length, stripAnsi(HOST_BASH_CALL[1]).length, "width preserved");
-  for (const index of [0, 2]) {
-    assert.equal(output[index], HOST_BASH_CALL[index], `row ${index} is the host's byte for byte`);
+  assert.equal(
+    stripAnsi(output[1] ?? "").length,
+    stripAnsi(BASH_MINIMAL_FLOAT_CALL[1] ?? "").length,
+    "width preserved",
+  );
+  for (const index of [0]) {
+    assert.equal(
+      output[index],
+      BASH_MINIMAL_FLOAT_CALL[index],
+      `row ${index} is the host's byte for byte`,
+    );
   }
-  assert.notEqual(output, HOST_BASH_CALL, "a new frame was produced, not the host's array mutated");
+  assert.notEqual(
+    output,
+    BASH_MINIMAL_FLOAT_CALL,
+    "a new frame was produced, not the host's array mutated",
+  );
 
   const resultOutput = result.render(60);
   assert.deepEqual(
@@ -292,7 +313,7 @@ test("T10: the `bash` design changes the heading mark and nothing else, byte for
     mount(renderers, "renderResult").render(60),
     "the body is the host's, row for row",
   );
-  assert.deepEqual(resultOutput, [...HOST_BASH_RESULT], "every result row is byte-identical");
+  assert.deepEqual(resultOutput, [...BASH_MINIMAL_FLOAT_RESULT], "every result row is byte-identical");
   assert.ok(
     resultOutput.some((row) => row.includes("duration 1.2s")),
     "the host's body is what was drawn",
@@ -303,7 +324,7 @@ test("T10: the `bash` design changes the heading mark and nothing else, byte for
 
 test("T10: picking the host's own card again restores the host's rows", async () => {
   const world = await startWorld("back-to-native");
-  const renderers = fakeRenderers(HOST_BASH_CALL, HOST_BASH_RESULT);
+  const renderers = fakeRenderers(BASH_MINIMAL_FLOAT_CALL, BASH_MINIMAL_FLOAT_RESULT);
   const resolved = world.resolver("bash", () => renderers);
   assert.ok(resolved !== undefined);
   const call = mount(resolved, "renderCall");
@@ -312,7 +333,7 @@ test("T10: picking the host's own card again restores the host's rows", async ()
   assert.equal(call.render(60)[1], DESIGNED_FLOAT_HEADING);
 
   await world.pick("native");
-  assert.deepEqual(call.render(60), [...HOST_BASH_CALL], "the host's card, unchanged");
+  assert.deepEqual(call.render(60), [...BASH_MINIMAL_FLOAT_CALL], "the host's card, unchanged");
 
   world.dispose();
 });
@@ -332,14 +353,14 @@ test("T10: the design is declared for the `bash` tool name, so another tool is u
 
 test("T10: a design whose selection names nothing falls back to the host's card", async () => {
   const world = await startWorld("missing-selection");
-  const renderers = fakeRenderers(HOST_BASH_CALL, HOST_BASH_RESULT);
+  const renderers = fakeRenderers(BASH_MINIMAL_FLOAT_CALL, BASH_MINIMAL_FLOAT_RESULT);
   const resolved = world.resolver("bash", () => renderers);
   assert.ok(resolved !== undefined);
   const call = mount(resolved, "renderCall");
 
   setToolDesignSelection("bash", "bash-card.retired");
 
-  assert.deepEqual(call.render(60), [...HOST_BASH_CALL], "a design nobody owns draws the host's card");
+  assert.deepEqual(call.render(60), [...BASH_MINIMAL_FLOAT_CALL], "a design nobody owns draws the host's card");
 
   world.dispose();
 });

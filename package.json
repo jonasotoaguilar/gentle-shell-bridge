@@ -10,6 +10,17 @@
     "gentle-ai",
     "extension"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jonasotoaguilar/gentle-shell-bridge.git"
+  },
+  "files": [
+    "src",
+    "docs/contract.md",
+    "docs/state.md",
+    "docs/architecture.md",
+    "README.md"
+  ],
   "pi": {
     "extensions": [
       "./src/extension.ts"

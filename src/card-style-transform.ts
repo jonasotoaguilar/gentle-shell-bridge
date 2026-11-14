@@ -409,17 +409,20 @@ function cellWidth(char: string): number {
 }
 
 /**
- * The model pi-tui measures a row with, ported from `visibleWidth` (`pi-tui/dist/utils.js:126-268`):
+ * The model pi-tui measures a row with, ported from `visibleWidth` (`pi-tui/dist/utils.js:212-268`,
+ * pi-tui 1.5.x):
  *
  * - ANSI/CSI, OSC and APC sequences are zero columns (`:228-257`, which strips through
  *   `extractAnsiCode`, so an OSC-8 hyperlink contributes its TEXT and not its URL);
  * - a TAB is THREE columns, not one (`:229-231`, `clean.replace(/\t/g, "   ")`);
  * - the rest is segmented into GRAPHEME CLUSTERS (`:259-262`, `Intl.Segmenter` with
  *   `granularity: "grapheme"`) and each cluster is charged the way `graphemeWidth` charges it
- *   (`:126-165`): a cluster of nothing but ignorables, controls, marks and surrogates none, an RGI
- *   emoji (after the host's own `couldBeEmoji` prefilter, so bare `©`/`☺`/`▶` are NOT emoji) two, a
- *   leading regional-indicator pair two, otherwise its base code point's East Asian `W|F` width,
- *   plus every trailing halfwidth/fullwidth form and the Thai/Lao AM vowels.
+ *   (`:143-207`): a lone printable ASCII byte one, a cluster of terminal-spacing marks its code
+ *   point count, a cluster of nothing but ignorables/controls/marks/surrogates none, an RGI emoji
+ *   (after the host's own `couldBeEmoji` prefilter, so bare `©`/`☺`/`▶` are NOT emoji) two, a
+ *   leading regional-indicator pair two, otherwise the base's East Asian `W|F` width plus every
+ *   terminal-spacing mark, mark-following VISIBLE code point (the consonant of an Indic conjunct
+ *   after its virama: `क्‍ष` is two columns), halfwidth/fullwidth form and Thai/Lao AM vowel.
  *
  * This exists because `visibleColumns` counts per code point, charges a tab one column and only
  * ignores SGR, so a row this package believes fits can measure wider to the host (or a fitting row
@@ -509,15 +512,30 @@ function graphemes(clean: string): string[] {
 
 /**
  * A cluster made only of ignorables, controls, marks, formats or surrogates has no columns
- * (`zeroWidthRegex`, `pi-tui/dist/utils.js:27`).
+ * (`zeroWidthRegex`, `pi-tui/dist/utils.js:34`).
  */
 const ZERO_WIDTH_CLUSTER = /^(?:\p{Default_Ignorable_Code_Point}|\p{Control}|\p{Mark}|\p{Surrogate})+$/v;
 
-/** The marks an emoji or a consonant may carry before its base (`leadingNonPrintingRegex`, `:28`). */
+/** The marks an emoji or a consonant may carry before its base (`leadingNonPrintingRegex`, `:35`). */
 const LEADING_NON_PRINTING =
   /^[\p{Default_Ignorable_Code_Point}\p{Control}\p{Format}\p{Mark}\p{Surrogate}]+/v;
 
-/** The emoji set the host tests AFTER its cheap prefilter (`rgiEmojiRegex`, `:29`). */
+/** One character the host's trailing loop skips (`nonPrintingCharRegex`, `:36`). */
+const NON_PRINTING_CHAR =
+  /^(?:\p{Default_Ignorable_Code_Point}|\p{Control}|\p{Format}|\p{Mark}|\p{Surrogate})$/v;
+
+/** One combining mark (`markCharRegex`, `:37`). */
+const MARK_CHAR = /^\p{Mark}$/v;
+
+/**
+ * The marks terminals allocate cells for, with or without a base (`terminalSpacingMarkRegex`,
+ * `:38-40`): spacing marks except a few zero-width exceptions, plus the scripts whose spacing marks
+ * legacy wcwidth tables charge. A lone `ि` is ONE column to the host, while a lone `्` is none.
+ */
+const TERMINAL_SPACING_MARK =
+  /^(?:[\p{Spacing_Mark}--[\u1734\u302E\u302F]]|[\u065F\u0F7F\u102B\u102C\u1031\u1033-\u1035\u1038\u103A-\u103E])+$/v;
+
+/** The emoji set the host tests AFTER its cheap prefilter (`rgiEmojiRegex`, `:41`). */
 const RGI_EMOJI = /^\p{RGI_Emoji}$/v;
 
 /**
@@ -595,14 +613,26 @@ function isEastAsianWide(codePoint: number): boolean {
 
 /**
  * The columns one grapheme cluster occupies, as the host charges it (`graphemeWidth`,
- * `pi-tui/dist/utils.js:126-165`), in the host's own order:
+ * `pi-tui/dist/utils.js:143-207`), in the host's own order:
  *
- * 1. a cluster of ignorables, controls, marks and surrogates is zero columns;
- * 2. an RGI emoji (after the host's prefilter) is two, so `©`/`☺` are NOT emoji and `©️`/`1️⃣` are;
- * 3. a leading regional-indicator pair is two; otherwise the base's East Asian width;
- * 4. every trailing halfwidth/fullwidth form and the Thai/Lao AM vowels add their own columns.
+ * 1. a lone printable ASCII byte is one column, a lone TAB three;
+ * 2. a cluster of terminal-spacing marks is its code point count (a lone `ि` is one, not zero);
+ * 3. a cluster of ignorables, controls, marks and surrogates is zero;
+ * 4. an RGI emoji (after the host's prefilter) is two, so `©`/`☺` are NOT emoji and `©️`/`1️⃣` are;
+ * 5. a leading regional-indicator pair is two; otherwise the base's East Asian width;
+ * 6. every trailing terminal-spacing mark adds one, and every VISIBLE code point that follows a
+ *    mark adds its own width — which is why an Indic conjunct such as `क्‍ष` is TWO columns (base
+ *    `क` plus the consonant `ष` after the virama), not one. Halfwidth/fullwidth forms and the
+ *    Thai/Lao AM vowels add their own columns on the same walk.
  */
 function clusterColumns(cluster: string): number {
+  // The host's own fast path (`graphemeWidth`, `:149-159`).
+  if (cluster.length === 1) {
+    const code = cluster.charCodeAt(0);
+    if (code >= 0x20 && code <= 0x7e) return 1;
+    if (code === 0x09) return TAB_COLUMNS;
+  }
+  if (TERMINAL_SPACING_MARK.test(cluster)) return [...cluster].length;
   if (ZERO_WIDTH_CLUSTER.test(cluster)) return 0;
   if (couldBeEmoji(cluster) && RGI_EMOJI.test(cluster)) return 2;
 
@@ -612,13 +642,23 @@ function clusterColumns(cluster: string): number {
   if (codePoint >= 0x1f1e6 && codePoint <= 0x1f1ff) return 2;
 
   let width = isEastAsianWide(codePoint) ? 2 : 1;
-  if (cluster.length > 1) {
-    // The host slices the cluster by UTF-16 unit and only these code points add columns.
-    for (const char of cluster.slice(1)) {
-      const trailing = char.codePointAt(0) ?? 0;
-      if (trailing >= 0xff00 && trailing <= 0xffef) width += isEastAsianWide(trailing) ? 2 : 1;
-      else if (trailing === 0x0e33 || trailing === 0x0eb3) width += 1;
+  let followsMark = false;
+  for (const char of [...base].slice(1)) {
+    if (TERMINAL_SPACING_MARK.test(char)) {
+      width += 1;
+      followsMark = false;
+      continue;
     }
+    if (MARK_CHAR.test(char)) {
+      followsMark = true;
+      continue;
+    }
+    if (NON_PRINTING_CHAR.test(char)) continue;
+    const trailing = char.codePointAt(0) ?? 0;
+    if (followsMark) width += isEastAsianWide(trailing) ? 2 : 1;
+    else if (trailing >= 0xff00 && trailing <= 0xffef) width += isEastAsianWide(trailing) ? 2 : 1;
+    else if (trailing === 0x0e33 || trailing === 0x0eb3) width += 1;
+    followsMark = false;
   }
   return width;
 }

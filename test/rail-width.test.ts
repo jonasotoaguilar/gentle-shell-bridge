@@ -22,17 +22,20 @@
  *
  * ## How the host measures a row
  *
- * `visibleWidth` (`pi-tui/dist/utils.js:212-268`) strips complete CSI/OSC/APC sequences, expands a
- * TAB to THREE columns (`:229-231`), segments the rest into grapheme clusters and charges each one
- * the way `graphemeWidth` charges it (`:126-165`): zero for a cluster of ignorables/controls/marks,
- * two for an RGI emoji (after the host's own `couldBeEmoji` prefilter, so a bare `©`, `☺` or `▶` is
- * NOT an emoji and stays one column), two for a regional-indicator pair, otherwise the base code
- * point's East Asian `W|F` width, plus every trailing halfwidth/fullwidth form and the Thai/Lao AM
- * vowels. This package's own `visibleColumns` counts a tab as one column and every code point
- * separately, so a row this package believes is 48 columns wide can measure 51 to the host. The
- * port below is the host's model, kept here independently of `src/` — no production width helper is
- * imported — so the assertions do not test the implementation against itself; a self-check test
- * pins the values measured from the installed `visibleWidth`.
+ * `visibleWidth` (`pi-tui/dist/utils.js:212-268`, pi-tui 1.5.x) strips complete CSI/OSC/APC
+ * sequences, expands a TAB to THREE columns (`:229-231`), segments the rest into grapheme clusters
+ * and charges each one the way `graphemeWidth` charges it (`:143-207`): a lone printable ASCII or
+ * TAB by its own rule, a cluster of terminal-spacing marks by its code point count, zero for a
+ * cluster of ignorables/controls/marks, two for an RGI emoji (after the host's own `couldBeEmoji`
+ * prefilter, so a bare `©`, `☺` or `▶` is NOT an emoji and stays one column), two for a
+ * regional-indicator pair, otherwise the base code point's East Asian `W|F` width plus every
+ * terminal-spacing mark, mark-following visible code point (an Indic consonant after a virama),
+ * halfwidth/fullwidth form and Thai/Lao AM vowel the cluster carries. This package's own
+ * `visibleColumns` counts a tab as one column and every code point separately, so a row this
+ * package believes is 48 columns wide can measure 51 to the host. The port below is the host's
+ * model, kept here independently of `src/` — no production width helper is imported — so the
+ * assertions do not test the implementation against itself; a self-check test pins the values
+ * measured from the installed `visibleWidth`.
  *
  * ## The rail path, as the host paints it
  *
@@ -103,12 +106,24 @@ function escapeLengthAt(line: string, index: number): number {
   return 0;
 }
 
-/** A cluster of nothing but ignorables, controls, marks or surrogates: no columns (`:27`). */
+/** A cluster of nothing but ignorables, controls, marks or surrogates: no columns (`:34`). */
 const ZERO_WIDTH = /^(?:\p{Default_Ignorable_Code_Point}|\p{Control}|\p{Mark}|\p{Surrogate})+$/v;
-/** What a cluster may carry before its base (`leadingNonPrintingRegex`, `:28`). */
+/** What a cluster may carry before its base (`leadingNonPrintingRegex`, `:35`). */
 const LEADING_NON_PRINTING =
   /^[\p{Default_Ignorable_Code_Point}\p{Control}\p{Format}\p{Mark}\p{Surrogate}]+/v;
-/** The emoji set the host tests AFTER its prefilter (`rgiEmojiRegex`, `:29`). */
+/** One character the host's trailing loop skips (`nonPrintingCharRegex`, `:36`). */
+const NON_PRINTING_CHAR =
+  /^(?:\p{Default_Ignorable_Code_Point}|\p{Control}|\p{Format}|\p{Mark}|\p{Surrogate})$/v;
+/** One combining mark (`markCharRegex`, `:37`). */
+const MARK_CHAR = /^\p{Mark}$/v;
+/**
+ * Marks terminals allocate cells for, with or without a base (`terminalSpacingMarkRegex`, `:38-40`):
+ * spacing marks except a few zero-width exceptions, plus the scripts whose spacing marks legacy
+ * wcwidth tables charge.
+ */
+const TERMINAL_SPACING_MARK =
+  /^(?:[\p{Spacing_Mark}--[\u1734\u302E\u302F]]|[\u065F\u0F7F\u102B\u102C\u1031\u1033-\u1035\u1038\u103A-\u103E])+$/v;
+/** The emoji set the host tests AFTER its prefilter (`rgiEmojiRegex`, `:41`). */
 const RGI_EMOJI = /^\p{RGI_Emoji}$/v;
 
 /** The host's cheap emoji prefilter (`couldBeEmoji`, `:16-26`). */
@@ -181,8 +196,16 @@ function hostWidth(line: string): number {
   return total;
 }
 
-/** One grapheme cluster's columns, in the host's own order (`graphemeWidth`, `:126-165`). */
+/** One grapheme cluster's columns, in the host's own order (`graphemeWidth`, `:143-207`). */
 function clusterWidth(segment: string): number {
+  // The host's own fast path: a lone printable ASCII byte is one column, a lone TAB three.
+  if (segment.length === 1) {
+    const code = segment.charCodeAt(0);
+    if (code >= 0x20 && code <= 0x7e) return 1;
+    if (code === 0x09) return 3;
+  }
+  // Some marks occupy cells even without a base character.
+  if (TERMINAL_SPACING_MARK.test(segment)) return [...segment].length;
   if (ZERO_WIDTH.test(segment)) return 0;
   if (couldBeEmoji(segment) && RGI_EMOJI.test(segment)) return 2;
 
@@ -192,10 +215,20 @@ function clusterWidth(segment: string): number {
   if (codePoint >= 0x1f1e6 && codePoint <= 0x1f1ff) return 2;
 
   let width = isWide(codePoint) ? 2 : 1;
-  for (const char of segment.slice(1)) {
-    const trailing = char.codePointAt(0) ?? 0;
-    if (trailing >= 0xff00 && trailing <= 0xffef) width += isWide(trailing) ? 2 : 1;
-    else if (trailing === 0x0e33 || trailing === 0x0eb3) width += 1;
+  let followsMark = false;
+  for (const char of [...base].slice(1)) {
+    if (TERMINAL_SPACING_MARK.test(char)) {
+      width += 1;
+      followsMark = false;
+    } else if (MARK_CHAR.test(char)) {
+      followsMark = true;
+    } else if (!NON_PRINTING_CHAR.test(char)) {
+      const trailing = char.codePointAt(0) ?? 0;
+      if (followsMark) width += isWide(trailing) ? 2 : 1;
+      else if (trailing >= 0xff00 && trailing <= 0xffef) width += isWide(trailing) ? 2 : 1;
+      else if (trailing === 0x0e33 || trailing === 0x0eb3) width += 1;
+      followsMark = false;
+    }
   }
   return width;
 }
@@ -213,6 +246,9 @@ test("the host-width oracle agrees with the values pi-tui's own visibleWidth pro
     ["▶", 1],
     ["🎵", 2],
     ["ｶﾞ", 2],
+    ["क्‍ष", 2],
+    ["नमस्ते", 4],
+    ["ि", 1],
     ["👨‍👩‍👧‍👦", 2],
     ["🇯🇵", 2],
     ["e\u0301", 1],

@@ -49,12 +49,49 @@ test("a trailing halfwidth/fullwidth form is charged its own column", () => {
 
 test("a cluster of marks charges nothing, and a leading mark rides its base", () => {
   assert.equal(hostColumns("्"), 0, "a lone Devanagari virama occupies no cell");
-  assert.equal(hostColumns("ि"), 0, "a lone Devanagari vowel sign occupies no cell");
   assert.equal(hostColumns("़क"), 1, "the leading nukta is stripped before measuring क");
-  assert.equal(hostColumns("क्‍ष"), 1, "the Indic conjunct is one cluster with a Devanagari base");
   assert.equal(hostColumns("क्"), 1);
-  assert.equal(hostColumns("नमस्ते"), 3, "the host's own number for नमस्ते");
   assert.equal(hostColumns("e\u0301"), 1, "a combining acute rides its base");
+});
+
+test("a Devanagari spacing mark occupies its own cell, as the host allocates one", () => {
+  assert.equal(hostColumns("ि"), 1, "U+093F is a Spacing_Mark: the host charges it one column");
+  assert.equal(hostColumns("ा"), 1, "U+093E is a Spacing_Mark too");
+  assert.equal(hostColumns("नमस्ते"), 4, "the host's own number for नमस्ते (pi-tui 1.5.x)");
+  assert.equal(hostColumns("हिन्दी"), 5, "the host's own number for हिन्दी");
+});
+
+// ---------------------------------------------------------------------------------------------
+// W2-3: a consonant that follows a mark is charged, so it cannot overflow a narrower frame
+// ---------------------------------------------------------------------------------------------
+
+test("an Indic conjunct that follows a mark is two columns, and is never cut into one column", () => {
+  // pi-tui 1.5.x charges the base (क) plus the visible consonant after the virama (ष): 2 columns.
+  // Charging the cluster as its base alone made a "one column" frame hold two.
+  assert.equal(hostColumns("क्‍ष"), 2, "the host charges the conjunct two columns");
+  assert.equal(hostColumns("क्ष"), 2, "with or without the joiner");
+  assert.equal(hostColumns("क्‍षा"), 3, "the trailing spacing mark adds its own cell");
+
+  assert.equal(
+    clipToWidth("क्‍षx", 1),
+    "",
+    "a two-column cluster cannot be emitted in a one-column frame",
+  );
+  assert.equal(clipToWidth("क्‍षx", 2), "क्‍ष", "at two columns the whole cluster fits");
+  assert.equal(hostColumns(clipToWidth("क्‍षx", 2)), 2, "and the result measures exactly two");
+  for (const width of [0, 1, 2, 3]) {
+    assert.ok(
+      hostColumns(clipToWidth("क्‍षx", width)) <= width,
+      `the cut at ${width} never exceeds the frame`,
+    );
+  }
+});
+
+test("the pipeline clips an overflowing Indic conjunct instead of emitting it", () => {
+  registerTransform({ id: "indic", transform: () => ["क्‍षx"] });
+
+  assert.deepEqual(applyTransforms(["host"], 1), [""], "nothing wider than the frame reaches the host");
+  assert.deepEqual(applyTransforms(["host"], 2), ["क्‍ष"]);
 });
 
 test("a Thai/Lao AM vowel adds a column, and an ignorable symbol adds none", () => {

@@ -250,8 +250,14 @@ function frameCounts(lines: number, reported: ReportedCounts | undefined): Trans
 /**
  * The transform's output, clipped to the host's width (S4). Returns `undefined` when nothing
  * changed, so the caller keeps the array it already had and identity survives a no-op.
+ *
+ * The same ARRAY means the transform touched nothing: it is handed back without measuring or
+ * clipping a single row. That is the rule a real TUI needed (W2-1): the example returns `lines` in
+ * `default` mode, and clipping the host's own rows afterwards cut them on the right, because the
+ * clip's model disagreed with the host's about hyperlinks and grapheme clusters.
  */
 function clipResult(next: readonly string[], current: readonly string[], width: number): string[] | undefined {
+  if (next === current) return undefined;
   const clipped = next.map((line) => clipToWidth(line, width));
   const unchanged =
     clipped.length === current.length &&

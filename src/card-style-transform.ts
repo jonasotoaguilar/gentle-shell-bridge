@@ -409,11 +409,138 @@ function cellWidth(char: string): number {
 }
 
 /**
- * The visible columns of one row, SGR ignored. Used to decide whether clipping is needed at all.
+ * The model pi-tui measures a row with, ported from `visibleWidth`:
  *
- * Exported for the section renderer's panel fallback (`./section-panel.ts`): the host's
- * `fitPanelLine` measures rows with pi-tui's `visibleWidth`, which this package cannot import, so
- * the same column model the card styles already use is the one place width is decided.
+ * - ANSI/CSI, OSC and APC sequences are zero columns (`pi-tui/dist/utils.js:232-252`, which strips
+ *   through `extractAnsiCode`, so an OSC-8 hyperlink contributes its TEXT and not its URL);
+ * - a TAB is THREE columns, not one (`graphemeWidth`, `:148-155`: `if (code === 0x09) return 3`);
+ * - the rest is segmented into GRAPHEME CLUSTERS (`:255-258`, `Intl.Segmenter` with
+ *   `granularity: "grapheme"`) and each cluster is charged as a whole: an emoji cluster two
+ *   columns (`:164-167`), a regional-indicator pair two (`:174-179`), a cluster of nothing but
+ *   marks none (`:160-163`), otherwise its base code point's East Asian width.
+ *
+ * This exists because `visibleColumns` counts per code point, charges a tab one column and only
+ * ignores SGR, so a row this package believes fits can measure wider to the host (or a fitting row
+ * can be cut). Anything contributed to the HOST's frame is measured the host's way
+ * (`./section-panel.ts`, `./sidebar-render.ts`, `./transform-pipeline.ts`).
+ */
+export function hostColumns(line: string): number {
+  if (line === "") return 0;
+  // Tabs first, exactly like the host: `clean.replace(/\t/g, "   ")` (`utils.js:229-231`).
+  const expanded = line.includes("\t") ? line.replace(/\t/gu, "   ") : line;
+  const clean = stripHostEscapes(expanded);
+  // Fast path, like the host's (`utils.js:216-221`): printable ASCII is one column per byte.
+  if (ASCII_ONLY.test(clean)) return clean.length;
+  let columns = 0;
+  for (const segment of graphemes(clean)) columns += clusterColumns(segment);
+  return columns;
+}
+
+/** One complete escape sequence at `index`, read exactly as pi-tui's `extractAnsiCode` reads it. */
+function hostEscapeAt(line: string, index: number): { code: string; length: number } | undefined {
+  if (line[index] !== "\u001b") return undefined;
+  const kind = line[index + 1];
+  if (kind === "[") {
+    // CSI: `ESC [` up to and including the first final byte the host recognises.
+    let end = index + 2;
+    while (end < line.length && !/[mGKHJ]/u.test(line[end] ?? "")) end += 1;
+    return end < line.length ? { code: line.slice(index, end + 1), length: end + 1 - index } : undefined;
+  }
+  if (kind === "]" || kind === "_") {
+    // OSC / APC: terminated by BEL or by ST (`ESC \\`).
+    let end = index + 2;
+    while (end < line.length) {
+      if (line[end] === "\u0007") return { code: line.slice(index, end + 1), length: end + 1 - index };
+      if (line[end] === "\u001b" && line[end + 1] === "\\") {
+        return { code: line.slice(index, end + 2), length: end + 2 - index };
+      }
+      end += 1;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+/** A row with every complete escape sequence removed, as the host strips before measuring. */
+function stripHostEscapes(line: string): string {
+  if (!line.includes("\u001b")) return line;
+  let clean = "";
+  let index = 0;
+  while (index < line.length) {
+    const escape = hostEscapeAt(line, index);
+    if (escape !== undefined) {
+      index += escape.length;
+      continue;
+    }
+    clean += line[index];
+    index += 1;
+  }
+  return clean;
+}
+
+/** The URI of an OSC-8 hyperlink, or `""` for its closing sequence; `undefined` for anything else. */
+function osc8Target(code: string): string | undefined {
+  if (!code.startsWith("\u001b]8;")) return undefined;
+  const end = code.endsWith("\u0007") ? code.length - 1 : code.length - 2;
+  const body = code.slice(4, end);
+  const separator = body.indexOf(";");
+  return separator === -1 ? undefined : body.slice(separator + 1);
+}
+
+/** A row of printable ASCII, the one shape whose width needs no grapheme segmentation. */
+const ASCII_ONLY = /^[\x20-\x7e]*$/;
+
+/** A grapheme segmenter, or `undefined` on a runtime without `Intl.Segmenter`. */
+const GRAPHEMES: Intl.Segmenter | undefined =
+  typeof Intl === "object" && typeof Intl.Segmenter === "function"
+    ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+    : undefined;
+
+/** The grapheme clusters of one row, falling back to code points when no segmenter exists. */
+function graphemes(clean: string): string[] {
+  if (GRAPHEMES === undefined) return Array.from(clean);
+  const clusters: string[] = [];
+  for (const { segment } of GRAPHEMES.segment(clean)) clusters.push(segment);
+  return clusters;
+}
+
+/** Marks, joiners, variation selectors and emoji modifiers ride their base: no columns of their own. */
+function isZeroWidthCodePoint(code: number): boolean {
+  return (
+    code < 32 ||
+    (code >= 0x7f && code < 0xa0) ||
+    (code >= 0x300 && code <= 0x36f) ||
+    (code >= 0x200b && code <= 0x200f) ||
+    (code >= 0x2060 && code <= 0x2064) ||
+    code === 0xfeff ||
+    (code >= 0xfe00 && code <= 0xfe0f) ||
+    (code >= 0x1f3fb && code <= 0x1f3ff)
+  );
+}
+
+const PICTOGRAPHIC = /[\p{Extended_Pictographic}\p{Regional_Indicator}]/u;
+
+/** The columns one grapheme cluster occupies, as the host charges it. */
+function clusterColumns(cluster: string): number {
+  let base = 0;
+  let found = false;
+  for (const char of cluster) {
+    const code = char.codePointAt(0) ?? 0;
+    if (isZeroWidthCodePoint(code)) continue;
+    if (!found) {
+      base = code;
+      found = true;
+    }
+  }
+  if (!found) return 0;
+  if (PICTOGRAPHIC.test(cluster)) return 2;
+  return isWideCodePoint(base) ? 2 : 1;
+}
+
+/**
+ * The visible columns of one row, SGR ignored, counted CODE POINT by code point. This is NOT the
+ * host's model: it charges a TAB one column, ignores no OSC/APC sequence and splits a grapheme
+ * cluster. Anything measured for the host's frame uses `hostColumns`.
  */
 export function visibleColumns(line: string): number {
   let columns = 0;
@@ -433,37 +560,68 @@ export function visibleColumns(line: string): number {
 }
 
 /**
- * Clip one row to the host's width, SGR preserved and never left open.
+ * Clip one row to the host's width, measured and cut the way the host measures and cuts.
  *
- * A style can return anything; the host's frame is the contract, so a wider row is cut here rather
- * than corrupting the layout. Nothing is ever appended to fit: padding is the style's business.
+ * A row that already fits under `hostColumns` is returned BYTE-IDENTICAL, escapes included: the
+ * host's own rows must survive a transform that did not touch them (an OSC-8 hyperlink made this
+ * model disagree with pi-tui, and a fitting row was cut on the right).
+ *
+ * A row that must be cut keeps every escape it reaches whole, charges a TAB three columns and a
+ * grapheme cluster as a unit, and never splits one. An OSC-8 link left open by the cut is closed
+ * and an active SGR is reset, so the cut cannot leak a link or a paint into the following rows.
+ * Nothing is ever appended to fit: padding is the style's business.
  */
 export function clipToWidth(line: string, width: number): string {
   if (width <= 0) return "";
-  if (visibleColumns(line) <= width) return line;
+  if (hostColumns(line) <= width) return line;
 
   let output = "";
   let used = 0;
-  let index = 0;
   let styled = false;
-  while (index < line.length) {
-    SGR_AT.lastIndex = index;
-    const escape = SGR_AT.exec(line);
-    if (escape !== null) {
-      output += escape[0];
-      styled = true;
-      index += escape[0].length;
+  let linkOpen = false;
+  let stop = false;
+  let index = 0;
+  while (!stop && index < line.length) {
+    const escape = hostEscapeAt(line, index);
+    if (escape !== undefined) {
+      output += escape.code;
+      if (escape.code.endsWith("m")) styled = true;
+      const target = osc8Target(escape.code);
+      if (target !== undefined) linkOpen = target !== "";
+      index += escape.length;
       continue;
     }
-    const char = String.fromCodePoint(line.codePointAt(index) ?? 0);
-    const cells = cellWidth(char);
-    if (used + cells > width) break;
-    output += char;
-    used += cells;
-    index += char.length;
+    if (line[index] === "\t") {
+      if (used + TAB_COLUMNS > width) break;
+      output += "\t";
+      used += TAB_COLUMNS;
+      index += 1;
+      continue;
+    }
+    // A plain run: segmented exactly as the host segments the stripped row.
+    const start = index;
+    while (index < line.length && line[index] !== "\t" && hostEscapeAt(line, index) === undefined) {
+      index += 1;
+    }
+    for (const cluster of graphemes(line.slice(start, index))) {
+      const cells = clusterColumns(cluster);
+      if (used + cells > width) {
+        stop = true;
+        break;
+      }
+      output += cluster;
+      used += cells;
+    }
   }
+  if (linkOpen) output += OSC8_CLOSE;
   return styled ? `${output}${RESET}` : output;
 }
+
+/** How many columns the host charges for a TAB (`graphemeWidth`, `pi-tui/dist/utils.js:148-155`). */
+const TAB_COLUMNS = 3;
+
+/** The OSC-8 close, so a link opened before a cut does not stay clickable over the rows after it. */
+const OSC8_CLOSE = "\u001b]8;;\u0007";
 
 // ---------------------------------------------------------------------------------------------
 // The transform

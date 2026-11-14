@@ -251,6 +251,23 @@ test("switching to `tool` restyles the bash cards already on screen, and back to
   world.dispose();
 });
 
+test("`default` keeps a host frame with hyperlinks and wide graphemes byte-identical (L3)", async () => {
+  const world = await startWorld("host-protocol-rows");
+  const href = (url: string, text: string): string => `\u001b]8;;${url}\u0007${text}\u001b]8;;\u0007`;
+  const rows = [
+    `\u001b[48;5;236m${href("file:///tmp/config.ts", "config.ts")}${" ".repeat(30)}\u001b[0m`,
+    `\u001b[48;5;236mread this file: 👨‍👩‍👧‍👦 now${" ".repeat(18)}\u001b[0m`,
+  ];
+  world.revealHostFrame(rows);
+
+  const output = world.tui.chat.render(40);
+
+  assert.equal(output, world.hostLines(), "the host's own array, not a clipped copy");
+  assert.deepEqual(output, rows, "not one byte of the host's rows changed");
+
+  world.dispose();
+});
+
 test("a bash card built later looks exactly like the one that was already there", async () => {
   const world = await startWorld("past-and-new");
   world.setMode("tool");

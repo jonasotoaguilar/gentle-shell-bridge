@@ -72,6 +72,10 @@ function toggleRow(section: SidebarSection, label: string, value: SectionValue):
     choice: {
       setting: label,
       value,
+      // Move the cursor, press Enter to apply (A1, `docs/contract.md` §4): the host applies a choice on
+      // ←/→ only when this field is not `false`, and a bridge row that applied on the move made the
+      // user's focus land on a value they never confirmed. `lib/visual-customize-view.ts:565`.
+      applyOnMove: false,
       // Live read: the bullet reflects what is on disk right now, not what was true at build time.
       current: () => isSectionVisible(getSectionVisibility(), section) === shown,
     },

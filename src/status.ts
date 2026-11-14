@@ -41,7 +41,7 @@ import {
   type SidebarDiagnostics,
   type SidebarFailure,
 } from "./sidebar.ts";
-import { getSectionFailures, type SectionRenderFailure } from "./sidebar-render.ts";
+import { getSectionFailures, getSectionFrameWidth, type SectionRenderFailure } from "./sidebar-render.ts";
 import { getPanelReport } from "./section-panel.ts";
 import { getSectionHoverReport } from "./section-pointer.ts";
 import { SECTION_ROWS_PROVIDER_ID } from "./sections-rows.ts";
@@ -108,6 +108,12 @@ export interface StatusSectionFrame {
   /** The pointer path: the host's own dispatch, and how the hover claim is carried. */
   hover: "host-state" | "unavailable" | "not used";
   hoverReason?: string;
+  /**
+   * N20: the width the last render was handed and the widest row the bridge produced at it, both in
+   * the host's own columns. Absent until a frame contributes rows, so a session whose rail never
+   * painted keeps its report unchanged.
+   */
+  width?: { given: number; widest: number };
 }
 
 /** One rejected row name, as `/bridge-status` lists it: the string verbatim and the rule it broke. */
@@ -377,6 +383,7 @@ export function collectStatus(): StatusSnapshot {
 function describeSectionFrame(): StatusSectionFrame {
   const panel = getPanelReport();
   const hover = getSectionHoverReport();
+  const width = getSectionFrameWidth();
   return {
     source: panel.source,
     lookedAt: panel.lookedAt,
@@ -384,6 +391,7 @@ function describeSectionFrame(): StatusSectionFrame {
     theme: panel.theme === "captured" ? "captured" : "missing",
     hover: hover.mechanism,
     ...(hover.reason === undefined ? {} : { hoverReason: hover.reason }),
+    ...(width === undefined ? {} : { width }),
   };
 }
 
@@ -845,6 +853,10 @@ function formatSectionFrame(frame: StatusSectionFrame): string[] {
     `section frame: ${frame.source} (${why}; ${theme})`,
     `section interaction: rail handleMouse (the host's own dispatch), ${hover}`,
   ];
+  if (frame.width !== undefined) {
+    // N20: a width bug is visible from the report — the given width next to what the bridge emitted.
+    lines.push(`section width: ${frame.width.given} columns given, widest row ${frame.width.widest}`);
+  }
   if (frame.source === "fallback") {
     // N15: the gap, named. Not "unsupported": gentle-shell's panel module publishes no seam on any
     // object this package is given, so the header and rows are drawn by the byte-identical port.

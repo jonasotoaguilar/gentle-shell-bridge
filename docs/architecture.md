@@ -189,7 +189,12 @@ otherwise leaves the slot absent.
   `●` for current and `○` for the others (`lib/visual-customize-view.ts:583-595`).
 - `choice.hint` feeds the preview headline (`lib/visual-customize-view.ts:745`).
 - `applyOnMove !== false` makes ←/→ apply a choice immediately rather than Enter
-  (`lib/visual-customize-view.ts:565`).
+  (`lib/visual-customize-view.ts:565`). The bridge therefore sets `applyOnMove: false` on EVERY row it
+  contributes — its own `Sections`/card-style rows in `./sections-rows.ts` and `./card-style-rows.ts`,
+  and any provider row, normalised on a copy in `./rows.ts` (`confirmOnEnter`) — so a move only moves
+  the `›` cursor and Enter applies. The host's own rows keep their own field, so a line that holds both
+  (the extended `Card style` line) is per-row correct; the focused line's footer then reads
+  `←/→ choose · Enter apply` (`lib/visual-customize-view.ts:35-38`).
 - After any action the view requests its own re-render
   (`lib/visual-customize-view.ts:579`), so a plugin that persists inside `action()` sees an
   updated `●` without asking for a repaint.
@@ -356,9 +361,13 @@ array, or a row that is not a string and has no usable `label` loses only that s
 recorded for `/bridge-status`.
 
 A plain string row is clipped to the width the host passes and the body is capped at 8 rows with a
-visible `… +N more` marker; width is measured in **UTF-16 code units** there, not terminal columns,
-and a plugin that emits ANSI in a plain row owns its own width. A structured row is fitted by the
-panel builder in **columns** instead.
+visible `… +N more` marker. Width is measured the way the HOST measures a row — `visibleWidth`,
+where a TAB is three columns and a grapheme cluster is charged as a whole — because the host's gate
+and card frame read the row with that model (`src/card-style-transform.ts`'s `hostColumns`);
+measuring in UTF-16 units let a CJK row or a tabbed row measure wider than the budget and the host
+dropped the whole rail (`lib/shell-sidebar-layout.ts:410`). A structured row is fitted by the panel
+builder in the same columns, and padded to the width it was handed, exactly as the host's own
+`renderPanelRow` pads (`lib/shell-panel.ts:78-80`).
 
 ### The header and the panel builders (N11, N15)
 
@@ -377,6 +386,26 @@ state — uses them when they are found, and otherwise draws with the port. `get
 answer is `fallback` the report also carries the gap, so "the card does not look native" always has
 an answer. `test/section-panel.test.ts` transcribes the host's own functions and compares bytes, which
 is what makes "byte-identical fallback" a claim a test enforces instead of a comment.
+
+### Width: the one thing a contributed row can cost (N17–N20)
+
+The rail column is allocated from the layout, not from a part's output: `basis: RAIL_WIDTH, grow: 0,
+shrink: 0` (`lib/shell-sidebar-layout.ts:493-496`), so pi-tui never measures the child
+(`dist/layout.js:124`) and the conversation keeps `columns - 53`. The one width decision the host DOES
+take from a part's rows is whether to paint the rail at all: every rail row must fit `contentWidth`
+(`:410`), and one wider row drops the entire rail and hands the conversation every column. So a
+contributed row that measures wider than the width it was given changes the layout's widths.
+
+That is why the bridge measures with the host's own model. `hostColumns`
+(`src/card-style-transform.ts`) ports `visibleWidth` (`pi-tui/dist/utils.js:212-268`): ANSI is zero
+columns, a TAB is three (`graphemeWidth`, `:148-155`), and the rest is segmented into grapheme
+clusters charged as a whole (`:255-258`). `src/section-panel.ts` fits, pads and clips with it, and
+`src/sidebar-render.ts` clips an author's plain row with it, so a row fitted to `N` is `N` columns to
+the host — the padded rows the host's own parts return (`renderPanelRow` → `fitPanelLine`,
+`lib/shell-panel.ts:31-40,78-80`) and the bridge's are the same rule, matched rather than chosen.
+`test/rail-width.test.ts` models the rail path and pins both halves; `getSectionFrameWidth()` feeds
+`/bridge-status` with `section width: <N> columns given, widest row <M>`, so the next width bug is a
+number in the report instead of a screenshot.
 
 ### Colouring and the theme
 
@@ -695,7 +724,13 @@ styles: an explicit `order` first, ascending, then registration order. A transfo
 that returns something which is not an array of strings, is skipped for that frame — the lines in
 force are kept and the remaining transforms still run — and the failure is recorded with its id and
 message for `/bridge-status`. Whatever comes back is clipped with `clipToWidth`, so a transform
-cannot make the frame wider than the terminal.
+cannot make the frame wider than the terminal — and, just as importantly, a row that already fits
+the host's own measure is returned byte-identical: the pipeline never rewrites lines a transform did
+not change (a no-op transform hands back the same array, and a fitting row is never measured into a
+cut). The measure is `hostColumns` (TAB three columns, a grapheme cluster as a unit, CSI/OSC/APC
+zero columns, so a hyperlink contributes its text and not its URL); a row that must be cut is cut
+between clusters, with an open OSC-8 link closed and an active SGR reset so the shortened row cannot
+leak either into the rows after it.
 
 ### Telemetry: the counts that distinguish "missed" from "never ran"
 
@@ -716,8 +751,10 @@ it does reaches the frame:** the counts are collected in the call that already p
 none at all, loses counts and never a frame. `/bridge-status` prints the counts on the transform's
 own line, and the block is still absent entirely when no transform is registered.
 
-The worked example reports `float` (the host's frame) and `plain` (its own frame) as shape names, so
-the next step after a real-TUI report is data-driven: a `skipped` line with candidates and no
+The worked example reports `float` (the host's frame), `plain` (its own frame) and `neon` (the
+host's outlined frame — the bridge's repaint is `float`-only, so a neon card reaches a transform
+untouched and the example's grammar is the only thing that can recognise it) as shape names, so the
+next step after a real-TUI report is data-driven: a `skipped` line with candidates and no
 recognition names a grammar gap, and recognition with `0 rewritten` names a setting.
 
 ## Limits

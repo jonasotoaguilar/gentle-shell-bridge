@@ -53,13 +53,14 @@ interface RowProvider {
 ## 3. Row fields
 
 All of these are already understood by gentle-shell's renderer
-(`lib/visual-customize-view.ts:107-128`); the bridge carries them through unchanged.
+(`lib/visual-customize-view.ts:107-128`); the bridge carries them through unchanged, with one
+deliberate exception: it sets `choice.applyOnMove: false` on every row it contributes (§4).
 
 | Field | Type | Behaviour |
 | --- | --- | --- |
 | `category` | string (existing category) | which menu page the row joins |
 | `label` | `string \| (() => string)` | row text; a function is evaluated when the menu is built |
-| `choice` | `{ setting, value, current(), hint?, applyOnMove? }` | one value of a setting; consecutive rows of the same `setting` share a line |
+| `choice` | `{ setting, value, current(), hint?, applyOnMove? }` | one value of a setting; consecutive rows of the same `setting` share a line. The bridge forces `applyOnMove: false` (§4) |
 | `preview()` | `{ title, sample }` | read-only depiction of the highlighted choice, never an application |
 | `visible()` | `() => boolean` | hidden when false; a throw fails closed (row hidden) |
 | `keyhint` | string | footer hint for this row instead of the category default |
@@ -92,10 +93,30 @@ const toggle = (value: string) => ({
 rows: () => [toggle("activity"), toggle("output")], // one rendered line
 ```
 
-The renderer draws one line, `Name  ● current  ○ other`, and handles the keys itself: ←/→
-applies a choice immediately, Enter applies when `applyOnMove` is `false`
-(`lib/visual-customize-view.ts:565`). "Consecutive" is literal — a row between the two
-values splits them into two lines.
+The renderer draws one line, `Name  ● current  ○ other`, and handles the keys itself: ←/→ moves
+the cursor inside the line and applies a value only when that row does not defer, Enter applies
+whatever is focused (`lib/visual-customize-view.ts:552-577`). "Consecutive" is literal — a row
+between the two values splits them into two lines.
+
+### Moving never applies: every bridge row defers to Enter
+
+A line the bridge contributes is navigated, not switched under the user's fingers: ←/→ moves the
+`›` cursor and Enter applies. That is one row field, so it is one rule for every category:
+
+- every row the bridge itself builds — the `Sections` toggle, the card-style values in both modes
+  (the host's `Card style` line extended in place, and the fallback `Bridge card style` line)
+  including `native`, and the example's `Bash rendering` — carries `choice.applyOnMove: false`;
+- `buildRows` enforces it for a plugin's own provider rows too, by shallow-copying the row and its
+  `choice` (the provider's objects are never mutated, and every other field is the same reference).
+  An authored `applyOnMove: true` is overridden: the bridge owns the integration and the design is
+  one behaviour for every row it adds, so the field has no author-facing meaning here;
+- the host's OWN rows are untouched. `Card style · neon/float` still applies on ←/→ because the
+  host wrote it that way, so a line holding both behaves per row — which is exactly the host's rule.
+
+While such a row is focused the host's footer reads `←/→ choose · Enter apply` instead of
+`←/→ change` (`lib/visual-customize-view.ts:35-38,751`), and moving costs nothing: no store write,
+no persisted value, no repaint request. Enter runs `action()` exactly once, which is where the
+bridge's write path (persist first, repaint second) lives.
 
 Other row kinds follow from the same shape:
 
@@ -579,12 +600,49 @@ every object it is handed — the rail part, the Pi theme, the terminal's sideba
   code transcribed into `test/section-panel.test.ts`) and reports `section frame: fallback` plus the
   gap, naming exactly what was looked for.
 
-A plain string row is clipped to the width the host passes and the body is capped at 8 rows, with a
-visible `… +N more` marker when the cap bites. A structured row is fitted by the panel builder, which
-measures **columns** (SGR-aware). The bridge never returns a row wider than that number — for a
-PLAIN row the measure is **UTF-16 code units, not terminal columns**, so a wide CJK glyph or an emoji
-counts as one unit there and the host may still clip what we thought fitted; a plugin that emits ANSI
-escape sequences in a plain row owns its own width.
+## Width discipline on the rail (N17, N18)
+
+The host decides the rail's width from the layout, never from a part's output: the rail is the second
+entry of its fullscreen `hstack` with `basis: RAIL_WIDTH, grow: 0, shrink: 0`
+(`lib/shell-sidebar-layout.ts:493-496`), so pi-tui allocates those 50 columns without measuring the
+child, and the conversation gets `columns - 53`. One decision IS made from a part's rows:
+
+```text
+const active = railLines.length > 0 && railLines.every((line) => visibleWidth(line) <= contentWidth);
+```
+(`lib/shell-sidebar-layout.ts:410`) — a single rail row wider than the content width drops the whole
+rail, and the conversation then takes every column: the layout's widths changed because of what a
+part returned.
+
+**N17 — a contributed part never asks for more room than it was given.** Every row the bridge
+contributes is at most the width the host handed the part, measured the way the host measures it:
+`visibleWidth` (`pi-tui/dist/utils.js:212-268`) strips ANSI, expands a TAB to **three** columns
+(`graphemeWidth`, `:148-155`) and charges each grapheme cluster as a whole (`:255-258`) — an emoji
+cluster two columns, a cluster of marks none. `src/card-style-transform.ts`'s `hostColumns` ports
+that model; `src/section-panel.ts` fits and pads with it, and a plain string row is clipped with it
+instead of by UTF-16 length. Padding is counted the same way, so the pad never makes the host believe
+the column wants to be wider.
+
+**N18 — the host's own rule, matched.** The host's parts PAD: `renderPanelRow(width, left, right,
+indent)` is `fitPanelLine("  " + left, right, width)`, and `fitPanelLine` pads `left`/`right` to
+`width` (`lib/shell-panel.ts:31-40,78-80`). The bridge therefore pads identically — and to the
+HOST-measured width, which is the whole of N17. A plain string row stays unpadded, byte for byte
+(`§11`, N10).
+
+**N19 — proved by a test, not by prose.** `test/rail-width.test.ts` models the host's rail path
+(the fixed `hstack` basis, the one-column padding at `:414`, the `active` gate) and asserts that a
+contributed section leaves the main column where the host put it and that no contributed row exceeds
+the given width under the host's own measure — a CJK body row, a row containing a TAB, and an emoji
+cluster included.
+
+**N20 — visible without a screenshot.** `/bridge-status` prints `section width: <N> columns given,
+widest row <M>` after the section frame block, from the last render's own record
+(`getSectionFrameWidth()`); a session whose rail never rendered a section prints no such line.
+
+A plain string row is clipped to the width the host passes and the body is capped at 8 rows with a
+visible `… +N more` marker, measured in the host's columns. A structured row is fitted by the panel
+builder, which measures **columns** the same way. The bridge never returns a row wider than that
+number, so a wide CJK glyph, an emoji or a TAB can no longer slip past the clip.
 
 **Sections render after the native ones. Interleaving is impossible**: the host's status
 sections (`CHANGES`, `STATS`, `INTEGRATIONS`) are built in a closure the bridge cannot reach
@@ -871,8 +929,12 @@ a rendering choice to apply to rows ALREADY on screen uses a transform.
 - **Order.** Transforms with an `order` run first, ascending, then the rest in registration order —
 the rule sections and card styles already use. The sequence is snapshotted once per frame.
 - **Width.** Whatever a transform returns is clipped to `ctx.width` with the same `clipToWidth` the
-card styles use, so it cannot make the frame wider than the terminal. A clipped styled row gets a
-reset appended; nothing is padded to fit.
+card styles use, so it cannot make the frame wider than the terminal. The measure and the cut are
+the host's: a TAB is three columns, a grapheme cluster is charged as a whole and never split, and an
+OSC-8 hyperlink contributes its text, not its URL. A row that already fits under that measure is
+returned byte-identical, escapes included — a transform that did not touch a row must not cost the
+host a byte. When a row IS cut, an OSC-8 link left open is closed and an active SGR is reset, so a
+shortened row cannot leak a link or a paint into the rows after it; nothing is padded to fit.
 - **Isolation.** A transform that throws, or that returns something which is not an array of
 strings, loses only its own contribution for that frame: the lines in force are kept, the failure is
 recorded with its id and message, and the remaining transforms still run. Nothing a transform does
@@ -892,6 +954,11 @@ may report, per frame:
 - `recognised`: the candidates its grammar accepted;
 - `rewritten`: the cards it actually rewrote on this frame (`0` when a setting leaves them alone);
 - `shapes` (optional): which of its shapes matched, by name, and how many times.
+
+A shape name is the transform's own word for a frame it knows; it never carries a line. The worked
+example reports `float` (the host's own card), `plain` (its own chrome) and `neon` (the host's
+outlined card, which the bridge's repaint does not touch because that repaint is `float`-only), so a
+`/bridge-status` line names the grammar that matched instead of leaving the reader to guess.
 
 The bridge adds the count of lines the transform received and stores the whole record as that
 frame's entry — one record per transform, replaced by the next frame, never accumulated.

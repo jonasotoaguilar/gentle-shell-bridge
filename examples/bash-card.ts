@@ -7,8 +7,9 @@
  *    the bash cards that are already on screen, not only the ones built after the switch. That is
  *    the whole point: `pi.registerToolRenderer` resolves once, when a tool row is BUILT, so a
  *    rendering choice made there can never reach history — the defect this file used to document
- *    instead of fixing. The transform recognises a bash card by what the host already produced (a
- *    `float` card whose heading is `bash`) and rewrites it with this file's chrome:
+ *    instead of fixing. The transform recognises a bash card by what the host already produced (the
+ *    host's `float` frame, the host's `neon` outline, or this file's own `plain` frame, whose heading
+ *    is `bash`) and rewrites it with this file's chrome:
  *
  *    ```text
  *    ▸ bash
@@ -423,13 +424,18 @@ function bashCardStyle(): CardStyleLike {
 // ---------------------------------------------------------------------------------------------
 //
 // A transform cannot ask Pi for a tool result — it is handed rows, nothing else. So it recognises
-// its target the way the bridge recognises a card: by the host's own frame. Two shapes are accepted,
-// because the pipeline runs AFTER the card-style repaint:
+// its target the way the bridge recognises a card: by the host's own frame. Three shapes are
+// accepted, because the pipeline runs AFTER the card-style repaint:
 //
 // 1. the host's `float` card — one-column margin, the `▎` bar, then padding / header / separator /
 //    body / padding (`docs/contract.md` §12, `src/card-styles.ts` §2), with the heading `bash`;
 // 2. this file's own `plain` frame — `▌ bash` plus `▌` rows — so `tool` still wins when `plain`
-//    is the selected card style, instead of leaving one bash card in two frames at once.
+//    is the selected card style, instead of leaving one bash card in two frames at once;
+// 3. the host's `neon` outline — `╭─ ✿ bash ────╮` / `│ text │` / `╰────╯`
+//    (`OUTLINE_CHROME`, `gentle-shell/lib/shell-card.ts:105`). This is the frame the host draws when
+//    ITS OWN `Card style` line is on `neon`: the bridge's repaint is `float`-only on purpose
+//    (`src/card-style-transform.ts`, "The float grammar"), so a neon card reaches a transform
+//    untouched and only this file can recognise it — which is why `tool` used to do nothing there.
 
 /** The example's own chrome: a gutter no other surface in this file uses. */
 const BASH_GUTTER = "▸";
@@ -439,6 +445,11 @@ const BASH_TITLE = "bash";
 const BASH_TRANSFORM_ID = "bash-card-example.bash-cards";
 /** The accent bar every `float` row starts with, one column in from the margin. */
 const FLOAT_BAR = "▎";
+/** The `neon` outline's corners and side rail (`OUTLINE_CHROME`, `shell-card.ts:105`). */
+const NEON_TOP = "╭";
+const NEON_SIDE = "│";
+const NEON_BOTTOM = "╰";
+const NEON_BOTTOM_RIGHT = "╯";
 
 /**
  * One bash card in the frame: the rows it occupies and the body text it carried. `start` is the
@@ -532,6 +543,50 @@ function plainBashCard(stripped: readonly string[], start: number): BashCardSpan
 }
 
 /**
+ * A `neon` card's top rule: `╭─ <heading> ────╮`. It starts at column 0, which is what tells it
+ * apart from every `float` row (one-column margin, then `▎`) and from this file's own gutter.
+ */
+function isNeonTop(text: string): boolean {
+  return text.startsWith(`${NEON_TOP}─ `);
+}
+
+/** A `neon` body row: `│ <text> … │` — the side rail on both ends, then the frame's padding. */
+function isNeonBody(text: string): boolean {
+  return text.startsWith(`${NEON_SIDE} `) && text.endsWith(NEON_SIDE);
+}
+
+/** A `neon` closing rule: `╰─── … ╯`, with a duration riding on it or without. */
+function isNeonBottom(text: string): boolean {
+  return text.startsWith(NEON_BOTTOM) && text.endsWith(NEON_BOTTOM_RIGHT);
+}
+
+/** The text a `neon` body row carries: no side rails, no padding. */
+function neonBodyText(text: string): string {
+  return text.slice(2, -2).trimEnd();
+}
+
+/**
+ * The host's `neon` bash card at `start`, when one starts there. Positional, like the `float`
+ * grammar: a top rule whose heading is `bash`, body rows while they carry the side rail, and a
+ * closing rule. Anything else — no closer, a row that is not a body row — is not a card, and the
+ * frame is left exactly as it is.
+ */
+function neonBashCard(stripped: readonly string[], start: number): BashCardSpan | undefined {
+  const top = stripped[start] ?? "";
+  if (!isNeonTop(top) || headingText(top) !== BASH_TITLE) return undefined;
+  const body: string[] = [];
+  let row = start + 1;
+  while (row < stripped.length) {
+    const line = stripped[row] ?? "";
+    if (isNeonBottom(line)) return { start, end: row + 1, body };
+    if (!isNeonBody(line)) return undefined;
+    body.push(neonBodyText(line));
+    row += 1;
+  }
+  return undefined;
+}
+
+/**
  * What one frame's scan found (F3): the cards, how many positions the grammar examined as a possible
  * card head, and which shape matched, by name. Counts only — the rows themselves are never reported.
  */
@@ -543,21 +598,22 @@ interface BashScan {
 
 /**
  * The shape names this file reports (F3), so the next step is data-driven: the host's own `float`
- * frame, or this file's `plain` one. Lowercase and mark-free, which is what the bridge keeps; a name
- * it would drop is not worth reporting.
+ * frame, this file's `plain` one, or the host's `neon` outline. Lowercase and mark-free, which is
+ * what the bridge keeps; a name it would drop is not worth reporting.
  */
 const SHAPE_FLOAT = "float";
 const SHAPE_PLAIN = "plain";
+const SHAPE_NEON = "neon";
 
 /**
  * Every bash card in the frame, in order, plus what the scan saw on the way. Rows a card already
  * claimed are skipped, so a body row can never be read as the head of the next card.
  *
  * A CANDIDATE is a row where this grammar could start a card at all: a float padding row (the only
- * row a host card can begin on) or this file's own `plain` heading. A candidate the grammar then
- * rejects is the interesting measurement — "the frame has something card-shaped here and no bash
- * card matched" — which is exactly what a real TUI could not tell apart from "the wrapper never
- * ran". That distinction is the whole reason the counts exist.
+ * row a host card can begin on), this file's own `plain` heading, or a host `neon` top rule. A
+ * candidate the grammar then rejects is the interesting measurement — "the frame has something
+ * card-shaped here and no bash card matched" — which is exactly what a real TUI could not tell apart
+ * from "the wrapper never ran". That distinction is the whole reason the counts exist.
  */
 function scanBashCards(lines: readonly string[]): BashScan {
   const stripped = lines.map((line) => plainText(line));
@@ -577,6 +633,10 @@ function scanBashCards(lines: readonly string[]): BashScan {
       candidates += 1;
       span = plainBashCard(stripped, index);
       shape = SHAPE_PLAIN;
+    } else if (isNeonTop(row)) {
+      candidates += 1;
+      span = neonBashCard(stripped, index);
+      shape = SHAPE_NEON;
     }
     if (span === undefined || shape === undefined) {
       index += 1;

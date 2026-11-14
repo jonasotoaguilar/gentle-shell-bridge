@@ -184,6 +184,9 @@ function styleRow(style: CardStyleRegistration, setting: string): CustomizeRow {
     choice: {
       setting,
       value: style.label,
+      // Move, then Enter (A1): a repaint of both surfaces on every ←/→ would change the card the
+      // user is looking at while they are only walking the values (`visual-customize-view.ts:565`).
+      applyOnMove: false,
       current: () => getCardStyleSelection() === style.id,
     },
     preview: () => previewFor(style),
@@ -199,6 +202,9 @@ function nativeRow(setting: string): CustomizeRow {
     choice: {
       setting,
       value: CARD_STYLE_NATIVE,
+      // Same rule as every other value the bridge contributes (A1): the way back to the host's own
+      // cards is confirmed with Enter too, never applied by passing over it.
+      applyOnMove: false,
       current: () => getCardStyleSelection() === CARD_STYLE_NATIVE,
     },
     preview: () => ({
@@ -233,7 +239,9 @@ function bridgeStyleActive(): boolean {
  * selection is cleared to `native`. Everything else — `choice.value`, `choice.setting`,
  * `choice.hint`, `choice.applyOnMove`, `label`, `preview`, whatever else the host put there — is
  * carried over as the same reference, so the host's persistence keeps running and the bridge does
- * not reimplement `neon`/`float`.
+ * not reimplement `neon`/`float`. That includes `choice.applyOnMove` (A3): the host's own values keep
+ * applying on ←/→ if the host wrote them that way, while the bridge value spliced beside them waits
+ * for Enter — inside one rendered line each row's own field governs its own behaviour.
  */
 function wrapHostRow(row: CustomizeRow): CustomizeRow {
   if (Object.hasOwn(row, NATIVE_ROW_WRAPPED)) return row;

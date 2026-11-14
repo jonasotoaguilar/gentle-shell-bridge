@@ -35,7 +35,11 @@ the `Bash rendering` toggle apply to the bash cards **already on screen**.
 
 The toggle is the single control. `default` leaves the host's bash card exactly as the host drew it;
 `tool` rewrites every bash card in the frame with the example's own chrome (`▸ bash`, its body, `▸`),
-whether it was drawn before the switch or after it. That is the difference between a transform and
+whether it was drawn before the switch or after it — and in whichever frame the host drew it: the
+host's own `float` card, the host's `neon` outline, or the example's own `plain` one. The bridge's
+card-style repaint is `float`-only by design, so recognising the host's neon outline is the example's
+own job; a neon `read` card in the same frame stays byte-identical. That is the difference between a
+transform and
 `pi.registerToolRenderer`: the renderer resolves once, when a tool row is BUILT, so it could only ever
 restyle the next card; a transform runs on every frame the conversation component renders. The
 example registers no tool renderer at all — one owner, one look, past and new byte-identical.
@@ -166,8 +170,11 @@ the raw id is never the suffix. An explicit `rowLabel` obeys the same row-name s
 
 What the bridge does with those fields, and what it will not do: the card is drawn by the
 host's own frame code, a plain string row is clipped to the rail width, and the body is capped at 8
-rows (with a `… +N more` marker; a plain row's width is counted in UTF-16 code units, not terminal
-columns, and a plugin that emits ANSI in one owns its own width). A hidden section is not built at
+rows (with a `… +N more` marker). A row is measured the way the host measures it — `visibleWidth`:
+SGR ignored, a TAB is three columns, and a grapheme cluster is charged as a whole, so an emoji is two
+columns and a CJK glyph two. A contributed row is never wider than the width the host handed the
+part, padding included, so it cannot make the host drop the rail; `/bridge-status` reports that
+width and the widest row the bridge produced. A hidden section is not built at
 all (its `lines()`/`meta()` are not called), nor is a collapsed one, and a throwing section loses
 only its own body and is reported by `/bridge-status`.
 Sections always render **after** the native cards — interleaving is impossible because the
@@ -254,7 +261,11 @@ The pipeline is what the bridge's existing conversation wrapper runs after the c
 the host's own rows. What the bridge guarantees, and what the contract is:
 
 - what a transform returns is **clipped to `ctx.width`** (the width the host rendered at), so a
-transform can never make the frame wider than the terminal;
+transform can never make the frame wider than the terminal. The measure is the host's (`TAB` three
+columns, a grapheme cluster as a unit, an OSC-8 hyperlink contributes its text and not its URL), and
+a row that already fits is returned **byte-identical** — a transform that did not change a row cannot
+make the bridge cut it. A row that must be cut is cut between clusters, with an open hyperlink closed
+and an active SGR reset, so nothing leaks into the rows after it;
 - a transform that **throws**, or returns anything that is not an array of strings, loses only its
 own contribution for that frame; the lines in force are kept and the remaining transforms still run;
 - a transform that returns its input **unchanged** is recorded as `skipped` and the frame keeps its
@@ -270,7 +281,9 @@ transforms: 1 registered
 
 Those counts are the instrument, not decoration: `skipped` with `0 candidates` means the grammar
 found nothing card-shaped, candidates with `0 recognised` means it found the shape and rejected it,
-and recognised with `0 rewritten` means a setting decided the output. They are counts only — no line
+and recognised with `0 rewritten` means a setting decided the output. A shape name is the transform's
+own word for a frame it knows — the example reports `float`, `neon` and `plain` — so the report names
+which grammar matched. They are counts only — no line
 of the conversation is stored or displayed, a shape name must be a short lowercase name (anything
 else is dropped, never rewritten), and reporting cannot throw into the frame. Full contract:
 [docs/contract.md](docs/contract.md) §13.
@@ -396,12 +409,14 @@ The bridge enforces this rather than trusting authors, and it never rewrites a n
 
 ## Supported row kinds
 
-Every field below is already understood by gentle-shell's own renderer; the bridge only
-carries rows, it does not interpret them.
+Every field below is already understood by gentle-shell's own renderer; the bridge carries rows
+as authored, with one deliberate exception: it sets `choice.applyOnMove: false` on every row it
+contributes, so a toggle is navigated and confirmed with Enter instead of switching as the cursor
+passes over it (the host's own rows keep their own field).
 
 | Kind | Shape | Renders as |
 | --- | --- | --- |
-| Toggle | two or more consecutive rows sharing `choice.setting` | one line `Name ● current ○ other`; ←/→ applies, Enter applies when `applyOnMove: false` |
+| Toggle | two or more consecutive rows sharing `choice.setting` | one line `Name ● current ○ other`; ←/→ moves the `›` cursor, Enter applies (the bridge always sets `applyOnMove: false`) |
 | Action | a row without `choice` | one line; Enter/Space runs `action(inline)` |
 | Gated | `visible()` returns `false` | row hidden; a throw fails closed and hides it |
 | Preview | `preview()` returns `{ title, sample }` | read-only preview for the focused row |

@@ -28,7 +28,7 @@ import {
   resetSectionsForTests,
   resetTransformsForTests,
 } from "../src/bus.ts";
-import { resetCardStyleTransformForTests } from "../src/card-style-transform.ts";
+import { resetCardStyleTransformForTests, hostColumns } from "../src/card-style-transform.ts";
 import {
   disableCardStyleTransform,
   installCardStyleTransform,
@@ -265,6 +265,77 @@ test("a row that already fits is never touched by the clip", () => {
   registerTransform({ id: "exact", transform: () => ["0123456789"] });
 
   assert.deepEqual(applyTransforms(["x"], 10), ["0123456789"]);
+});
+
+// ---------------------------------------------------------------------------------------------
+// S4 — the host's OWN rows survive a transform (W2-1..W2-4, L3)
+// ---------------------------------------------------------------------------------------------
+
+/** An OSC-8 hyperlink, the shape Pi's TUI emits for file paths. */
+const hyperlink = (url: string, text: string): string => `\u001b]8;;${url}\u0007${text}\u001b]8;;\u0007`;
+const HOST_BG = "\u001b[48;5;236m";
+const HOST_RESET = "\u001b[0m";
+
+/** Rows the host really produces: a link inside a background, ZWJ and modifier emoji, plain text. */
+const hostFrame = (): string[] => [
+  `${HOST_BG}${hyperlink("file:///tmp/config.ts", "config.ts")}${" ".repeat(30)}${HOST_RESET}`,
+  `${HOST_BG}read this file: 👨‍👩‍👧‍👦 now${" ".repeat(18)}${HOST_RESET}`,
+  "thumbs 👍🏽 ok",
+  "plain ascii message",
+];
+
+test("the host's measure ignores an OSC-8 hyperlink's URL (W2-4)", () => {
+  assert.equal(hostColumns(hyperlink("file:///tmp/a.ts", "a.ts")), 4);
+  assert.equal(hostColumns(`${HOST_BG}blue${HOST_RESET}`), 4);
+  assert.equal(hostColumns("a\tb"), 5, "a TAB is three columns, exactly as the host charges it");
+});
+
+test("a no-op transform leaves the host's own array and its bytes untouched (W2-1, W2-2)", () => {
+  const lines = hostFrame();
+  for (const line of lines) assert.ok(hostColumns(line) <= 40, "the fixture fits the width");
+  registerTransform({ id: "noop", transform: (lines) => lines });
+
+  const output = applyTransforms(lines, 40);
+
+  assert.equal(output, lines, "the host's own array, just as with no transform registered");
+  assert.deepEqual(output, lines, "and every row byte for byte");
+});
+
+test("a transform that returns an identical copy changes no byte of the host frame (W2-2)", () => {
+  const lines = hostFrame();
+  registerTransform({ id: "copy", transform: (lines) => [...lines] });
+
+  const output = applyTransforms(lines, 40);
+
+  assert.equal(output, lines, "an unchanged frame is the same frame");
+  assert.deepEqual(output, lines);
+});
+
+test("a widened row is cut at the host's width, never inside a cluster or an escape (W2-3)", () => {
+  const family = "👨‍👩‍👧‍👦";
+  registerTransform({
+    id: "wide",
+    transform: () => [`\u001b[44m${hyperlink("https://example.com", `${family} family 👍🏽 end`)}\u001b[49m`],
+  });
+
+  const [line] = applyTransforms(["x"], 10);
+
+  assert.equal(
+    line,
+    `\u001b[44m\u001b]8;;https://example.com\u0007${family} family \u001b]8;;\u0007\u001b[0m`,
+    "an open link is closed and the paint reset, the cluster kept whole",
+  );
+  assert.equal(hostColumns(line ?? ""), 10, "exactly the host's width, no more");
+  assert.equal((line ?? "").split("\u200d").length - 1, 3, "every joiner of the family cluster kept");
+});
+
+test("a cut row with a TAB is measured with the host's three columns (W2-3)", () => {
+  registerTransform({ id: "tab", transform: () => ["aaaaaaaaa\tZZ"] });
+
+  const [line] = applyTransforms(["x"], 10);
+
+  assert.equal(line, "aaaaaaaaa", "the tab does not fit in the last column");
+  assert.ok(hostColumns(line ?? "") <= 10);
 });
 
 // ---------------------------------------------------------------------------------------------

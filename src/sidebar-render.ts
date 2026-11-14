@@ -48,10 +48,12 @@
  */
 
 import { snapshotSections } from "./bus.ts";
+import { hostColumns } from "./card-style-transform.ts";
 import { requestSurfaceRepaint } from "./repaint.ts";
 import { createRowContext } from "./rows.ts";
 import {
   checkSectionRows,
+  clipSectionRow,
   getSectionTheme,
   getPanelReport,
   renderSectionHeader,
@@ -108,6 +110,8 @@ export interface SectionRowHit {
 interface SectionFrame {
   width: number;
   hits: SectionRowHit[];
+  /** The widest row this frame produced, measured the way the host measures (N20). */
+  widest: number;
 }
 
 const SECTION_RENDER_STATE = Symbol.for("gentle-shell-bridge.sections.render.v1");
@@ -139,6 +143,25 @@ function sectionRenderState(): SectionRenderState {
 /** Sections that failed in the most recent frame, for `/bridge-status` (T6). */
 export function getSectionFailures(): SectionRenderFailure[] {
   return sectionRenderState().lastFailures.map((failure) => ({ ...failure }));
+}
+
+/**
+ * The width the last frame was handed and the widest row the bridge produced at it (N20), both in
+ * the host's own columns. `undefined` until a frame contributed rows, so a report of a session whose
+ * rail never painted stays exactly as it was.
+ */
+export interface SectionFrameWidth {
+  /** The width the host handed this part. */
+  given: number;
+  /** The widest contributed row, as the host measures it; always `<= given` when N17 holds. */
+  widest: number;
+}
+
+/** N20: the last render's given width and the widest line the bridge produced, host-measured. */
+export function getSectionFrameWidth(): SectionFrameWidth | undefined {
+  const frame = sectionRenderState().frame;
+  if (frame === undefined) return undefined;
+  return { given: frame.width, widest: frame.widest };
 }
 
 /** Test-only seam; drops the last frame and the hover too, so one test cannot leak into another. */
@@ -219,7 +242,9 @@ export function buildSectionContribution(
     delete state.frame;
     return undefined;
   }
-  state.frame = { width, hits };
+  let widest = 0;
+  for (const line of lines) widest = Math.max(widest, hostColumns(line));
+  state.frame = { width, hits, widest };
   return { lines, groups };
 }
 
@@ -486,16 +511,14 @@ function readPointer(event: unknown): { type: string; button?: string; y: number
 /**
  * Clamp one plain row to the width the host passes, with a visible marker instead of a silent cut.
  *
- * Measured in UTF-16 code units (`.length`), NOT terminal columns: an emoji or a wide CJK glyph
- * therefore costs what a plain character costs here, and a plugin that emits ANSI styling owns its
- * own width — the bridge neither parses escape sequences nor strips them (the same caveat as a
- * customize row's `label`). A STRUCTURED row is drawn by the panel builder instead, which measures
- * columns (`./section-panel.ts`).
+ * Measured the way the HOST measures a row (N17) — `./section-panel.ts`'s `clipSectionRow`, over
+ * `hostColumns`: ANSI is zero columns, a TAB is three, and a grapheme cluster is charged as a whole —
+ * so a CJK glyph, an emoji or a tab cannot make the row wider than the width it was fitted to. A row
+ * that already fits keeps its exact bytes (N10). A STRUCTURED row is drawn by the panel builder,
+ * which measures the same way.
  */
 function clipRow(row: string, width: number): string {
-  if (row.length <= width) return row;
-  if (width <= 1) return "…".slice(0, width);
-  return `${row.slice(0, width - 1)}…`;
+  return clipSectionRow(row, width);
 }
 
 function recordFailure(

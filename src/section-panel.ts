@@ -33,14 +33,15 @@
  *    host's code transcribed into the test, and reports `fallback` with what was looked for and what
  *    was found (N15).
  *
- * The only width difference is honest and documented: the host measures with pi-tui's `visibleWidth`,
- * this package with the SGR-aware column count `clipToWidth` already uses
- * (`./card-style-transform.ts`).
+ * Width is not a difference any more (N17): both sides measure the way pi-tui's `visibleWidth`
+ * measures, because the host's card frame and its rail gate read the row with that model —
+ * `hostColumns` ports it (a TAB is three columns, a grapheme cluster is charged as a whole), so a
+ * row fitted to `width` here is never wider than `width` to the host.
  *
  * This module is internal: `src/index.ts` does not re-export it.
  */
 
-import { visibleColumns } from "./card-style-transform.ts";
+import { hostColumns } from "./card-style-transform.ts";
 import { isRecord } from "./rows.ts";
 import { TONES, type SectionRow, type Tone } from "./types.ts";
 
@@ -200,30 +201,39 @@ export function getPanelReport(): PanelReport {
 // The drawing
 // ---------------------------------------------------------------------------------------------
 
-/** Clips plain-or-ANSI `text` to `width` columns with an ellipsis; SGR codes are kept. */
+/** Clips plain-or-ANSI `text` to `width` host columns with an ellipsis; SGR codes are kept. */
 function clipPanelText(text: string, width: number): string {
   if (width <= 0) return "";
-  if (visibleColumns(text) <= width) return text;
+  if (hostColumns(text) <= width) return text;
   let clipped = "";
   for (const unit of text.match(/\u001b\[[0-9;]*m|[\s\S]/gu) ?? []) {
     if (unit.startsWith("\u001b[")) {
       clipped += unit;
       continue;
     }
-    if (visibleColumns(clipped + unit) > width - 1) break;
+    if (hostColumns(clipped + unit) > width - 1) break;
     clipped += unit;
   }
   return `${clipped}…`;
 }
 
-/** `left` and `right` on one row exactly `width` columns wide; `left` gives way first. */
+/**
+ * One author-written row, fitted to `width` HOST columns (N17): a row that already fits keeps its
+ * exact bytes (N10), a wider one is cut with an ellipsis, and nothing is ever appended — padding is
+ * the panel's business, and the panel pads to the same number the host measures.
+ */
+export function clipSectionRow(row: string, width: number): string {
+  return clipPanelText(row, width);
+}
+
+/** `left` and `right` on one row exactly `width` host columns wide; `left` gives way first. */
 function fitPanelLine(left: string, right: string, width: number): string {
   const target = Math.max(0, Math.floor(width));
-  const rightWidth = visibleColumns(right);
+  const rightWidth = hostColumns(right);
   const shownRight = rightWidth + 1 <= target ? right : "";
-  const room = target - visibleColumns(shownRight) - (shownRight ? 1 : 0);
+  const room = target - hostColumns(shownRight) - (shownRight ? 1 : 0);
   const shownLeft = clipPanelText(left, room);
-  const pad = Math.max(0, target - visibleColumns(shownLeft) - visibleColumns(shownRight));
+  const pad = Math.max(0, target - hostColumns(shownLeft) - hostColumns(shownRight));
   return `${shownLeft}${" ".repeat(pad)}${shownRight}`;
 }
 

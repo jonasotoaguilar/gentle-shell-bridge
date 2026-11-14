@@ -83,6 +83,38 @@ export const NEON_CARD: readonly string[] = [
 ];
 
 /**
+ * A `neon` bash card with NO hint and NO body: exactly two rows, the top rule and the closing rule.
+ * This is the minimal card L5 reports (`Card style: neon`, minimal content, `Bash rendering: tool`),
+ * generated the way `shell-card.ts` generates it — `cardTop` at width 40 with no hint (title
+ * `✿ bash`, fill `40 - 6 - 5 = 29` rules) and `cardBottom` (38 rules between the corners).
+ */
+export const NEON_BASH_CARD: readonly string[] = [
+  "\u001b[90m╭\u001b[39m\u001b[90m─ \u001b[39m\u001b[95m✿ bash\u001b[39m\u001b[90m ─────────────────────────────\u001b[39m\u001b[90m╮\u001b[39m",
+  "\u001b[90m╰\u001b[39m\u001b[90m──────────────────────────────────────╯\u001b[39m",
+];
+
+/**
+ * The same `neon` bash card with one body row (`ls -1`), drawn by `cardLine` at width 40: the side
+ * rail, one space, the text, `36 - 5 = 31` columns of padding, one space and the right rail.
+ */
+export const NEON_BASH_CARD_WITH_BODY: readonly string[] = [
+  "\u001b[90m╭\u001b[39m\u001b[90m─ \u001b[39m\u001b[95m✿ bash\u001b[39m\u001b[90m ─────────────────────────────\u001b[39m\u001b[90m╮\u001b[39m",
+  "\u001b[90m│\u001b[39m \u001b[39mls -1\u001b[39m                                \u001b[90m│\u001b[39m",
+  "\u001b[90m╰\u001b[39m\u001b[90m──────────────────────────────────────╯\u001b[39m",
+];
+
+/**
+ * A `neon` bash card with a right-aligned hint AND a body row. The hint sits in the dim role on the
+ * top rule (`cardTop`'s `tail`), so it is frame: a transform that restyles the card must not read it
+ * as content. Fill is `40 - 6 - 5 - 8 = 21` rules.
+ */
+export const NEON_BASH_CARD_WITH_HINT: readonly string[] = [
+  "\u001b[90m╭\u001b[39m\u001b[90m─ \u001b[39m\u001b[95m✿ bash\u001b[39m\u001b[90m ─────────────────────\u001b[39m \u001b[2mctrl+o\u001b[39m \u001b[90m╮\u001b[39m",
+  "\u001b[90m│\u001b[39m \u001b[39mls -1\u001b[39m                                \u001b[90m│\u001b[39m",
+  "\u001b[90m╰\u001b[39m\u001b[90m──────────────────────────────────────╯\u001b[39m",
+];
+
+/**
  * A `float` card with a SUBTITLE and no hint, width 40: the header carries two text runs (title in
  * the title role, `· config.ts` in the muted role) and no dim hint. It pins the honest limit of
  * extraction: a heading whose last run is a subtitle must not be read as a hint.

@@ -23,18 +23,29 @@ what is not proven is listed under **Limits**.
 
 ## Worked consumer
 
-[`examples/bash-card.ts`](examples/bash-card.ts) is a standalone Pi extension that covers both
-surfaces the package sits between: its own bash card through `pi.registerToolRenderer`, a `Cards`
-toggle through `registerRows` + `createStore`, and a **`BASH CARD` sidebar section** through
-`registerSection`. The section reports the mode the user chose and whether this load actually wired
-the bash renderer, and it is toggled from **`Sections`** in `/gentle:customize` — the plugin writes
-no setting, row or store for it. Copy the file into `~/.pi/agent/extensions/` and `/reload` to load
-it; the toggle defaults to `default`, so installing it changes no rendering until the row is
-switched, while the section is visible immediately (`defaultVisible: true`). It does not import the
-package and does not know where it is installed: the example and the bridge meet on `globalThis`
-behind one symbol (see **Reaching the bridge without importing it**). It registers from its own
-`session_start` handler, where the symbol's presence is the complete answer — if no compatible
-bridge is installed the example says so once and adds nothing.
+[`examples/bash-card.ts`](examples/bash-card.ts) is a standalone Pi extension that covers every
+surface the package publishes, plus one of its own: its own bash card through
+`pi.registerToolRenderer`; a `Cards` toggle through `registerRows` + `createStore`; a **`BASH CARD`
+sidebar section** through `registerSection`, toggled from **`Sections`** in `/gentle:customize` with
+no setting, row or store written by the plugin; and a third card style through
+`registerCardStyle`, which puts `plain` next to the host's own values on the `Card style` line —
+`○ neon ○ float ○ plain`.
+
+That value is on the host's own line in the host's own position, not a second line. Choosing `plain`
+repaints every conversation card the host drew with a borderless frame (one gutter character per
+row, the heading as plain text); choosing `neon` or `float` returns to the host's rendering, because
+those values ARE the host rendering. The style is registered from the same `session_start` handler
+as the other two surfaces, through the API object, and only when the published object actually
+carries `registerCardStyle` — an older bridge keeps the row and the section and the example says
+nothing about the missing surface.
+
+Copy the file into `~/.pi/agent/extensions/` and `/reload` to load it; the toggle defaults to
+`default`, so installing it changes no bash rendering until the row is switched, while the section
+is visible immediately (`defaultVisible: true`). It does not import the package and does not know
+where it is installed: the example and the bridge meet on `globalThis` behind one symbol (see
+**Reaching the bridge without importing it**). It registers from its own `session_start` handler,
+where the symbol's presence is the complete answer — if no compatible bridge is installed the
+example says so once and adds nothing.
 
 Both rows carry `preview()`, so `/gentle:customize` draws a literal sample of the card each
 mode produces instead of "Preview unavailable".

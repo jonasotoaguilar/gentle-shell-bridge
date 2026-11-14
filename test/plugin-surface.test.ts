@@ -107,16 +107,24 @@ test("registerCommands takes one item or many, joins the section it names, and d
   assert.deepEqual(readCommands(), []);
 });
 
-test("a palette item with a duplicate id is refused whole, so a batch never lands half-registered", () => {
-  registerCommands({ id: "panel:open", label: "Open panel", command: "panel:open" });
+test("the same id twice in one call is refused whole, so a batch never lands half-registered", () => {
   assert.throws(
     () => registerCommands([
       { id: "panel:close", label: "Close panel", command: "panel:close" },
-      { id: "panel:open", label: "Open panel again", command: "panel:open" },
+      { id: "panel:close", label: "Close panel again", command: "panel:close" },
     ]),
-    /palette item "panel:open" is already registered/u,
+    /appears twice in one registration/u,
   );
-  assert.deepEqual(readCommands().map((entry) => entry.id), ["panel:open"]);
+  assert.deepEqual(readCommands(), []);
+});
+
+test("a second call with the same id replaces in place and is reported, never a stack", () => {
+  const first = registerCommands({ id: "panel:open", label: "Open panel", command: "panel:open" });
+  registerCommands({ id: "panel:open", label: "Open the panel", command: "panel:open" });
+  assert.deepEqual(readCommands().map((entry) => entry.label), ["Open the panel"]);
+  first();
+  assert.deepEqual(readCommands().map((entry) => entry.label), ["Open the panel"]);
+  assert.ok(snapshotNotices().entries.some((entry) => entry.message.includes('palette item "panel:open" was registered twice')));
 });
 
 test("the published API object carries the three members and stays frozen", () => {

@@ -154,11 +154,12 @@ export function registerKeymap(registration: KeymapRegistration): () => void {
 export function registerCommands(contribution: CommandContribution | readonly CommandContribution[]): () => void {
   const entries = (Array.isArray(contribution) ? contribution : [contribution]) as readonly CommandContribution[];
   if (entries.length === 0) throw new TypeError("gentle-shell-bridge: registerCommands needs at least one contribution.");
+  const seen = new Set<string>();
   const created = entries.map((candidate) => {
     const id = requireText("id", candidate?.id);
-    if (state().commands.some((existing) => existing.id === id)) {
-      throw new TypeError(`gentle-shell-bridge: palette item "${id}" is already registered.`);
-    }
+    // Twice in ONE call is an author error: the batch would silently keep only the last one.
+    if (seen.has(id)) throw new TypeError(`gentle-shell-bridge: palette item "${id}" appears twice in one registration.`);
+    seen.add(id);
     return compact<CommandContribution>({
       id,
       label: requireText("label", candidate.label),
@@ -166,8 +167,18 @@ export function registerCommands(contribution: CommandContribution | readonly Co
       section: optionalText("section", candidate.section),
     });
   });
+  // Twice in this process is a reload or a second `session_start`, not a takeover: replace in place
+  // and say so, exactly like every other registration in this package.
   const list = state().commands;
-  list.push(...created);
+  for (const entry of created) {
+    const at = list.findIndex((existing) => existing.id === entry.id);
+    if (at >= 0) {
+      list[at] = entry;
+      recordNotice(`[bridge] palette item "${entry.id}" was registered twice; the newest registration wins.`);
+    } else {
+      list.push(entry);
+    }
+  }
   return () => {
     for (const entry of created) {
       const index = list.indexOf(entry);

@@ -113,3 +113,62 @@ export interface RowProvider {
   /** Evaluated each time the menu is built, never at registration. */
   rows(ctx: RowContext): CustomizeRow[];
 }
+
+/**
+ * What a card style's `top` receives: the measured width, plus the pieces of the host's own frame
+ * the bridge extracted once, in one place (S2). A style must never try to parse them back out of a
+ * line.
+ */
+export interface CardFrameTopContext {
+  readonly width: number;
+  /** The card's title as the host printed it, without the glyph; absent when it could not be found. */
+  readonly title?: string;
+  /** The right-aligned hint as the host printed it, e.g. `ctrl+o`; absent when the card had none. */
+  readonly hint?: string;
+}
+
+/** What a card style's `line` receives: one body row of the host's card. */
+export interface CardFrameLineContext {
+  readonly text: string;
+  readonly width: number;
+  /** `true` for the first body row of the card, `false` for every continuation row. */
+  readonly first: boolean;
+}
+
+/** What a card style's `bottom` receives. */
+export interface CardFrameBottomContext {
+  readonly width: number;
+}
+
+/**
+ * The three functions a style draws with, and the whole of what the bridge calls (S2). The bridge
+ * supplies the width and the text; it never asks the style where anything is.
+ */
+export interface CardFrame {
+  top(ctx: CardFrameTopContext): string;
+  line(ctx: CardFrameLineContext): string;
+  bottom(ctx: CardFrameBottomContext): string;
+}
+
+/**
+ * A plugin's card style: chrome, never a parser (S1). The bridge owns detection and hands this
+ * registration's `frame` the card it found; the style owns only what the card looks like.
+ */
+export interface CardStyleRegistration {
+  /**
+   * Unique and stable: it is the value the user selects and the key for ordering and replacement.
+   * It may not be `native` (the bridge's own pass-through value) nor one of the host's own values,
+   * because the line would then show the same value twice.
+   */
+  id: string;
+  /** The short text shown on the `Card style` line for this value. */
+  label: string;
+  frame: CardFrame;
+  /** Optional literal depiction of the style, drawn in the customize preview. */
+  preview?(): RowPreview;
+  /**
+   * Optional integer. Styles with an `order` come first, ascending; the rest follow in registration
+   * order, so several plugins always produce one deterministic value sequence (S12).
+   */
+  order?: number;
+}

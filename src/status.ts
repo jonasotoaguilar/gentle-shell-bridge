@@ -9,7 +9,16 @@
  * fixed (docs/contract.md §6).
  */
 
-import { snapshotProviders, snapshotSections } from "./bus.ts";
+import { snapshotCardStyles, snapshotProviders, snapshotSections } from "./bus.ts";
+import { cardStyleRowMode, type CardStyleRowMode } from "./card-style-rows.ts";
+import {
+  getCardStyleLastOutcome,
+  getCardStyleTransformFailures,
+  type CardStyleFrameOutcome,
+  type CardStyleTransformFailure,
+} from "./card-style-transform.ts";
+import { getCardStyleWiringDiagnostics, type CardStyleWiringDiagnostics } from "./card-style-wiring.ts";
+import { resolveCardStyleSelection } from "./card-styles.ts";
 import { getCaptureDiagnostics, type CaptureOutcome } from "./capture.ts";
 import { getHookDiagnostics } from "./hook.ts";
 import { snapshotNotices, type NoticeLevel } from "./notices.ts";
@@ -73,6 +82,32 @@ export interface StatusSidebarEntry {
   rail?: "wrapped" | "pending";
 }
 
+/** One registered card style, as `/bridge-status` lists it: in the order its values appear. */
+export interface StatusCardStyleEntry {
+  id: string;
+  label: string;
+  /** The value's position source: an explicit integer, or registration order when absent. */
+  order: number | "registration";
+}
+
+/** The persisted selection, resolved against the live registry. `missing` is a disposed style. */
+export type StatusCardStyleSelection =
+  | { kind: "native" }
+  | { kind: "style"; id: string; label: string }
+  | { kind: "missing"; id: string };
+
+/** The card-style surface, reported only when there is something to say (see `collectStatus`). */
+export interface StatusCardStyles {
+  /** `extended`: the host's own `Card style` line was found and grown. `separate`: the fallback. */
+  mode: CardStyleRowMode;
+  styles: StatusCardStyleEntry[];
+  selection: StatusCardStyleSelection;
+  /** The most recent frame's outcome; `none` before the transform ever ran. */
+  frame: CardStyleFrameOutcome | { kind: "none" };
+  wiring: CardStyleWiringDiagnostics;
+  failures: CardStyleTransformFailure[];
+}
+
 export interface StatusSnapshot {
   providers: StatusProviderEntry[];
   backend: StatusBackend;
@@ -99,6 +134,11 @@ export interface StatusSnapshot {
   notices?: StatusNoticeEntry[];
   /** Messages the bounded buffer evicted before they could be shown. Absent when none were. */
   noticesDropped?: number;
+  /**
+   * The card-style surface. Absent when nothing card-related exists — no style registered, the
+   * selection native, no transform attempt and no frame — so a row-only session keeps its output.
+   */
+  cardStyles?: StatusCardStyles;
 }
 
 /**
@@ -171,6 +211,8 @@ export function collectStatus(): StatusSnapshot {
     }));
     if (notices.dropped > 0) snapshot.noticesDropped = notices.dropped;
   }
+  const cardStyles = describeCardStyles();
+  if (cardStyles !== undefined) snapshot.cardStyles = cardStyles;
   const sidebarEntry = describeSidebar(sidebarDiagnostics);
   // The sidebar line is worth a line only when it explains something: a registered section that may
   // not be appearing, or a rail that IS intercepted. A row-only session with no rail keeps the
@@ -183,6 +225,76 @@ export function collectStatus(): StatusSnapshot {
   }
 
   return snapshot;
+}
+
+/**
+ * The card-style block, or `undefined` when the process has nothing card-related to say.
+ *
+ * The guard is what keeps a row-only session's report byte-identical: no style, a `native`
+ * selection, no wiring attempt and no frame means the feature was never used here.
+ */
+function describeCardStyles(): StatusCardStyles | undefined {
+  const styles = snapshotCardStyles();
+  const selection = resolveCardStyleSelection();
+  const wiring = getCardStyleWiringDiagnostics();
+  const frame = getCardStyleLastOutcome();
+  const failures = getCardStyleTransformFailures();
+  if (styles.length === 0 && selection.kind === "native" && wiring.lastOutcome === undefined && frame === undefined) {
+    return undefined;
+  }
+  return {
+    mode: cardStyleRowMode(),
+    styles: styles.map((style) => ({
+      id: style.id,
+      label: style.label,
+      order:
+        typeof style.order === "number" && Number.isFinite(style.order)
+          ? style.order
+          : "registration",
+    })),
+    selection:
+      selection.kind === "native"
+        ? { kind: "native" }
+        : selection.kind === "missing"
+          ? { kind: "missing", id: selection.id }
+          : { kind: "style", id: selection.style.id, label: selection.style.label },
+    frame: frame === undefined ? { kind: "none" } : frame,
+    wiring,
+    failures,
+  };
+}
+
+function formatCardSelection(selection: StatusCardStyleSelection): string {
+  switch (selection.kind) {
+    case "native":
+      return "native";
+    case "style":
+      return `${selection.id} "${selection.label}"`;
+    case "missing":
+      return `${selection.id} (missing: not registered)`;
+  }
+}
+
+function formatCardFrame(frame: StatusCardStyles["frame"]): string {
+  switch (frame.kind) {
+    case "none":
+      return "none";
+    case "transformed":
+      return `transformed ${frame.cards} ${frame.cards === 1 ? "card" : "cards"}`;
+    case "pass-through":
+      return `pass-through (${
+        frame.reason === "missing" ? "missing: a disposed style" : frame.reason === "no-card" ? "no card" : "native"
+      })`;
+    case "failed":
+      return `failed (${frame.styleId}: ${frame.message})`;
+  }
+}
+
+function formatCardWiring(wiring: CardStyleWiringDiagnostics): string {
+  if (wiring.wrapped > 0) return "chat wrapped";
+  if (wiring.lastOutcome === undefined) return "not armed";
+  const reason = wiring.lastReason === undefined ? "" : `: ${wiring.lastReason}`;
+  return `not wrapped (${wiring.lastOutcome}${reason})`;
 }
 
 /**
@@ -362,6 +474,30 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
   } else {
     const reason = snapshot.sidebar.reason === undefined ? "" : ` (${snapshot.sidebar.reason})`;
     lines.push(`sidebar: not armed${reason}`);
+  }
+
+  if (snapshot.cardStyles !== undefined) {
+    const card = snapshot.cardStyles;
+    lines.push(`card styles: ${card.mode}, ${card.styles.length} registered`);
+    for (const entry of card.styles) {
+      const order = entry.order === "registration" ? "registration order" : `order ${entry.order}`;
+      lines.push(`  - ${entry.id} "${entry.label}" (${order})`);
+    }
+    lines.push(`card style selection: ${formatCardSelection(card.selection)}`);
+    lines.push(`card style frame: ${formatCardFrame(card.frame)}`);
+    lines.push(`card style wiring: ${formatCardWiring(card.wiring)}`);
+    if (card.failures.length > 0) {
+      lines.push(`card style failures: ${card.failures.length}`);
+      for (const failure of card.failures) {
+        lines.push(`  - ${failure.styleId}: ${failure.message}`);
+      }
+    }
+    // S7: a later post-processor (cinlodev wraps the chat container and strips box chrome) can erase
+    // this frame. The bridge cannot prevent it, so it says so instead of pretending otherwise.
+    lines.push(
+      "card style note: a downstream post-processor (e.g. cinlodev) can strip or override this " +
+        "frame; the bridge cannot prevent it.",
+    );
   }
 
   if (snapshot.notices !== undefined) {

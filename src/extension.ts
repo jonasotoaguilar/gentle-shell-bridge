@@ -27,6 +27,7 @@
 import { armBridge } from "./arm.ts";
 import { flushNotices } from "./notices.ts";
 import { isRecord } from "./rows.ts";
+import { installCardStyleTransform } from "./card-style-wiring.ts";
 import { installSectionRows } from "./sections-rows.ts";
 import { installSidebarBackend, noteSidebarUnavailable, type SidebarTuiLike } from "./sidebar.ts";
 import { installSectionRail } from "./sidebar-render.ts";
@@ -111,6 +112,10 @@ export function armSidebar(ui: unknown): SidebarArmResult {
       // moment a `tui` exists, and the resolver keeps working for a later re-install.
       installSectionRail();
       installSidebarBackend(() => captured);
+      // The same hand-out is the only way to the conversation component (S4), so the card-style
+      // transform arms here too — never at module load, never twice (its marker decides), and every
+      // absence is a reported outcome instead of a throw inside the host's factory.
+      installCardStyleTransform(captured);
       return { render: () => [], invalidate: () => {} };
     });
   } catch (error) {

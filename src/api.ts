@@ -8,7 +8,7 @@
  *
  * ```ts
  * Symbol.for("gentle-shell-bridge/api/v1") → { schema, version, VERSION, registerRows,
- *                                              registerSection, createStore }
+ *                                              registerSection, registerCardStyle, createStore }
  * ```
  *
  * A plugin registers from its own `session_start` handler. Pi finishes loading every extension
@@ -45,7 +45,7 @@
  * lines, so README.md carries the inline copy of the gate and the symbol. Keep the two in sync.
  */
 
-import { registerRows, registerSection } from "./bus.ts";
+import { registerCardStyle, registerRows, registerSection } from "./bus.ts";
 import { recordNotice } from "./notices.ts";
 import { createStore } from "./store.ts";
 
@@ -72,6 +72,15 @@ export interface BridgeApi {
   readonly VERSION: string;
   readonly registerRows: typeof registerRows;
   readonly registerSection: typeof registerSection;
+  /**
+   * Card styles (S1). Absent only on an object published by a copy that predates this surface: the
+   * slot is first-wins, so a mixed-copy process can hand back the older object. The shape gate does
+   * NOT demand it, deliberately — an older object is still a usable bridge for rows, sections and
+   * the store, and a plugin that needs card styles checks `typeof api.registerCardStyle ===
+   * "function"` before using it. Demanding it here would turn a working bridge into "absent" for
+   * every row-only plugin.
+   */
+  readonly registerCardStyle?: typeof registerCardStyle;
   readonly createStore: typeof createStore;
 }
 
@@ -137,6 +146,7 @@ const LOCAL_API: BridgeApi = Object.freeze({
   VERSION,
   registerRows,
   registerSection,
+  registerCardStyle,
   createStore,
 });
 

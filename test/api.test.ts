@@ -137,6 +137,7 @@ test("publishing stores one frozen, versioned API object at the stable symbol", 
   assert.deepEqual(Object.keys(api).sort(), [
     "VERSION",
     "createStore",
+    "registerCardStyle",
     "registerRows",
     "registerSection",
     "schema",

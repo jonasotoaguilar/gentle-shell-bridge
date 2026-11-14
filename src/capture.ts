@@ -37,6 +37,7 @@
  * and the same diagnostics.
  */
 
+import { extendCardStyleLine } from "./card-style-rows.ts";
 import { buildRows, createRowContext, type RowBuildFailure } from "./rows.ts";
 import type { CustomizeRow } from "./types.ts";
 
@@ -394,6 +395,12 @@ function resolveSession(session: CaptureSession, component: HostCustomResult, th
     enumerable: false,
     configurable: true,
   });
+
+  // S1: the host's own `Card style` line is extended IN PLACE here, before the providers' rows are
+  // appended — the one moment the array is reachable, and the only place the two could be confused.
+  // It never throws: an unreachable line records the `separate` mode and leaves the fallback
+  // provider to draw the bridge's own line on this same build.
+  extendCardStyleLine(captured);
 
   const built = buildRows(createRowContext(theme));
   state.lastFailures = built.failures;

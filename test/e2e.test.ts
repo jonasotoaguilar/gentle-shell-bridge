@@ -303,6 +303,7 @@ test("the public entry exports exactly the contract surface and no test seams", 
     "bridgeApi",
     "createStore",
     "isBridgeApi",
+    "registerCardStyle",
     "registerRows",
     "registerSection",
   ]);

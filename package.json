@@ -14,6 +14,7 @@
     "type": "git",
     "url": "git+https://github.com/jonasotoaguilar/gentle-shell-bridge.git"
   },
+  "license": "Apache-2.0",
   "files": [
     "src",
     "docs/contract.md",

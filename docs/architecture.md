@@ -682,6 +682,29 @@ force are kept and the remaining transforms still run — and the failure is rec
 message for `/bridge-status`. Whatever comes back is clipped with `clipToWidth`, so a transform
 cannot make the frame wider than the terminal.
 
+### Telemetry: the counts that distinguish "missed" from "never ran"
+
+The pipeline records, per transform and per frame, what the frame did and what the transform saw:
+the outcome, the number of lines it received, and whatever the transform reported through
+`ctx.report(...)` — candidates examined, cards recognised, cards rewritten, and the shapes that
+matched, by name (`src/transform-pipeline.ts`, `TransformFrameCounts`). It exists because a real TUI
+could not tell two failures apart: a wrapper that never reaches the conversation, and a grammar that
+reaches it and recognises nothing. Those two read differently in the record — zero lines received
+versus candidates without recognition — without another round of guessing.
+
+Two rules make the record safe to keep. **Counts only:** a frame carries the user's private output,
+so no line and no text is stored; numbers are clamped to non-negative integers and a shape name is
+kept only when it is a name (lowercase letters, digits, `_`, `.`, `-`, at most 24 characters, at most
+12 per frame), which means a line cannot be smuggled into the record through that field. **Nothing
+it does reaches the frame:** the counts are collected in the call that already produces the output
+(no second pass), and every step of recording is guarded, so a transform that reports nonsense, or
+none at all, loses counts and never a frame. `/bridge-status` prints the counts on the transform's
+own line, and the block is still absent entirely when no transform is registered.
+
+The worked example reports `float` (the host's frame) and `plain` (its own frame) as shape names, so
+the next step after a real-TUI report is data-driven: a `skipped` line with candidates and no
+recognition names a grammar gap, and recognition with `0 rewritten` names a setting.
+
 ## Limits
 
 - **Internals, not an API.** Everything here depends on one constructor line, one adapter

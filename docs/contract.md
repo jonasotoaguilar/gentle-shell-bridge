@@ -832,7 +832,15 @@ import { registerTransform } from "gentle-shell-bridge";
 const dispose: () => void = registerTransform({
   id: "loon.gutter",        // unique and stable: ordering, replacement, the /bridge-status name
   order: 10,                // optional: ordered transforms run first, ascending
-  transform: (lines, ctx) => lines.map((line) => `│ ${line}`.slice(0, ctx.width)),
+  transform: (lines, ctx) => {
+    const rows = lines.filter((line) => line.trim() !== "");
+    ctx.report?.({         // optional telemetry: counts only, never a line of the frame
+      candidates: lines.length,
+      recognised: rows.length,
+      rewritten: lines.length - rows.length,
+    });
+    return rows;
+  },
 });
 ```
 
@@ -860,6 +868,35 @@ recorded with its id and message, and the remaining transforms still run. Nothin
 can throw into Pi's render.
 - **Identity.** With no transform registered the wrapper returns the host's own array instance, and a
 transform that returns its input unchanged keeps it: a frame nothing changed is the same array.
+- **Telemetry.** `ctx.report({ candidates, recognised, rewritten, shapes })` records what the
+transform's own grammar did with the frame; `/bridge-status` prints it next to the outcome (§ below).
+
+### Frame telemetry: what a transform saw
+
+The outcome alone cannot tell "the grammar recognised nothing" from "the frame never reached the
+plugin" — the difference between a working pipeline and one that silently misses. So a transform
+may report, per frame:
+
+- `candidates`: the rows it examined as a possible card head;
+- `recognised`: the candidates its grammar accepted;
+- `rewritten`: the cards it actually rewrote on this frame (`0` when a setting leaves them alone);
+- `shapes` (optional): which of its shapes matched, by name, and how many times.
+
+The bridge adds the count of lines the transform received and stores the whole record as that
+frame's entry — one record per transform, replaced by the next frame, never accumulated.
+
+**Counts only.** A frame carries the user's private output, so nothing of it is stored or shown: no
+line, no text, no plugin content. Every number is clamped to a non-negative integer; a shape name is
+kept only when it IS a name — lowercase letters, digits, `_`, `.`, `-`, at most 24 characters — so a
+space or an escape is dropped rather than recorded (never rewritten and shown); and at most 12 shape
+names are kept per frame. A shape name lives in `/bridge-status` beside plugin ids, which is
+diagnostics, never a row (§4).
+
+**It cannot cost a frame.** The counts come from the same call that produces the output, with no
+second pass, and recording is guarded: a bridge older than the telemetry has no `report` at all (the
+member is optional — gate with `typeof ctx.report === "function"`), a report of nonsense records
+zeros, and a transform that throws keeps the counts it reached. Telemetry never changes what is
+drawn.
 
 ### What a registration must satisfy
 
@@ -876,13 +913,15 @@ keeps its report byte for byte:
 
 ```text
 transforms: 2 registered
-  - bash-card-example.bash-cards (order 10): applied
-  - loon.strict (registration order): failed (definitions are missing)
+  - bash-card-example.bash-cards (order 10): applied, 13 lines, 4 candidates, 1 recognised, 1 rewritten, shapes: float 1
+  - loon.strict (registration order): failed (definitions are missing), 13 lines, 0 candidates, 0 recognised, 0 rewritten
 ```
 
 `applied` means the frame changed, `skipped` means the transform was called and left the rows as they
 were, `failed` carries its message, and `not run` means it was registered after the last frame. The
-outcome is the LAST frame's, not a history: a report is about what the user is looking at now.
+outcome is the LAST frame's, not a history: a report is about what the user is looking at now. The
+counts after it belong to that same frame — lines received, then what the transform reported — and a
+`not run` transform has none, because no frame has asked it anything yet.
 
 ## Limits
 

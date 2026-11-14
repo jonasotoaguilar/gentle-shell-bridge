@@ -215,11 +215,41 @@ export interface CardFrame {
 }
 
 /**
+ * What a transform reports about its own frame (F1): how many candidate cards it examined, how many
+ * it recognised, how many it rewrote, and — when its grammar has several shapes — which shape
+ * matched, by the transform's own name for it.
+ *
+ * COUNTS ONLY. A frame carries the user's private output, so nothing of it may be stored or shown:
+ * no line, no text, no plugin output. A shape name is therefore a NAME and nothing else — lowercase
+ * letters, digits, `_`, `.` or `-`, at most 24 characters — and anything else is dropped rather than
+ * recorded (`src/transform-pipeline.ts` sanitises every value before it is stored).
+ */
+export interface TransformCounts {
+  /** Rows the transform examined as a possible card head. */
+  candidates: number;
+  /** Candidates its grammar accepted. */
+  recognised: number;
+  /** Cards it actually rewrote this frame; `0` when its setting leaves them alone. */
+  rewritten: number;
+  /** Which shape matched, by name, and how many times. Absent when the grammar has one shape. */
+  shapes?: Readonly<Record<string, number>>;
+}
+
+/**
  * Context handed to a transform on every frame. `width` is the width the host rendered the
  * conversation at, which is also the hard limit on what the transform may return (S4).
  */
 export interface TransformContext {
   readonly width: number;
+  /**
+   * Report this frame's counts (F1). The bridge adds the line count and the outcome itself, records
+   * the result in this frame's entry for `/bridge-status`, and never lets it reach the frame: a
+   * throw, or nonsense, costs the counts and nothing else (F4).
+   *
+   * Optional because a published bridge older than the telemetry has no such member: call it behind
+   * `typeof ctx.report === "function"` and the transform keeps working with either.
+   */
+  report?(counts: TransformCounts): void;
 }
 
 /**

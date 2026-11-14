@@ -144,8 +144,8 @@ test("transforms run in order and each one receives the previous output", () => 
   assert.deepEqual(applyTransforms(["a"], 40), ["a|1|2"]);
   assert.deepEqual(seen, [["a"], ["a|1"]], "the second transform saw the first one's rows");
   assert.deepEqual(getTransformFrameOutcomes(), [
-    { id: "first", status: "applied" },
-    { id: "second", status: "applied" },
+    { id: "first", status: "applied", counts: { lines: 1, candidates: 0, recognised: 0, rewritten: 0, shapes: [] } },
+    { id: "second", status: "applied", counts: { lines: 1, candidates: 0, recognised: 0, rewritten: 0, shapes: [] } },
   ]);
 });
 
@@ -158,8 +158,8 @@ test("a transform that leaves the frame alone is skipped and the array survives 
 
   assert.equal(output, lines, "an unchanged frame is the same frame");
   assert.deepEqual(getTransformFrameOutcomes(), [
-    { id: "noop", status: "skipped" },
-    { id: "copy", status: "skipped" },
+    { id: "noop", status: "skipped", counts: { lines: 1, candidates: 0, recognised: 0, rewritten: 0, shapes: [] } },
+    { id: "copy", status: "skipped", counts: { lines: 1, candidates: 0, recognised: 0, rewritten: 0, shapes: [] } },
   ]);
 });
 
@@ -171,11 +171,15 @@ test("the frame outcomes are the LAST frame's, not a history", () => {
   });
 
   assert.deepEqual(applyTransforms(["a"], 40), ["a!"]);
-  assert.deepEqual(getTransformFrameOutcomes(), [{ id: "flip", status: "applied" }]);
+  assert.deepEqual(getTransformFrameOutcomes(), [
+    { id: "flip", status: "applied", counts: { lines: 1, candidates: 0, recognised: 0, rewritten: 0, shapes: [] } },
+  ]);
 
   paint = false;
   assert.deepEqual(applyTransforms(["a"], 40), ["a"]);
-  assert.deepEqual(getTransformFrameOutcomes(), [{ id: "flip", status: "skipped" }]);
+  assert.deepEqual(getTransformFrameOutcomes(), [
+    { id: "flip", status: "skipped", counts: { lines: 1, candidates: 0, recognised: 0, rewritten: 0, shapes: [] } },
+  ]);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -200,8 +204,13 @@ test("a throwing transform is skipped for the frame, reported, and the rest stil
 
   assert.deepEqual(output, ["a!"], "the frame kept its lines and the later transform ran");
   assert.deepEqual(getTransformFrameOutcomes(), [
-    { id: "boom", status: "failed", message: "boom exploded" },
-    { id: "after", status: "applied" },
+    {
+      id: "boom",
+      status: "failed",
+      message: "boom exploded",
+      counts: { lines: 1, candidates: 0, recognised: 0, rewritten: 0, shapes: [] },
+    },
+    { id: "after", status: "applied", counts: { lines: 1, candidates: 0, recognised: 0, rewritten: 0, shapes: [] } },
   ]);
 });
 
@@ -344,9 +353,9 @@ test("the report lists the transforms in pipeline order with the last frame's ou
 
   assert.deepEqual(transformBlock(statusLines()), [
     "transforms: 3 registered",
-    "  - explodes (order 10): failed (explodes now)",
-    "  - later (order 20): applied",
-    "  - unordered (registration order): skipped",
+    "  - explodes (order 10): failed (explodes now), 1 line, 0 candidates, 0 recognised, 0 rewritten",
+    "  - later (order 20): applied, 1 line, 0 candidates, 0 recognised, 0 rewritten",
+    "  - unordered (registration order): skipped, 1 line, 0 candidates, 0 recognised, 0 rewritten",
   ]);
 });
 
@@ -357,7 +366,7 @@ test("a transform registered after the last frame is reported as not run", () =>
 
   assert.deepEqual(transformBlock(statusLines()), [
     "transforms: 2 registered",
-    "  - ran (registration order): skipped",
+    "  - ran (registration order): skipped, 1 line, 0 candidates, 0 recognised, 0 rewritten",
     "  - later (registration order): not run",
   ]);
 });

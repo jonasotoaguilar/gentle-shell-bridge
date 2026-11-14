@@ -33,7 +33,7 @@ import {
   type PaintSurface,
   type RepaintTrigger,
 } from "./repaint.ts";
-import { getTransformFrameOutcomes } from "./transform-pipeline.ts";
+import { getTransformFrameOutcomes, type TransformFrameCounts } from "./transform-pipeline.ts";
 import { getPluginLineReport, type PluginLineReport } from "./plugin-lines.ts";
 import { getLastRowBuild, type RowBuildRecord } from "./rows.ts";
 import {
@@ -182,6 +182,12 @@ export interface StatusTransformEntry {
   outcome: "applied" | "skipped" | "failed" | "not run";
   /** Only when `outcome` is `failed`: the transform's own message, verbatim. */
   message?: string;
+  /**
+   * The last frame's counts (F1, F2): the lines it received and what its own grammar reported —
+   * candidates examined, cards recognised, cards rewritten, shapes matched by name. Absent only for
+   * `not run`, where no frame has asked the transform anything.
+   */
+  counts?: TransformFrameCounts;
 }
 
 export interface StatusSnapshot {
@@ -449,6 +455,7 @@ function describeTransforms(): StatusTransformEntry[] | undefined {
           : "registration",
       outcome: outcome?.status ?? "not run",
       ...(outcome?.message === undefined ? {} : { message: outcome.message }),
+      ...(outcome?.counts === undefined ? {} : { counts: outcome.counts }),
     };
   });
 }
@@ -767,7 +774,10 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
         entry.outcome === "failed"
           ? `failed (${entry.message ?? "no message"})`
           : entry.outcome;
-      lines.push(`  - ${entry.id} (${order}): ${outcome}`);
+      // F2: the counts the SAME frame recorded, on the same line as the outcome: "it ran" and "it
+      // recognised nothing" are one answer, and the line has to read as one.
+      const counts = entry.counts === undefined ? "" : `, ${formatTransformCounts(entry.counts)}`;
+      lines.push(`  - ${entry.id} (${order}): ${outcome}${counts}`);
     }
   }
 
@@ -787,6 +797,24 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
   }
 
   return lines;
+}
+
+/**
+ * The counts of one transform's last frame (F1), as the report reads them: lines received,
+ * candidates examined, cards recognised, cards rewritten — then the matched shapes by name, in the
+ * order the transform reported them. Numbers and names only: no line of the frame is ever here.
+ */
+function formatTransformCounts(counts: TransformFrameCounts): string {
+  const parts = [
+    `${counts.lines} ${counts.lines === 1 ? "line" : "lines"}`,
+    `${counts.candidates} ${counts.candidates === 1 ? "candidate" : "candidates"}`,
+    `${counts.recognised} recognised`,
+    `${counts.rewritten} rewritten`,
+  ];
+  if (counts.shapes.length > 0) {
+    parts.push(`shapes: ${counts.shapes.map((shape) => `${shape.name} ${shape.count}`).join(", ")}`);
+  }
+  return parts.join(", ");
 }
 
 /**

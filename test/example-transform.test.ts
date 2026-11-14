@@ -393,8 +393,11 @@ test("`/bridge-status` reports the example's transform and what the last frame d
   let lines = formatStatus(collectStatus());
   assert.ok(lines.includes("transforms: 1 registered"));
   assert.ok(
-    lines.includes("  - bash-card-example.bash-cards (order 10): applied"),
-    "the frame that restyled the card is reported",
+    lines.includes(
+      "  - bash-card-example.bash-cards (order 10): applied, 13 lines, 4 candidates, " +
+        "1 recognised, 1 rewritten, shapes: float 1",
+    ),
+    "the frame that restyled the card is reported, with what its grammar saw",
   );
 
   world.setMode("default");
@@ -402,8 +405,67 @@ test("`/bridge-status` reports the example's transform and what the last frame d
 
   lines = formatStatus(collectStatus());
   assert.ok(
-    lines.includes("  - bash-card-example.bash-cards (order 10): skipped"),
-    "and a frame with nothing to do says so",
+    lines.includes(
+      "  - bash-card-example.bash-cards (order 10): skipped, 13 lines, 4 candidates, " +
+        "1 recognised, 0 rewritten, shapes: float 1",
+    ),
+    "and a frame with nothing to do says so, and still names what it recognised",
+  );
+
+  world.dispose();
+});
+
+// ---------------------------------------------------------------------------------------------
+// F3 — the example's own recognition is visible in the report
+// ---------------------------------------------------------------------------------------------
+
+test("the example's grammar reports what it examined, recognised and rewrote, by shape", async () => {
+  const world = await startWorld("telemetry");
+
+  world.tui.chat.render(40); // `default`: the cards stay the host's, the grammar still looks
+  let line = formatStatus(collectStatus()).find((candidate) =>
+    candidate.startsWith("  - bash-card-example.bash-cards"),
+  );
+  assert.equal(
+    line,
+    "  - bash-card-example.bash-cards (order 10): skipped, 13 lines, 4 candidates, " +
+      "1 recognised, 0 rewritten, shapes: float 1",
+    "recognition is reported even when the setting leaves every card alone",
+  );
+
+  world.setMode("tool");
+  world.tui.chat.render(40);
+  line = formatStatus(collectStatus()).find((candidate) =>
+    candidate.startsWith("  - bash-card-example.bash-cards"),
+  );
+  assert.equal(
+    line,
+    "  - bash-card-example.bash-cards (order 10): applied, 13 lines, 4 candidates, " +
+      "1 recognised, 1 rewritten, shapes: float 1",
+    "and a rewrite is counted separately from the recognition that allowed it",
+  );
+  assert.equal(line?.includes("ls -1"), false, "no line of the frame reaches the report");
+
+  world.dispose();
+});
+
+test("a frame with no bash card reports candidates and no recognition, which is the whole point", async () => {
+  const world = await startWorld("telemetry-miss");
+
+  // A frame with a `read` card only: the float grammar is examined and nothing matches it. This is
+  // the answer "the pipeline reached the conversation, the grammar did not recognise a card".
+  world.revealHostFrame(["a line the host wrote", "", ...READ_CARD]);
+  world.setMode("tool");
+  world.tui.chat.render(40);
+
+  const line = formatStatus(collectStatus()).find((candidate) =>
+    candidate.startsWith("  - bash-card-example.bash-cards"),
+  );
+  assert.equal(
+    line,
+    "  - bash-card-example.bash-cards (order 10): skipped, 7 lines, 3 candidates, " +
+      "0 recognised, 0 rewritten",
+    "a miss is visible as candidates without recognition",
   );
 
   world.dispose();

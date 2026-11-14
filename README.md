@@ -215,16 +215,34 @@ A tool renderer resolves once, when a row is built. A transform runs on every fr
 component renders, which is the only way a rendering choice can reach rows that were already drawn.
 
 ```ts
+// The context a transform receives: the host's width, and the optional telemetry channel.
+interface TransformContext {
+  width: number;
+  // Optional because an older published bridge has none: gate with typeof ctx.report === "function".
+  report?(counts: {
+    candidates: number;   // rows examined as a possible card head
+    recognised: number;   // candidates the grammar accepted
+    rewritten: number;    // cards actually rewritten this frame
+    shapes?: Record<string, number>;  // which shape matched, by name
+  }): void;
+}
+
 declare const registerTransform: (transform: {
   id: string;
   order?: number;
-  transform(lines: readonly string[], ctx: { width: number }): readonly string[];
+  transform(lines: readonly string[], ctx: TransformContext): readonly string[];
 }) => () => void;
 
 const dispose = registerTransform({
   id: "loon.gutter",   // unique: the ordering/replacement key and the /bridge-status name
   order: 10,           // optional: ordered transforms run first, ascending
-  transform: (lines, ctx) => lines.map((line) => line.slice(0, ctx.width)),
+  transform: (lines, ctx) => {
+    const kept = lines.map((line) => line.slice(0, ctx.width));
+    // Counts only — never a line of the conversation. This is what tells "the grammar matched
+    // nothing" apart from "the wrapper never ran" when a setting seems to do nothing.
+    ctx.report?.({ candidates: lines.length, recognised: kept.length, rewritten: lines.length });
+    return kept;
+  },
 });
 
 // The user sees the new rendering on the NEXT FRAME, for every row — including cards drawn before
@@ -242,8 +260,20 @@ own contribution for that frame; the lines in force are kept and the remaining t
 - a transform that returns its input **unchanged** is recorded as `skipped` and the frame keeps its
 identity — with no transform registered, the wrapper returns the host's own array instance.
 
-`/bridge-status` lists the pipeline in order with the last frame's outcome per transform. Full
-contract: [docs/contract.md](docs/contract.md) §13.
+`/bridge-status` lists the pipeline in order with the last frame's outcome per transform, then the
+counts that same frame recorded — lines received, and what the transform reported:
+
+```text
+transforms: 1 registered
+  - bash-card-example.bash-cards (order 10): applied, 13 lines, 4 candidates, 1 recognised, 1 rewritten, shapes: float 1
+```
+
+Those counts are the instrument, not decoration: `skipped` with `0 candidates` means the grammar
+found nothing card-shaped, candidates with `0 recognised` means it found the shape and rejected it,
+and recognised with `0 rewritten` means a setting decided the output. They are counts only — no line
+of the conversation is stored or displayed, a shape name must be a short lowercase name (anything
+else is dropped, never rewritten), and reporting cannot throw into the frame. Full contract:
+[docs/contract.md](docs/contract.md) §13.
 
 ## Reaching the bridge without importing it
 

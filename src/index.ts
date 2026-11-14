@@ -53,5 +53,6 @@ export type {
   SidebarSection,
   Tone,
   TransformContext,
+  TransformCounts,
   TranscriptTransform,
 } from "./types.ts";

@@ -20,6 +20,14 @@
  *    `tool` rewrites every bash card in the frame. One owner, one look: this file registers no
  *    tool renderer at all.
  *
+ *    Both modes report frame telemetry through `ctx.report(...)`: how many rows the grammar examined
+ *    as a possible card head, how many it recognised, how many it rewrote, and which shape matched
+ *    (`float` for the host's frame, `plain` for this file's own). `/bridge-status` prints it on the
+ *    transform's line, which is how "the toggle does nothing in this TUI" becomes a measurement: the
+ *    counts are taken whether or not the setting rewrites anything. They are counts only — no line
+ *    of the conversation is ever handed over — and the report is optional, so this file still works
+ *    against a published bridge older than the telemetry.
+ *
  * B. The toggle row — through the bridge. `registerRows` contributes two consecutive `Cards` rows
  *    sharing one `choice.setting`, and `createStore("bash-card-example")` persists the choice, so
  *    the row and the transform read the same value. It is the only control: `default` and `tool`
@@ -221,12 +229,28 @@ interface CardStyleLike {
 }
 
 /**
+ * What a transform may report about its own frame (`src/types.ts`, `TransformCounts`): how many
+ * candidate cards it examined, how many it recognised, how many it rewrote, and which of its shapes
+ * matched, by name. Counts only — never a line of the frame, which carries the user's output.
+ */
+interface TransformCountsLike {
+  candidates: number;
+  recognised: number;
+  rewritten: number;
+  shapes?: Record<string, number>;
+}
+
+/**
  * What a transform receives on every frame (`src/types.ts`, `TransformContext`): the width the host
  * rendered the conversation at, which is also the widest row it may return — the bridge clips
- * anything wider before the frame reaches the screen.
+ * anything wider before the frame reaches the screen — and the channel it reports its counts on.
+ *
+ * `report` is OPTIONAL because a published bridge older than the telemetry has no such member: the
+ * transform gates with `typeof ctx.report === "function"` and works with either.
  */
 interface TransformContextLike {
   width: number;
+  report?(counts: TransformCountsLike): void;
 }
 
 /**
@@ -484,11 +508,17 @@ function floatBashCard(stripped: readonly string[], start: number): BashCardSpan
   return { start, end: row + 1, body };
 }
 
+/** This file's `plain` frame's bash heading: the gutter, a space, then `bash`. */
+const PLAIN_BASH_HEAD = new RegExp(`^${CARD_STYLE_GUTTER} ${BASH_TITLE}(?:\\s|$)`, "u");
+
+/** Whether a row could start this file's `plain` bash card: where its grammar has to look. */
+function isPlainHead(text: string): boolean {
+  return PLAIN_BASH_HEAD.test(text);
+}
+
 /** This file's `plain` card style's bash card at `start`, when one starts there. */
 function plainBashCard(stripped: readonly string[], start: number): BashCardSpan | undefined {
-  if (!new RegExp(`^${CARD_STYLE_GUTTER} ${BASH_TITLE}(?:\\s|$)`, "u").test(stripped[start] ?? "")) {
-    return undefined;
-  }
+  if (!isPlainHead(stripped[start] ?? "")) return undefined;
   const body: string[] = [];
   let row = start + 1;
   while (row < stripped.length) {
@@ -502,23 +532,75 @@ function plainBashCard(stripped: readonly string[], start: number): BashCardSpan
 }
 
 /**
- * Every bash card in the frame, in order. Rows a card already claimed are skipped, so a body row can
- * never be read as the head of the next card.
+ * What one frame's scan found (F3): the cards, how many positions the grammar examined as a possible
+ * card head, and which shape matched, by name. Counts only — the rows themselves are never reported.
  */
-function bashCardSpans(lines: readonly string[]): BashCardSpan[] {
+interface BashScan {
+  spans: BashCardSpan[];
+  candidates: number;
+  shapes: Record<string, number>;
+}
+
+/**
+ * The shape names this file reports (F3), so the next step is data-driven: the host's own `float`
+ * frame, or this file's `plain` one. Lowercase and mark-free, which is what the bridge keeps; a name
+ * it would drop is not worth reporting.
+ */
+const SHAPE_FLOAT = "float";
+const SHAPE_PLAIN = "plain";
+
+/**
+ * Every bash card in the frame, in order, plus what the scan saw on the way. Rows a card already
+ * claimed are skipped, so a body row can never be read as the head of the next card.
+ *
+ * A CANDIDATE is a row where this grammar could start a card at all: a float padding row (the only
+ * row a host card can begin on) or this file's own `plain` heading. A candidate the grammar then
+ * rejects is the interesting measurement — "the frame has something card-shaped here and no bash
+ * card matched" — which is exactly what a real TUI could not tell apart from "the wrapper never
+ * ran". That distinction is the whole reason the counts exist.
+ */
+function scanBashCards(lines: readonly string[]): BashScan {
   const stripped = lines.map((line) => plainText(line));
   const spans: BashCardSpan[] = [];
+  const shapes: Record<string, number> = {};
+  let candidates = 0;
   let index = 0;
   while (index < stripped.length) {
-    const span = floatBashCard(stripped, index) ?? plainBashCard(stripped, index);
-    if (span === undefined) {
+    const row = stripped[index] ?? "";
+    let span: BashCardSpan | undefined;
+    let shape: string | undefined;
+    if (isFloatPadding(row)) {
+      candidates += 1;
+      span = floatBashCard(stripped, index);
+      shape = SHAPE_FLOAT;
+    } else if (isPlainHead(row)) {
+      candidates += 1;
+      span = plainBashCard(stripped, index);
+      shape = SHAPE_PLAIN;
+    }
+    if (span === undefined || shape === undefined) {
       index += 1;
       continue;
     }
     spans.push(span);
+    shapes[shape] = (shapes[shape] ?? 0) + 1;
     index = span.end;
   }
-  return spans;
+  return { spans, candidates, shapes };
+}
+
+/**
+ * Report this frame's counts (F1, F3). Guarded twice, because reporting is diagnostics: a bridge
+ * older than the telemetry has no `report` at all, and a report that cannot be recorded must never
+ * cost the conversation a frame.
+ */
+function reportCounts(ctx: TransformContextLike, counts: TransformCountsLike): void {
+  if (typeof ctx.report !== "function") return;
+  try {
+    ctx.report(counts);
+  } catch {
+    // Counts are an instrument, not output: nothing here can change the frame.
+  }
 }
 
 /** One bash card, drawn with this file's chrome. Never wider than the width it was given. */
@@ -535,6 +617,12 @@ function restyleBashCard(span: BashCardSpan, width: number): string[] {
  * a tool-renderer slot could never do. `default` returns the SAME array, so the bridge records the
  * frame as a pass-through and the host's card is untouched; a throw is swallowed here as well as in
  * the bridge, because a broken card must never cost the conversation.
+ *
+ * The frame is scanned in BOTH modes, once, and the counts reported from that same scan (F4):
+ * recognition is what makes the toggle's behaviour measurable in a real TUI, and a scan that only
+ * happened in `tool` mode would report nothing exactly when the report is needed. Rewriting is
+ * counted separately from recognition, so "it saw the card and did not rewrite it" and "it saw
+ * nothing" can never read the same.
  */
 function bashCardTransform(store: BridgeStoreLike): TransformLike {
   return {
@@ -544,13 +632,19 @@ function bashCardTransform(store: BridgeStoreLike): TransformLike {
     order: 10,
     transform: (lines, ctx) => {
       try {
-        if (readStoredMode(store) !== MODE_TOOL) return lines;
-        const spans = bashCardSpans(lines);
-        if (spans.length === 0) return lines;
+        const scan = scanBashCards(lines);
+        const rewriting = readStoredMode(store) === MODE_TOOL;
+        reportCounts(ctx, {
+          candidates: scan.candidates,
+          recognised: scan.spans.length,
+          rewritten: rewriting ? scan.spans.length : 0,
+          shapes: scan.shapes,
+        });
+        if (!rewriting || scan.spans.length === 0) return lines;
 
         const output: string[] = [];
         let cursor = 0;
-        for (const span of spans) {
+        for (const span of scan.spans) {
           output.push(...lines.slice(cursor, span.start), ...restyleBashCard(span, ctx.width));
           cursor = span.end;
         }

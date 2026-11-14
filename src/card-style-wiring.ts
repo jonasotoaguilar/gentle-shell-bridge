@@ -65,6 +65,7 @@
 import { transformCardLines } from "./card-style-transform.ts";
 import { getRepaintHost, recordSurfaceReach, type PaintSurface } from "./repaint.ts";
 import { isRecord } from "./rows.ts";
+import { rowOrigins } from "./row-origin.ts";
 import { applyTransforms } from "./transform-pipeline.ts";
 
 /** The layout protocol symbol, exactly as `pi-tui` defines it (`layout-node.js:1`). */
@@ -326,10 +327,19 @@ function wrapComponent(component: Renderable, surface: PaintSurface): InstallCar
     const rows = lines as string[];
     // R1: ONE repaint for every surface. The rail stops after the card style — the registered
     // transcript transforms belong to the conversation, and a plugin's conversation rows must never
-    // be handed the rail.
-    return surface === "conversation"
-      ? applyTransforms(transformCardLines(rows, width, "conversation"), width)
-      : transformCardLines(rows, width, "rail");
+    // be handed the rail. That is also why the rail needs no origin map: it runs no transform, so
+    // there is nothing to attribute rows to.
+    if (surface !== "conversation") return transformCardLines(rows, width, "rail");
+    // S1: the origin map is read from the layout the host's OWN render pass just published
+    // (`mouseLayout`, `pi-tui/dist/tui.js:136-149`) — no second render, no takeover of
+    // `Container.render`, one entry per row of `rows`. A host that published no layout hands the
+    // transform an empty map rather than a guess (`./row-origin.ts`), so the frame is still drawn.
+    const origins = rowOrigins(component, width, rows.length);
+    return applyTransforms(
+      transformCardLines(rows, width, "conversation"),
+      width,
+      origins.rows,
+    );
   };
 
   component.render = wrapper;

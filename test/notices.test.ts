@@ -83,6 +83,8 @@ const recordingUi = (): { ui: RecordingUi; calls: Array<[string, string | undefi
 const entryHandlers = (): BridgeSessionHandler[] => {
   const handlers: BridgeSessionHandler[] = [];
   const pi: BridgeExtensionApi = {
+    // `gentle-pi` is loaded, so the runtime gate is open and the buffered notice is flushed.
+    getCommands: () => [{ name: "gentle:customize" }],
     on(_event, handler) {
       handlers.push(handler);
     },

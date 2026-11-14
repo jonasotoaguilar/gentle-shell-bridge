@@ -4,7 +4,8 @@
  * Pi loads `src/extension.ts` (the `pi.extensions` manifest entry) through jiti, so the sources are
  * the published artifact: there is no build step and no `dist/`. This module is the package's
  * programmatic API surface for plugins: rows, sidebar sections, card styles, transcript transforms,
- * the optional store and the runtime handshake (`bridgeApi`, `onBridgeApi`, the announcement event). Backend internals — the capture patch, the hook registry, the arm
+ * per-tool card DESIGNS (one registration point for `pi.registerToolRenderer`), the optional store and
+ * the runtime handshake (`bridgeApi`, `onBridgeApi`, the announcement event). Backend internals — the capture patch, the hook registry, the arm
  * lifecycle, the rail interception, the section renderer, the card-style line and transformer, the
  * transform pipeline, `status` and the bus snapshots — are reached through the extension entry, not
  * re-exported here. docs/contract.md's Limits section is explicit about which names are the
@@ -32,6 +33,7 @@ export type {
   BridgeReadyPayload,
 } from "./api.ts";
 export { registerCardStyle, registerRows, registerSection, registerTransform } from "./bus.ts";
+export { registerToolDesign } from "./tool-designs.ts";
 export { createStore, STORE_SCHEMA_VERSION } from "./store.ts";
 export type { Store, StoreProblem, StoreProblemKind } from "./store.ts";
 export type {
@@ -45,6 +47,7 @@ export type {
   RowChoice,
   RowContext,
   RowLabel,
+  RowOrigin,
   RowPreview,
   RowProvider,
   SectionContext,
@@ -52,6 +55,8 @@ export type {
   SectionRow,
   SidebarSection,
   Tone,
+  ToolDesignContext,
+  ToolDesignRegistration,
   TransformContext,
   TransformCounts,
   TranscriptTransform,

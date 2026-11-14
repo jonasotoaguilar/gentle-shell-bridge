@@ -102,6 +102,8 @@ const loadEntry = (): Entry => {
   const sessionHandlers: BridgeSessionHandler[] = [];
   const commands: Entry["commands"] = [];
   const pi: BridgeExtensionApi = {
+    // `gentle-pi` is present, so `session_start` arms the row side and the rail (S9/T12).
+    getCommands: () => [{ name: "gentle:customize" }],
     on(_event, handler) {
       sessionHandlers.push(handler);
     },

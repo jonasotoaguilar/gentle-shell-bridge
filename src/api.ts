@@ -9,7 +9,8 @@
  * ```ts
  * Symbol.for("gentle-shell-bridge/api/v1") → { schema, version, VERSION, registerRows,
  *                                              registerSection, registerCardStyle,
- *                                              registerTransform, createStore }
+ *                                              registerTransform, registerToolDesign,
+ *                                              createStore, requestRepaint }
  * ```
  *
  * A plugin registers from its own `session_start` handler. But Pi does NOT guarantee that this
@@ -60,7 +61,9 @@
 
 import { registerCardStyle, registerRows, registerSection, registerTransform } from "./bus.ts";
 import { recordNotice } from "./notices.ts";
+import { requestRepaint } from "./repaint.ts";
 import { createStore } from "./store.ts";
+import { registerToolDesign } from "./tool-designs.ts";
 
 /** The release that published the object; informational, never the compatibility check. */
 export const VERSION = "0.3.0";
@@ -143,6 +146,33 @@ export interface BridgeApi {
    * it in the gate would turn a working bridge into "absent" for every row-only plugin.
    */
   readonly registerTransform?: typeof registerTransform;
+  /**
+   * A full repaint of everything the host draws (T4): `tui.invalidate()` — which drops the
+   * per-component frame caches a tool row keeps — followed by `requestRender(force = true)`.
+   *
+   * This is what makes a setting change reach the cards ALREADY on screen: the host resolves a tool
+   * row once and replays its cached frame otherwise. Returns what `/bridge-status` reports as the last
+   * repaint, and never throws — with no host captured yet the request is reported as `unavailable`
+   * with its reason.
+   *
+   * Optional for the same reason as `registerCardStyle`: the slot is first-wins, so a mixed-copy
+   * process can hand back an object published before this member existed. A plugin that needs it
+   * checks `typeof api.requestRepaint === "function"`; demanding it in the gate would turn a working
+   * bridge into "absent" for every plugin that does not.
+   */
+  readonly requestRepaint?: typeof requestRepaint;
+  /**
+   * A card DESIGN for one tool name (S4, S5, S7): the bridge owns the single
+   * `pi.registerToolRenderer` resolver and fans it out to every design a plugin registers here. A
+   * design receives the rows the host's own card produced and returns the rows to draw, so the frame
+   * stays the host's.
+   *
+   * Optional for the same reason as `registerCardStyle`: the slot is first-wins, so a mixed-copy
+   * process can hand back an object published before this member existed. A plugin that needs it
+   * checks `typeof api.registerToolDesign === "function"`; demanding it in the gate would turn a
+   * working bridge into "absent" for every plugin that does not register a design.
+   */
+  readonly registerToolDesign?: typeof registerToolDesign;
   readonly createStore: typeof createStore;
 }
 
@@ -235,6 +265,8 @@ const LOCAL_API: BridgeApi = Object.freeze({
   registerSection,
   registerCardStyle,
   registerTransform,
+  requestRepaint,
+  registerToolDesign,
   createStore,
 });
 

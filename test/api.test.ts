@@ -140,7 +140,9 @@ test("publishing stores one frozen, versioned API object at the stable symbol", 
     "registerCardStyle",
     "registerRows",
     "registerSection",
+    "registerToolDesign",
     "registerTransform",
+    "requestRepaint",
     "schema",
     "version",
   ]);
@@ -315,6 +317,8 @@ const installWidgetSurface = (host: FakeHost): void => {
 const armThroughEntry = (host: FakeHost): void => {
   const handlers: BridgeSessionHandler[] = [];
   const pi: BridgeExtensionApi = {
+    // `gentle-pi` is present, so `session_start` arms (S9/T12).
+    getCommands: () => [{ name: "gentle:customize" }],
     on(event, handler) {
       if (event === "session_start") handlers.push(handler);
     },
@@ -367,6 +371,7 @@ test("a plugin that registers from session_start renders its section and its Sec
 test("PRESERVE: a session_start without a UI still arms nothing", () => {
   const handlers: BridgeSessionHandler[] = [];
   const pi: BridgeExtensionApi = {
+    getCommands: () => [{ name: "gentle:customize" }],
     on(_event, handler) {
       handlers.push(handler);
     },

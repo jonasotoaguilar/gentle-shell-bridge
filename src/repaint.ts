@@ -24,7 +24,14 @@
  * 1. `invalidateSidebar(tui)` is exactly `tui.terminal[CACHE].revision++`, where `CACHE` is
  *    `Symbol.for("gentle-pi.experimental-sidebar.cache")` — the symbol the host declares and reads
  *    (`lib/shell-sidebar-layout.ts:97-107`, `symbol.for` so every loaded copy shares it);
- * 2. `tui.requestRender()`.
+ * 2. `tui.invalidate()` (`pi-tui/dist/tui.js:585-590`), which drops every mounted component's own
+ *    frame cache — the caches that would otherwise hand back the rows of the PREVIOUS value (the
+ *    host bash card's `ToolCardRows`, `cards-bash-v2` `extensions/quiet-tools.ts:926-966`);
+ * 3. `tui.requestRender(true)`: a forced frame (`tui.js:658-663`), so a render already queued cannot
+ *    dedupe this one away.
+ *
+ * Steps 2 and 3 are the plugin-facing `requestRepaint()` (T4), and every repaint path here uses that
+ * one forced path — bridge-owned rows cache their frames exactly the same way.
  *
  * Nothing else: no timer, no poll, no retry. A repaint that cannot happen is RECORDED and reported
  * by `/bridge-status` (`./status.ts`), because "the toggle did nothing" must always have an answer.
@@ -40,6 +47,16 @@
  */
 
 import { isRecord } from "./rows.ts";
+
+/** What a plugin-facing full repaint records as its cause, so `/bridge-status` reads as a sentence. */
+const PLUGIN_REPAINT_CAUSE = "a plugin asked for a full repaint";
+
+/** Why nothing could be repainted: no host was captured at all. */
+const NO_HOST_REASON = "no tui has been captured, so no surface can be repainted";
+
+/** Why nothing could be repainted: the captured host has no frame request on it. */
+const NO_FRAME_REQUEST_REASON =
+  "the captured tui has no requestRender(), so no frame can be asked for";
 
 /** The surfaces a card style can paint. Order is the order the report prints. */
 export const PAINT_SURFACES = ["conversation", "rail"] as const;
@@ -193,13 +210,40 @@ function invalidateHostSidebar(tui: Record<string, unknown>): void {
 }
 
 /**
- * Ask the host for a frame after a write to bridge-owned state (R3).
+ * Drop the host's caches so the next frame is BUILT, not replayed.
  *
- * Runs synchronously, before the caller's action returns: the host's cache invalidation and then
- * `requestRender()`. Records the trigger — cause, surfaces, outcome — so `/bridge-status` can report
- * the last one, including the reason a repaint could not happen.
+ * Two caches stand between a setting change and the pixels:
+ *
+ * 1. the rail layout's revision counter, bumped exactly as `invalidateSidebar(tui)` does
+ *    (`lib/shell-sidebar-layout.ts:105-107`);
+ * 2. every mounted component's OWN frame cache, through `tui.invalidate()`
+ *    (`pi-tui/dist/tui.js:585-590`), which walks the mounted roots and calls each component's
+ *    `invalidate()`. That is what drops a per-component frame like the host bash card's
+ *    `ToolCardRows` (`cards-bash-v2` `extensions/quiet-tools.ts:926-966`): without it a forced frame
+ *    repaints the chrome around rows that were drawn under the previous preference.
+ *
+ * Neither step may throw into a caller: a tree that refuses to drop a frame keeps it, and the forced
+ * frame request that follows is still worth making.
  */
-export function requestSurfaceRepaint(input: {
+function invalidateHost(tui: Record<string, unknown>): void {
+  invalidateHostSidebar(tui);
+  try {
+    const invalidate = tui.invalidate;
+    if (typeof invalidate === "function") invalidate.call(tui);
+  } catch {
+    // A component (or a terminal) that refuses to invalidate keeps its frame; see above.
+  }
+}
+
+/**
+ * The one place a frame is asked for, shared by every repaint path.
+ *
+ * Order matters and is asserted by the tests: the host's caches are dropped FIRST, then a frame is
+ * requested with `force = true` (`pi-tui/dist/tui.js:658-663`), which resets the renderer's state and
+ * renders immediately instead of being deduped away by a render already queued. Returns the reason
+ * the frame could not be asked for, or `undefined` when it was.
+ */
+function requestFrame(input: {
   cause: string;
   surfaces: readonly PaintSurface[];
 }): RepaintTrigger {
@@ -216,21 +260,51 @@ export function requestSurfaceRepaint(input: {
   };
 
   const tui = state.tui;
-  if (!isRecord(tui)) {
-    return record("unavailable", "no tui has been captured, so no surface can be repainted");
-  }
+  if (!isRecord(tui)) return record("unavailable", NO_HOST_REASON);
   const requestRender = tui.requestRender;
-  if (typeof requestRender !== "function") {
-    return record("unavailable", "the captured tui has no requestRender(), so no frame can be asked for");
-  }
+  if (typeof requestRender !== "function") return record("unavailable", NO_FRAME_REQUEST_REASON);
 
-  invalidateHostSidebar(tui);
+  invalidateHost(tui);
   try {
-    requestRender.call(tui);
+    requestRender.call(tui, true);
   } catch (error) {
     // A host that refuses a frame is reported, never swallowed: the write DID land, the screen did
     // not change, and only a report can distinguish that from "the toggle is broken".
     return record("unavailable", `requestRender threw: ${errorMessage(error)}`);
   }
   return record("repainted");
+}
+
+/**
+ * Ask the host for a frame after a write to bridge-owned state (R3).
+ *
+ * Runs synchronously, before the caller's action returns: the host's cache invalidation and then a
+ * FORCED `requestRender()` (T4) — bridge-owned rows are drawn by a component that caches its own
+ * frame, so an unforced request can hand back the rows of the previous value. Records the trigger —
+ * cause, surfaces, outcome — so `/bridge-status` can report the last one, including the reason a
+ * repaint could not happen.
+ */
+export function requestSurfaceRepaint(input: {
+  cause: string;
+  surfaces: readonly PaintSurface[];
+}): RepaintTrigger {
+  return requestFrame(input);
+}
+
+/**
+ * Force a FULL repaint of everything the host draws (T4): the plugin-facing request behind
+ * `api.requestRepaint()`.
+ *
+ * This is what a setting change needs to reach the cards ALREADY on screen. The host resolves a tool
+ * row once and then caches the frame it drew (`ToolCardRows`, `cards-bash-v2`
+ * `extensions/quiet-tools.ts:926-966`), so a new value alone changes the next card and nothing else.
+ * `tui.invalidate()` drops those per-component frames and `requestRender(force = true)` draws the
+ * whole surface again from them — the past and the future, not only the future.
+ *
+ * Both surfaces are named, because both paint chrome from the setting. Safe with no host captured
+ * yet (a plugin may ask from its own `session_start`): the request is REPORTED as `unavailable` with
+ * its reason, never thrown, and never queued for a host that may never arrive.
+ */
+export function requestRepaint(): RepaintTrigger {
+  return requestFrame({ cause: PLUGIN_REPAINT_CAUSE, surfaces: PAINT_SURFACES });
 }

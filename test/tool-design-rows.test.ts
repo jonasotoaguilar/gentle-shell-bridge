@@ -1,0 +1,301 @@
+/**
+ * The customize rows for tool designs (S6, T9): one line per tool that HAS designs, in the `Cards`
+ * category, with the tool's own card as one value and each design as another. The selection is
+ * persisted per tool in the bridge's own store, and changing it repaints the cards already drawn
+ * through `requestRepaint()` — the forced frame that drops the host's per-component card caches.
+ *
+ * Asserted through the row contract the host receives — `buildRows` — and the store file, so the
+ * test reads what the menu reads.
+ */
+
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+
+import { snapshotProviders } from "../src/bus.ts";
+import { resetNoticesForTests } from "../src/notices.ts";
+import { resetPluginLinesForTests } from "../src/plugin-lines.ts";
+import { getRepaintDiagnostics, resetRepaintForTests, setRepaintHost } from "../src/repaint.ts";
+import { buildRows, resetRowBuildStateForTests } from "../src/rows.ts";
+import { resetStoreStateForTests } from "../src/store.ts";
+import {
+  TOOL_DESIGN_NATIVE,
+  getToolDesignSelection,
+  registerToolDesign,
+  resetToolDesignsForTests,
+  toolNamesWithDesigns,
+} from "../src/tool-designs.ts";
+import {
+  TOOL_DESIGN_ROWS_PROVIDER_ID,
+  installToolDesignRows,
+  resetToolDesignRowStateForTests,
+} from "../src/tool-design-rows.ts";
+import {
+  resetToolDesignWiringForTests,
+  toolDesignResolver,
+} from "../src/tool-design-wiring.ts";
+import type { CustomizeRow, ToolDesignRegistration } from "../src/types.ts";
+
+let configHome: string;
+let previousConfigHome: string | undefined;
+
+test.before(() => {
+  configHome = mkdtempSync(join(tmpdir(), "gsb-tool-design-rows-"));
+  previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+  process.env.GENTLE_PI_CONFIG_HOME = configHome;
+});
+
+test.after(() => {
+  if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+  else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+  rmSync(configHome, { recursive: true, force: true });
+});
+
+test.beforeEach(() => {
+  rmSync(join(configHome, "gentle-shell-bridge"), { recursive: true, force: true });
+  resetToolDesignsForTests();
+  resetToolDesignRowStateForTests();
+  resetToolDesignWiringForTests();
+  resetRepaintForTests();
+  resetStoreStateForTests();
+  resetNoticesForTests();
+  resetPluginLinesForTests();
+  resetRowBuildStateForTests();
+});
+
+const bashHeading: ToolDesignRegistration = {
+  tool: "bash",
+  id: "loon.bash-heading",
+  label: "bash heading",
+  description: "heads the card with bash instead of the host's $ prompt",
+  preview: () => ({ title: "Cards · bash heading", sample: "bash ls -la" }),
+  apply: (lines) => [...lines],
+};
+
+const bashFramed: ToolDesignRegistration = {
+  tool: "bash",
+  id: "loon.bash-framed",
+  label: "bash framed",
+  apply: (lines) => [...lines],
+};
+
+const writeBadge: ToolDesignRegistration = {
+  tool: "write",
+  id: "loon.write-badge",
+  label: "write badge",
+  apply: (lines) => [...lines],
+};
+
+/** The rows one menu build receives, with the design bus installed. */
+const rowsForBuild = (): CustomizeRow[] => {
+  installToolDesignRows();
+  return buildRows({ theme: undefined, configHome }).rows;
+};
+
+/** The lines the host would draw for one setting, reading `current()` at render time. */
+const toggleLines = (rows: readonly CustomizeRow[]): string[] => {
+  const lines: string[] = [];
+  let index = 0;
+  while (index < rows.length) {
+    const setting = rows[index].choice?.setting;
+    if (setting === undefined) {
+      index += 1;
+      continue;
+    }
+    let end = index;
+    while (end + 1 < rows.length && rows[end + 1].choice?.setting === setting) end += 1;
+    const marks = rows
+      .slice(index, end + 1)
+      .map((row) => `${row.choice?.current() === true ? "●" : "○"} ${row.choice?.value ?? ""}`);
+    lines.push(`${setting} ${marks.join(" ")}`);
+    index = end + 1;
+  }
+  return lines;
+};
+
+const recordingTui = (): { calls: string[]; host: Record<string, unknown> } => {
+  const calls: string[] = [];
+  return {
+    calls,
+    host: {
+      terminal: {},
+      invalidate: () => calls.push("invalidate"),
+      requestRender: () => calls.push("requestRender"),
+    },
+  };
+};
+
+test("T9: the bridge owns one rows provider, and it is internal plumbing", () => {
+  installToolDesignRows();
+  assert.deepEqual(
+    snapshotProviders().map((provider) => provider.id),
+    [TOOL_DESIGN_ROWS_PROVIDER_ID],
+  );
+  installToolDesignRows();
+  assert.equal(snapshotProviders().length, 1, "installing twice replaces the provider in place");
+});
+
+test("T9: no design means NO line: a session that never registers one is unchanged", () => {
+  assert.deepEqual(rowsForBuild(), []);
+});
+
+test("T9: one Cards line per tool that has designs, in Cards, values are the tool's card + designs", () => {
+  registerToolDesign(bashHeading);
+  registerToolDesign(bashFramed);
+  registerToolDesign(writeBadge);
+
+  const rows = rowsForBuild();
+
+  assert.ok(rows.every((row) => row.category === "Cards"), "every row belongs to Cards");
+  const lines = toggleLines(rows);
+  assert.equal(lines.length, 2, "one line per tool, never one line per design");
+  assert.match(lines[0], /^bash /u);
+  assert.match(lines[0], /● native/u, "the tool's own card is the default selection");
+  assert.match(lines[0], /○ bash heading/u);
+  assert.match(lines[0], /○ bash framed/u);
+  assert.match(lines[1], /^write /u);
+  assert.match(lines[1], /○ write badge/u);
+});
+
+test("T9: the selection persists PER TOOL and moves the bullet on the next build", async () => {
+  registerToolDesign(bashHeading);
+  registerToolDesign(writeBadge);
+
+  const rows = rowsForBuild();
+  const pick = rows.find((row) => row.choice?.value === "bash heading");
+  assert.ok(pick?.action !== undefined);
+  await pick.action({ input: async () => undefined, confirm: async () => true, capture: async () => undefined });
+
+  assert.equal(getToolDesignSelection("bash"), "loon.bash-heading");
+  assert.equal(getToolDesignSelection("write"), TOOL_DESIGN_NATIVE, "the other tool did not move");
+
+  const after = toggleLines(rowsForBuild());
+  assert.match(after[0], /○ native ● bash heading/u);
+  assert.match(after[1], /● native ○ write badge/u);
+
+  // And the way back to the host's own card.
+  const native = rowsForBuild().find(
+    (row) => row.choice?.value === TOOL_DESIGN_NATIVE && row.choice?.setting?.startsWith("bash") === true,
+  );
+  assert.ok(native?.action !== undefined);
+  await native.action({ input: async () => undefined, confirm: async () => true, capture: async () => undefined });
+  assert.equal(getToolDesignSelection("bash"), TOOL_DESIGN_NATIVE);
+});
+
+test("T9: changing the value repaints the drawn cards through requestRepaint()", async () => {
+  registerToolDesign(bashHeading);
+  const tui = recordingTui();
+  setRepaintHost(tui.host);
+
+  const rows = rowsForBuild();
+  const pick = rows.find((row) => row.choice?.value === "bash heading");
+  assert.ok(pick?.action !== undefined);
+  await pick.action({ input: async () => undefined, confirm: async () => true, capture: async () => undefined });
+
+  assert.deepEqual(
+    tui.calls,
+    ["invalidate", "requestRender"],
+    "the host's component frame caches are dropped first, then a forced frame is asked for",
+  );
+  assert.equal(getRepaintDiagnostics().lastTrigger?.outcome, "repainted");
+
+  // Pressing the value that is already selected costs no frame.
+  tui.calls.length = 0;
+  await pick.action({ input: async () => undefined, confirm: async () => true, capture: async () => undefined });
+  assert.deepEqual(tui.calls, []);
+});
+
+test("T9: a design's own preview is the preview its value shows", () => {
+  registerToolDesign(bashHeading);
+  registerToolDesign(writeBadge);
+
+  const rows = rowsForBuild();
+  const heading = rows.find((row) => row.choice?.value === "bash heading");
+  assert.ok(heading?.preview !== undefined);
+  assert.deepEqual(heading.preview(), { title: "Cards · bash heading", sample: "bash ls -la" });
+
+  const badge = rows.find((row) => row.choice?.value === "write badge");
+  assert.ok(badge?.preview !== undefined);
+  assert.match(badge.preview().title, /write badge/u);
+
+  const native = rows.find(
+    (row) => row.choice?.value === TOOL_DESIGN_NATIVE && row.choice?.setting?.startsWith("bash") === true,
+  );
+  assert.ok(native?.preview !== undefined);
+  assert.match(native.preview().sample, /own card|host/u);
+});
+
+test("T9: a tool name keeps a row name that passes the shape rule, even a long MCP one", () => {
+  registerToolDesign({ ...writeBadge, tool: "mcp__engram__mem_save", id: "loon.mcp" });
+  registerToolDesign({ ...writeBadge, tool: "mcp__engram__mem_search", id: "loon.mcp2" });
+
+  installToolDesignRows();
+  const result = buildRows({ theme: undefined, configHome });
+  const rows = result.rows;
+
+  assert.deepEqual(result.failures, []);
+  const settings = new Set(rows.map((row) => row.choice?.setting));
+  assert.equal(settings.size, 2, "two long tool names still produce two distinct lines");
+  for (const setting of settings) {
+    assert.ok(setting !== undefined);
+    assert.ok(
+      setting.trim().split(/\s+/u).length <= 3,
+      `${setting} must stay within the row-name word limit`,
+    );
+    assert.doesNotMatch(setting, /[.:|/\\[\](){}→]/u, `${setting} must carry no structural mark`);
+  }
+});
+
+test("T9: tools are listed in a deterministic order, and only tools with designs appear", () => {
+  registerToolDesign(writeBadge);
+  registerToolDesign(bashHeading);
+
+  const rows = rowsForBuild();
+  assert.deepEqual(toolNamesWithDesigns(), ["write", "bash"], "registration order");
+  assert.deepEqual(
+    [...new Set(rows.map((row) => row.choice?.setting))].length,
+    2,
+  );
+  assert.equal(
+    rows.some((row) => row.choice?.setting.toLowerCase().includes("edit")),
+    false,
+    "a tool with no design has no line",
+  );
+});
+
+test("S2: picking a design in the menu repaints the card ALREADY on screen", async () => {
+  // The user's words: the choice has to change "tanto las antiguas como posteriores", not only new
+  // cards. Pi resolves the renderers once, when the card is constructed, and re-renders that same
+  // component on every frame — so this is the card the menu action must reach.
+  const hostCard = ["│ $ ls -la", "│ total 4"];
+  const component = { render: (_width: number): string[] => [...hostCard] };
+  const renderers = { renderShell: "default", renderCall: () => component };
+
+  registerToolDesign({
+    ...bashHeading,
+    apply: (lines) => lines.map((line) => line.replace("$ ", "bash ")),
+  });
+  const resolved = toolDesignResolver("bash", () => renderers);
+  assert.ok(resolved !== undefined);
+  const card = (resolved.renderCall as () => typeof component)();
+  assert.deepEqual(card.render(80), hostCard, "no design selected: the host's own bytes");
+
+  const pick = rowsForBuild().find((row) => row.choice?.value === "bash heading");
+  assert.ok(pick?.action !== undefined);
+  await pick.action({ input: async () => undefined, confirm: async () => true, capture: async () => undefined });
+
+  assert.deepEqual(
+    card.render(80),
+    ["│ bash ls -la", "│ total 4"],
+    "the SAME, already-drawn card now shows the design the menu selected",
+  );
+});
+
+test("PRESERVE: the provider's rows stay empty after the last design is disposed", () => {
+  const dispose = registerToolDesign(bashHeading);
+  assert.equal(rowsForBuild().length, 2, "native + one design");
+  dispose();
+  assert.deepEqual(rowsForBuild(), []);
+});

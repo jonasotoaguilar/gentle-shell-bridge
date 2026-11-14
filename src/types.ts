@@ -236,11 +236,47 @@ export interface TransformCounts {
 }
 
 /**
+ * Which host child produced one drawn row (S1).
+ *
+ * The identity comes from the COMPONENT, never from the drawn words: the host heads a bash card
+ * with the activity it inferred (`extensions/quiet-tools.ts:672` in `cards-bash-v2`), so a grammar
+ * over the title breaks the next time a title changes. `toolName` is exactly the member the host's
+ * own tool rows carry and `pi-cinlodev-cute` reads (`src/transcript/transcript-dispatcher.ts:30-40`:
+ * `child.toolName === "bash"`), and `component` is the child's `constructor.name` — the fallback for
+ * a child that carries no tool name at all (a banner, a spacer, a host block drawn by its own class).
+ *
+ * A plugin narrows with these two members and nothing else; no component reference is handed out, so
+ * a transform can neither re-render nor mutate the host's tree. The bridge derives one entry per row
+ * from the layout the host's own render pass published (`mouseLayout`), never by rendering children
+ * a second time.
+ */
+export interface RowOrigin {
+  /** The row's index in the frame: row 0 is the first row handed to the transform. */
+  readonly index: number;
+  /** The child's `toolName`, e.g. `"bash"`; absent when it carries none as a string. */
+  readonly toolName?: string;
+  /** The child's `constructor.name`, e.g. `"ToolExecutionComponent"`; absent when it has none. */
+  readonly component?: string;
+}
+
+/**
  * Context handed to a transform on every frame. `width` is the width the host rendered the
  * conversation at, which is also the hard limit on what the transform may return (S4).
  */
 export interface TransformContext {
   readonly width: number;
+  /**
+   * Which host child drew each row, one entry per row of this frame (S1), or an EMPTY array when the
+   * origin is unknown — a host render that published no layout, a layout measured at another width,
+   * or heights that do not add up to the frame. Unknown is reported as empty, never as a guess and
+   * never as an error: a transform that does not need the origin ignores the field and behaves
+   * exactly as it did before it existed.
+   *
+   * Optional for the same reason `report` is: a context produced by a copy (or a probe) older than
+   * this field has no such member. The pipeline ALWAYS sets it — unknown origins are `[]`, never
+   * `undefined` — so a transform reads `ctx.rows ?? []` and works against either producer.
+   */
+  readonly rows?: readonly RowOrigin[];
   /**
    * Report this frame's counts (F1). The bridge adds the line count and the outcome itself, records
    * the result in this frame's entry for `/bridge-status`, and never lets it reach the frame: a
@@ -275,6 +311,59 @@ export interface TranscriptTransform {
   order?: number;
   /** The rows, and the width to honour. Return the rows to draw. */
   transform(lines: readonly string[], ctx: TransformContext): readonly string[];
+}
+
+/**
+ * Context handed to a tool design's `apply` on EVERY render pass of the host's card (S5).
+ *
+ * `width` is the width the host asked its own component to render at, `tool` is the tool name the
+ * design was declared for (never anything the card draws), and `theme` is the opaque theme object the
+ * host handed that renderer (`renderCall`'s second argument, `renderResult`'s third). The bridge does
+ * not depend on the theme's shape, so a design that wants a colour narrows it itself.
+ */
+export interface ToolDesignContext {
+  readonly width: number;
+  readonly tool: string;
+  readonly theme?: unknown;
+}
+
+/**
+ * A plugin's design for ONE tool's card (S4, S5, S7).
+ *
+ * A design never owns the frame: the host's own renderer runs first, and the design receives the
+ * rows that card produced and returns the rows to draw. Anything it does not deliberately change must
+ * come back byte for byte — including ANSI sequences and trailing padding — because the frame is
+ * still the host's (`neon` stays neon, `float` stays float).
+ *
+ * A design is declared for a TOOL NAME (`bash`, `write`, `edit`, `mcp__engram__mem_save`, ...), never
+ * for bash specifically: a design declared for a tool that has no card yet applies as soon as Pi
+ * builds one, because Pi resolves renderers when the card is constructed.
+ */
+export interface ToolDesignRegistration {
+  /** The tool name this design draws, exactly as Pi reports it. */
+  tool: string;
+  /** Unique per tool: it is the value the user selects and the key for replacement. */
+  id: string;
+  /**
+   * Optional display name for the plugin's INTEGRATIONS line, e.g. `"Loon kit"`. Same rule as
+   * `RowProvider.name`: honoured on the plugin's FIRST registration only, must obey the row-name
+   * shape, and never rewritten. A single-file extension with no `package.json` above it has no
+   * attributable package and gets no line unless it names itself here — which is why a plugin that
+   * contributes ONLY designs still needs this member.
+   */
+  name?: string;
+  /** The short text shown on the customize line as this design's value. */
+  label: string;
+  /** One line a preview can show about what the design does. */
+  description?: string;
+  /** Optional literal depiction of the design, drawn in the customize preview. */
+  preview?(): RowPreview;
+  /**
+   * The host's rows in, the rows to draw out. The bridge hands a fresh copy, clips nothing and
+   * isolates a throw: an `apply` that throws (or returns something that is not an array of strings)
+   * leaves the host's own card on screen and is reported in `/bridge-status`.
+   */
+  apply(lines: readonly string[], ctx: ToolDesignContext): string[];
 }
 
 /**

@@ -35,6 +35,22 @@ import {
 } from "./repaint.ts";
 import { getTransformFrameOutcomes, type TransformFrameCounts } from "./transform-pipeline.ts";
 import { getPluginLineReport, type PluginLineReport } from "./plugin-lines.ts";
+import { getGentlePiPresence } from "./presence.ts";
+import {
+  TOOL_DESIGN_NATIVE,
+  getToolDesignConflicts,
+  getToolDesignFailures,
+  resolveToolDesignSelection,
+  snapshotToolDesigns,
+  toolNamesWithDesigns,
+  type ToolDesignConflict,
+  type ToolDesignFailure,
+} from "./tool-designs.ts";
+import { TOOL_DESIGN_ROWS_PROVIDER_ID } from "./tool-design-rows.ts";
+import {
+  getToolDesignWiringDiagnostics,
+  type ToolDesignResolverOutcome,
+} from "./tool-design-wiring.ts";
 import { getLastRowBuild, type RowBuildRecord } from "./rows.ts";
 import {
   getSidebarDiagnostics,
@@ -135,6 +151,40 @@ export interface StatusSidebarEntry {
   reason?: string;
   /** Only when intercepted: whether the part we append to is in the host's map already. */
   rail?: "wrapped" | "pending";
+}
+
+/** One registered design of one tool, as `/bridge-status` lists it. */
+export interface StatusToolDesignEntry {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+/** One tool with designs, its values, and the selection in force. */
+export interface StatusToolDesignTool {
+  tool: string;
+  designs: StatusToolDesignEntry[];
+  /** The stored value: a design id, `native`, or `<id> (missing: not registered)`. */
+  selection: string;
+  /**
+   * Whether a card of this tool was built through the bridge's wrapper. With no selection the
+   * wrapper draws the host's own rows, so `mounted` is the answer to "can a design selected now
+   * still repaint this card?" (S2): an unwrapped card can never change again.
+   */
+  wrapper: "mounted" | "not mounted";
+  /** Only when mounted: how many card components were built through the wrapper this process. */
+  cards?: number;
+}
+
+/** The tool-design surface, reported only when the process has something to say (see below). */
+export interface StatusToolDesigns {
+  tools: StatusToolDesignTool[];
+  /** How many `pi` objects the ONE resolver was registered on; absent when never attempted. */
+  resolver?: { registered: number; lastOutcome?: ToolDesignResolverOutcome; reason?: string };
+  /** Registrations that replaced another one or were refused, and why. */
+  conflicts: ToolDesignConflict[];
+  /** Designs that failed while a card was drawn (one entry per tool, id and message). */
+  failures: ToolDesignFailure[];
 }
 
 /** One registered card style, as `/bridge-status` lists it: in the order its values appear. */
@@ -239,6 +289,11 @@ export interface StatusSnapshot {
    */
   cardStyles?: StatusCardStyles;
   /**
+   * The tool-design surface. Absent when no design is registered, so a session that never uses the
+   * bus keeps its historical output byte for byte.
+   */
+  toolDesigns?: StatusToolDesigns;
+  /**
    * Plugin row names the bridge rejected for breaking the row-name shape (N8): the offending
    * string, verbatim, and the rule it broke. Absent when nothing was rejected, so a clean session
    * keeps its historical output exactly.
@@ -257,6 +312,19 @@ export interface StatusSnapshot {
    * session without one keeps its historical output byte for byte.
    */
   pluginLines?: PluginLineReport;
+  /**
+   * The REQUIRED host package (S9/T12): whether `pi.getCommands()` advertised `gentle:customize` on
+   * the last `session_start`. Absent until a check has run, so a report that predates one keeps its
+   * historical output byte for byte.
+   */
+  gentlePi?: StatusGentlePi;
+}
+
+/** One line of the report: gentle-pi is present, or it is missing and the bridge is disabled. */
+export interface StatusGentlePi {
+  present: boolean;
+  /** Present only when missing: why the host does not count as gentle-pi. */
+  reason?: string;
 }
 
 /**
@@ -280,7 +348,9 @@ export function collectStatus(): StatusSnapshot {
     providers: providers
       .filter(
         (provider) =>
-          provider.id !== SECTION_ROWS_PROVIDER_ID && provider.id !== CARD_STYLE_ROWS_PROVIDER_ID,
+          provider.id !== SECTION_ROWS_PROVIDER_ID &&
+          provider.id !== CARD_STYLE_ROWS_PROVIDER_ID &&
+          provider.id !== TOOL_DESIGN_ROWS_PROVIDER_ID,
       )
       .map((provider) => ({ id: provider.id, category: provider.category })),
     backend,
@@ -299,6 +369,16 @@ export function collectStatus(): StatusSnapshot {
   if (rowNames.length > 0) snapshot.rowNames = rowNames;
   const lastCapture = backend === "hook" ? hook.lastCapture : capture.lastOutcome;
   if (lastCapture !== undefined) snapshot.lastCapture = lastCapture;
+
+  // S9/T12 — the runtime answer about the REQUIRED host package. Nothing here checks anything: the
+  // record is what the last `session_start` already observed. No check yet means no field and no
+  // line, which is what keeps the pre-feature output byte for byte.
+  const presence = getGentlePiPresence();
+  if (presence !== undefined) {
+    snapshot.gentlePi = presence.present
+      ? { present: true }
+      : { present: false, reason: presence.reason ?? "no reason recorded" };
+  }
 
   // The sidebar surface. Nothing here runs a section: the table reports registrations and the
   // persisted visibility, and the failures are the ones the last frame already recorded — `lines()`
@@ -349,6 +429,8 @@ export function collectStatus(): StatusSnapshot {
   }
   const cardStyles = describeCardStyles();
   if (cardStyles !== undefined) snapshot.cardStyles = cardStyles;
+  const toolDesigns = describeToolDesigns();
+  if (toolDesigns !== undefined) snapshot.toolDesigns = toolDesigns;
   const lastRepaint = describeLastRepaint();
   if (lastRepaint !== undefined) snapshot.lastRepaint = lastRepaint;
   // The transform pipeline, in the order the wrapper runs it. Nothing here calls a transform: the
@@ -438,6 +520,61 @@ function describeCardStyles(): StatusCardStyles | undefined {
       };
     }),
     wiring,
+    failures,
+  };
+}
+
+/**
+ * The tool-design block, or `undefined` when this process registered no design.
+ *
+ * The guard is the same discipline as every other block: a session that never registered a design
+ * keeps its historical report exactly, including a host with no `registerToolRenderer` hook (a bare
+ * harness has nothing to say about designs). Once a design exists, the ONE resolver's outcome is the
+ * answer to "why is my design not drawing?", so it is reported right beside the registrations.
+ *
+ * Nothing here calls an `apply` or a `rows()`: the entries are the live registrations, the
+ * persisted selection and the records the last frames already made.
+ */
+function describeToolDesigns(): StatusToolDesigns | undefined {
+  const tools = toolNamesWithDesigns();
+  const wiring = getToolDesignWiringDiagnostics();
+  const conflicts = getToolDesignConflicts();
+  const failures = getToolDesignFailures();
+  if (tools.length === 0) return undefined;
+  return {
+    tools: tools.map((tool) => {
+      const selection = resolveToolDesignSelection(tool);
+      const wrapped = wiring.wrappedCards.find((entry) => entry.tool === tool);
+      return {
+        tool,
+        designs: snapshotToolDesigns(tool).map((design) => ({
+          id: design.id,
+          label: design.label,
+          ...(design.description === undefined ? {} : { description: design.description }),
+        })),
+        selection:
+          selection.kind === "native"
+            ? TOOL_DESIGN_NATIVE
+            : selection.kind === "missing"
+              ? `${selection.id} (missing: not registered)`
+              : selection.design.id,
+        // The wrapper's identity is per CARD: a card built before the tool had a design (or before
+        // the bridge was armed) has none, and no later selection can repaint it.
+        ...(wrapped === undefined
+          ? { wrapper: "not mounted" as const }
+          : { wrapper: "mounted" as const, cards: wrapped.cards }),
+      };
+    }),
+    ...(wiring.lastOutcome === undefined
+      ? {}
+      : {
+          resolver: {
+            registered: wiring.registered,
+            lastOutcome: wiring.lastOutcome,
+            ...(wiring.lastReason === undefined ? {} : { reason: wiring.lastReason }),
+          },
+        }),
+    conflicts,
     failures,
   };
 }
@@ -625,9 +762,30 @@ export function findDuplicatesInBuilds(
   return duplicates;
 }
 
+/** What `/bridge-status` says when the required host package is not there (S9, T12). */
+const BRIDGE_DISABLED_LINE =
+  "bridge: disabled — gentle-pi is required; no rows, sections, card styles or tool designs are armed";
+
 /** The report, as lines, exactly as the `status` command prints it. */
 export function formatStatus(snapshot: StatusSnapshot): string[] {
   const lines: string[] = ["gentle-shell-bridge status"];
+
+  // The gate answer comes first: a user whose bridge does nothing needs to know WHY before reading
+  // anything else. Absent only when no check has run, so the historical report is unchanged.
+  const presence = snapshot.gentlePi;
+  if (presence !== undefined) {
+    if (presence.present) {
+      lines.push("gentle-pi: present");
+    } else {
+      lines.push(`gentle-pi: missing — ${presence.reason ?? "no reason recorded"}`);
+      lines.push(BRIDGE_DISABLED_LINE);
+      // Disabled (S9): every per-surface block below would claim work that is not being done — no
+      // wrapper, no rows installed, no resolver, no footer line — so none is emitted. The buffered
+      // notices still explain the process, and the presence lines carry the reason.
+      lines.push(...formatNotices(snapshot));
+      return lines;
+    }
+  }
 
   if (snapshot.providers.length === 0) {
     lines.push("providers: none");
@@ -767,6 +925,45 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
     );
   }
 
+  if (snapshot.toolDesigns !== undefined) {
+    const designs = snapshot.toolDesigns;
+    lines.push(`tool designs: ${designs.tools.length} tools with designs`);
+    for (const entry of designs.tools) {
+      // The tool's own line answers both questions a stuck user has: which design resolves NOW, and
+      // whether the cards already on screen can still be repainted at all (S2).
+      const wrapper =
+        entry.wrapper === "mounted"
+          ? `wrapper mounted on ${entry.cards} ${entry.cards === 1 ? "card" : "cards"}`
+          : "wrapper not mounted";
+      lines.push(`  - ${entry.tool}: ${entry.selection}, ${wrapper}`);
+      for (const design of entry.designs) {
+        const description = design.description === undefined ? "" : ` — ${design.description}`;
+        lines.push(`      ${design.id} "${design.label}"${description}`);
+      }
+    }
+    if (designs.resolver !== undefined) {
+      const outcome = designs.resolver.lastOutcome ?? "registered";
+      const reason = designs.resolver.reason === undefined ? "" : `: ${designs.resolver.reason}`;
+      lines.push(
+        `tool design resolver: ${outcome} (${designs.resolver.registered} registered)${reason}`,
+      );
+    } else {
+      lines.push("tool design resolver: not attempted");
+    }
+    if (designs.conflicts.length > 0) {
+      lines.push(`tool design conflicts: ${designs.conflicts.length}`);
+      for (const conflict of designs.conflicts) {
+        lines.push(`  - ${conflict.tool} / ${conflict.id} (${conflict.kind}): ${conflict.message}`);
+      }
+    }
+    if (designs.failures.length > 0) {
+      lines.push(`tool design failures: ${designs.failures.length}`);
+      for (const failure of designs.failures) {
+        lines.push(`  - ${failure.tool} / ${failure.designId}: ${failure.message}`);
+      }
+    }
+  }
+
   if (snapshot.lastRepaint !== undefined) {
     const trigger = snapshot.lastRepaint;
     const outcome =
@@ -793,6 +990,17 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
     lines.push(...formatPluginLines(snapshot.pluginLines));
   }
 
+  lines.push(...formatNotices(snapshot));
+
+  return lines;
+}
+
+/**
+ * The buffered bridge notices: every message the bridge had to report out of band, delivered or
+ * still pending. Empty when there is none, so a clean session's report keeps its historical shape.
+ */
+function formatNotices(snapshot: StatusSnapshot): string[] {
+  const lines: string[] = [];
   if (snapshot.notices !== undefined) {
     lines.push(`notices: ${snapshot.notices.length}`);
     for (const notice of snapshot.notices) {
@@ -803,7 +1011,6 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
   if (snapshot.noticesDropped !== undefined) {
     lines.push(`notices dropped: ${snapshot.noticesDropped}`);
   }
-
   return lines;
 }
 

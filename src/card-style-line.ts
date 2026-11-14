@@ -16,7 +16,7 @@
  *
  * Every name this depends on is declared here once, so a renamed setting is a single place to look
  * and a single thing to report. When it stops matching, `findCardStyleLine` finds nothing, the mode
- * becomes `separate` and the caller contributes the bridge's own `Bridge → card style` line
+ * becomes `separate` and the caller contributes the bridge's own `Bridge card style` line
  * (`./card-style-rows.ts`), which `/bridge-status` reports. Nothing is guessed and nothing is
  * silently dropped.
  */

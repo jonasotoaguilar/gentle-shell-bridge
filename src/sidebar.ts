@@ -86,6 +86,7 @@
  */
 
 import { isRecord } from "./rows.ts";
+import { notePanelCandidate } from "./section-panel.ts";
 
 /** The host's own state key: the seam this backend intercepts. Never our own state. */
 const HOST_STATE = Symbol.for("gentle-pi.experimental-sidebar.state");
@@ -131,8 +132,16 @@ export interface SidebarRailLike {
   cardGroups?(width: number): RailGroupLayout | undefined;
   /** The `Component`'s normalized mouse handler (`pi-tui` `Component.handleMouse`). */
   handleMouse?(event: unknown): RailMouseResult | undefined;
-  /** Cheap live-state digest; the layout memo skips re-renders while it holds. */
-  digest?(): string;
+  /**
+   * Cheap live-state digest; the layout memo skips re-renders while it holds (`digest !== undefined
+   * ? existing.digest === digest : … cache.revision`, `lib/shell-sidebar-layout.ts:114-119`).
+   *
+   * A WRAPPER may answer `undefined` when neither the host nor a contributor has a signature: the
+   * layout's reader (`railDigest`) treats that as "no digest" and falls back to the revision, which
+   * is exactly how a rail without this member behaves. That case must stay distinguishable, so the
+   * option is typed here rather than hidden behind a cast.
+   */
+  digest?(): string | undefined;
 }
 
 /**
@@ -155,8 +164,24 @@ export interface RailContribution {
  */
 export interface RailContributor {
   render(width: number): RailContribution | undefined;
-  /** Our own mouse targets; consulted only after the host's own handler declined the event. */
-  handleMouse?(event: unknown): RailMouseResult | undefined;
+  /**
+   * A cheap signature of the live state the contributed rows paint (N14). The layout re-renders a
+   * part only when its digest changes, so a row whose `meta` moved between frames must move this
+   * value — otherwise the host would keep the cached rows and the field would look frozen.
+   */
+  digest?(): string;
+  /**
+   * Our own mouse targets; consulted only after the host's own handler declined the event. The
+   * event's `y` is in the PART's frame, so `position.startRow` says which of those rows is the first
+   * one this contributor rendered. Absent when no frame has been rendered at that width yet.
+   */
+  handleMouse?(event: unknown, position?: RailContributionPosition): RailMouseResult | undefined;
+}
+
+/** Where a contributor's rows sit inside the part's rendered frame. */
+export interface RailContributionPosition {
+  /** The index of the contributor's first row in the part's own `render(width)` output. */
+  startRow?: number;
 }
 
 /**
@@ -197,7 +222,12 @@ export interface InstallSidebarResult {
   reason?: string;
 }
 
-export type SidebarFailurePhase = "render" | "cardGroups" | "contribute" | "handleMouse";
+export type SidebarFailurePhase =
+  | "render"
+  | "cardGroups"
+  | "contribute"
+  | "handleMouse"
+  | "digest";
 
 /** A delegated host call or a contributor call that threw; recorded, never swallowed silently. */
 export interface SidebarFailure {
@@ -371,6 +401,9 @@ function attemptInstall(resolveTui: SidebarTuiResolver): InstallSidebarResult {
 
   const parts = resolveParts(resolved);
   if (parts === undefined) return { installed: false, outcome: "no-sidebar-state", rail: "pending" };
+  // One of the objects the bridge is handed: if a host ever publishes its panel builders on the
+  // sidebar state, the section renderer uses them and `/bridge-status` says so (N11, N15).
+  notePanelCandidate("the terminal sidebar state", hostSidebarStateOf(resolved));
   return intercept(parts);
 }
 
@@ -380,19 +413,32 @@ function attemptInstall(resolveTui: SidebarTuiResolver): InstallSidebarResult {
  * an empty map would fabricate host state and mask a wiring mistake.
  */
 function resolveParts(tui: SidebarTuiLike | undefined): RailMap | undefined {
-  if (!isRecord(tui)) return undefined;
-  const terminal = tui.terminal;
-  if (!isRecord(terminal)) return undefined;
-  // SAFETY: the host stores its state under a symbol key; `isRecord` already proved the terminal is
-  // an object, and everything read below is re-validated before use.
-  const state = (terminal as Record<symbol, unknown>)[HOST_STATE];
-  if (!isRecord(state)) return undefined;
+  const state = hostSidebarStateOf(tui);
+  if (state === undefined) return undefined;
   const parts = state.parts;
   if (!(parts instanceof Map)) return undefined;
   // SAFETY: the host declares `parts` as `Map<string, SidebarRail>`, and `SidebarRailLike` is the
   // part of a rail this backend relies on; anything else a foreign writer puts there is handled
   // defensively by `isRailLike` before it is wrapped.
   return parts as RailMap;
+}
+
+/**
+ * The host's sidebar state object, read from the `tui` exactly as `sidebarState(tui)` writes it
+ * (`lib/shell-sidebar.ts:78-81`): the state hangs on `tui.terminal`, never on the `tui` itself.
+ *
+ * Exported for the pointer claim (`./section-pointer.ts`), which performs the host's own
+ * `setSidebarHover` steps against the SAME published slots — `parts` here, `hover` there. One reader
+ * for one seam: a second copy of this lookup would be a second place to get the symbol wrong.
+ */
+export function hostSidebarStateOf(tui: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(tui)) return undefined;
+  const terminal = tui.terminal;
+  if (!isRecord(terminal)) return undefined;
+  // SAFETY: the host stores its state under a symbol key; `isRecord` already proved the terminal is
+  // an object, and everything read below is re-validated before use.
+  const state = (terminal as Record<symbol, unknown>)[HOST_STATE];
+  return isRecord(state) ? state : undefined;
 }
 
 function intercept(parts: RailMap): InstallSidebarResult {
@@ -563,8 +609,22 @@ function wrapRail(parts: RailMap, key: string, rail: RailMapValue): RailMapValue
     ...original,
     render: (width: number) => renderThrough(key, original, generation, memo, width),
     cardGroups: (width: number) => groupsThrough(key, original, generation, memo, width),
-    handleMouse: (event: unknown) => mouseThrough(key, original, generation, event),
+    handleMouse: (event: unknown) => mouseThrough(key, original, generation, memo, event),
   };
+
+  // The host's panel builders are looked for on the part itself (N11, N15): if a host ever publishes
+  // `renderPanelHeader`/`renderPanelRow` here, the section renderer uses them instead of its local
+  // port, and `/bridge-status` says so. Looking on every object the bridge is handed is what makes
+  // "the host's builders are unreachable" a measurement rather than a claim.
+  notePanelCandidate("the rail part", original);
+
+  // The digest is the one field that is not a pass-through (N14): the layout memo re-renders a part
+  // only when its digest VALUE moves, so a live row field (`meta`) would otherwise never repaint.
+  // The field therefore stays a function whose value is the host's own digest, unchanged, whenever
+  // nothing contributes one — the passthrough tests pin the VALUE, because the memo compares values
+  // and never function identity. When a contributor has a signature, it is appended, so a change in
+  // the built rows reaches the memo as a new key.
+  wrapper.digest = () => digestValue(key, original, generation);
 
   Object.defineProperty(wrapper, RAIL_WRAPPED, {
     value: original,
@@ -686,6 +746,7 @@ function mouseThrough(
   key: string,
   original: Rail,
   generation: number,
+  memo: Map<number, RailMemoEntry>,
   event: unknown,
 ): RailMouseResult | undefined {
   const hostHandler = original.handleMouse;
@@ -708,11 +769,55 @@ function mouseThrough(
   const contributor = sidebarState().contributor;
   if (contributor?.handleMouse === undefined) return undefined;
   try {
-    return contributor.handleMouse(event);
+    return contributor.handleMouse(event, contributionPosition(memo, event));
   } catch (error) {
     recordFailure(key, "handleMouse", error);
     return undefined; // a broken target must not break the host's dispatch
   }
+}
+
+/**
+ * Where the contributor's rows start in the frame this event was mapped into.
+ *
+ * The host maps a hit to the part's own coordinates before calling its `handleMouse`
+ * (`lib/shell-sidebar-layout.ts:245-259`), so `y` counts the HOST's rows first; the render that
+ * preceded the event recorded how many there were at that width. Without such a frame there is
+ * nothing to map, and the contributor declines instead of guessing an offset.
+ */
+function contributionPosition(
+  memo: Map<number, RailMemoEntry>,
+  event: unknown,
+): RailContributionPosition {
+  if (!isRecord(event)) return {};
+  const width = event.width;
+  if (typeof width !== "number") return {};
+  const entry = memo.get(width);
+  if (entry === undefined) return {};
+  return { startRow: entry.nativeLength };
+}
+
+/**
+ * The part's digest: the host's own value when nothing contributes one, otherwise the host's value
+ * with the contributor's signature appended (N14).
+ */
+function digestValue(key: string, original: Rail, generation: number): string | undefined {
+  const hostDigest = original.digest;
+  const raw = typeof hostDigest === "function" ? hostDigest.call(original) : undefined;
+  // A foreign rail can return anything; only a string is a digest the layout can compare.
+  const hostValue = typeof raw === "string" ? raw : undefined;
+  if (sidebarState().generation !== generation) return hostValue;
+  const contributor = sidebarState().contributor;
+  if (contributor?.digest === undefined) return hostValue;
+  let contribution: string;
+  try {
+    contribution = contributor.digest();
+  } catch (error) {
+    // A broken signature must not take the host's memo down with it: record it and stay on the
+    // host's own digest, which degrades to invalidation-only, exactly as the layout does.
+    recordFailure(key, "digest", error);
+    return hostValue;
+  }
+  return `${hostValue ?? ""}|${contribution}`;
 }
 
 function contributionFor(key: string, width: number): RailContribution | undefined {

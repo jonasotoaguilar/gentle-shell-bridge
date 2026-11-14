@@ -158,13 +158,13 @@ const sectionLine = (label: string): CustomizeRow[] => [
   {
     category: "Cards",
     label,
-    choice: { setting: "Loon → Banner source", value: "on", current: () => true },
+    choice: { setting: "Loon banner source", value: "on", current: () => true },
     action: () => {},
   },
   {
     category: "Cards",
     label,
-    choice: { setting: "Loon → Banner source", value: "off", current: () => false },
+    choice: { setting: "Loon banner source", value: "off", current: () => false },
     action: () => {},
   },
 ];
@@ -182,10 +182,10 @@ test("one registerSection call reaches the rail and the Sections menu through th
   assert.deepEqual(cardTitles(), ["FOOTER", "MUSIC"], "the host frames our section after its own");
   assert.deepEqual(cardBody("MUSIC"), ["track  one", "album  two"]);
 
-  const line = host.toggleLines().find((candidate) => candidate.startsWith("Section: loon.music"));
+  const line = host.toggleLines().find((candidate) => candidate.startsWith("music "));
   assert.ok(line !== undefined, "the toggle exists without the plugin writing a row");
   assert.ok(line.includes("● shown") && line.includes("○ hidden"), line);
-  assert.ok(host.rendered().includes("MUSIC"), "the row reads as the section title");
+  assert.ok(host.rendered().includes("music"), "the row reads as the section label");
 
   const printed = printStatus(entry);
   assert.match(printed, /sections: 1/u);
@@ -237,7 +237,7 @@ test("toggling through the menu hides the section on the next frame and stops bu
   assert.deepEqual(cardTitles(), ["FOOTER", "MUSIC"]);
 
   await host.pressRow(
-    (row) => row.choice?.setting === "Section: loon.music" && row.choice.value === "hidden",
+    (row) => row.choice?.setting === "music" && row.choice.value === "hidden",
   );
   linesCalls = 0;
 
@@ -258,7 +258,7 @@ test("disposing the section removes the card and, on a fresh menu, its rows", ()
   armThroughEntry(host);
   host.buildMenu();
   assert.deepEqual(cardTitles(), ["FOOTER", "MUSIC"]);
-  assert.ok(host.toggleLines().some((line) => line.startsWith("Section: loon.music")));
+  assert.ok(host.toggleLines().some((line) => line.startsWith("music ")));
 
   dispose();
 
@@ -285,7 +285,7 @@ test("the row side still behaves in the same process, alongside the sections", (
   const provider: RowProvider = {
     id: "loon.banner-source",
     category: "Cards",
-    rows: () => sectionLine("Loon: banner source"),
+    rows: () => sectionLine("Loon banner source"),
   };
   registerRows(provider);
   registerSection(musicSection());
@@ -305,8 +305,8 @@ test("the row side still behaves in the same process, alongside the sections", (
     "the bridge's own rows follow",
   );
   const lines = host.toggleLines();
-  assert.ok(lines.some((line) => line.startsWith("Loon → Banner source")));
-  assert.ok(lines.some((line) => line.startsWith("Section: loon.music")));
+  assert.ok(lines.some((line) => line.startsWith("Loon banner source")));
+  assert.ok(lines.some((line) => line.startsWith("music ")));
 });
 
 test("a UI without setWidget is reported as unarmed and never throws", () => {
@@ -317,7 +317,7 @@ test("a UI without setWidget is reported as unarmed and never throws", () => {
   host.buildMenu();
 
   assert.deepEqual(cardTitles(), [], "no rail interception was possible");
-  assert.ok(host.rendered().includes("MUSIC"), "the row side still works: the toggle is visible");
+  assert.ok(host.rendered().includes("music"), "the row side still works: the toggle is visible");
 
   const printed = printStatus(entry);
   assert.match(printed, /sidebar: not armed/u);
@@ -325,5 +325,5 @@ test("a UI without setWidget is reported as unarmed and never throws", () => {
 });
 
 test("the public version is the released one", () => {
-  assert.equal(VERSION, "0.2.0");
+  assert.equal(VERSION, "0.3.0");
 });

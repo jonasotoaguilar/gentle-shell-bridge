@@ -9,7 +9,7 @@
  *   originals, untouched: their `current()` still reads the host's config file and their `action()`
  *   still writes it. Only the registered values are the bridge's.
  * - **`separate`** — the host's line could not be located (renamed setting, a narrower host, no
- *   capture at all). The bridge then contributes its own line, `Bridge → card style`, with `native`
+ *   capture at all). The bridge then contributes its own line, `Bridge card style`, with `native`
  *   plus every registered style. `native` means "the bridge leaves the conversation alone". The
  *   mode is recorded so `/bridge-status` can say which line the user is actually seeing.
  *
@@ -44,7 +44,10 @@ import {
   resolveCardStyleSelection,
   setCardStyleSelection,
 } from "./card-styles.ts";
+import { refreshCardStyleSurfaces } from "./card-style-wiring.ts";
 import { recordNotice } from "./notices.ts";
+import { requestSurfaceRepaint } from "./repaint.ts";
+import { cardStyleRowLabelText } from "./row-labels.ts";
 import { isRecord } from "./rows.ts";
 import type { CardStyleRegistration, CustomizeRow, RowPreview, RowProvider } from "./types.ts";
 
@@ -56,10 +59,16 @@ export const CARD_STYLE_ROWS_PROVIDER_ID = "bridge.card-styles";
  * `Card style`: a second row sharing that setting, appended somewhere else in the array, would not
  * join the host's line and would make `/bridge-status` report a duplicate.
  */
-export const CARD_STYLE_FALLBACK_SETTING = "Bridge → card style";
+export const CARD_STYLE_FALLBACK_SETTING = "Bridge card style";
 
-/** The fallback line's own label; it names the line, and no value repeats it. */
-export const CARD_STYLE_ROW_LABEL = "Bridge: card style";
+/**
+ * The fallback line's own label; it names the line, and no value repeats it.
+ *
+ * Same vocabulary as every other row name (N7): one to three plain words, no arrow, colon, dot,
+ * pipe, slash or bracket. The bridge enforces that shape on plugins (`./row-names.ts`), so its own
+ * line reads the same way — `Bridge card style`, not `Bridge → card style` or `Bridge: card style`.
+ */
+export const CARD_STYLE_ROW_LABEL = "Bridge card style";
 
 /** Which line the user sees: the host's, extended, or the bridge's own. */
 export type CardStyleRowMode = "extended" | "separate";
@@ -143,24 +152,45 @@ function previewFor(style: CardStyleRegistration): RowPreview {
  *
  * `choice.value` is the style's short `label`, not its namespaced id, because the host renders
  * `value` and nothing else on a setting line (`lib/visual-customize-view.ts:583-595`) — the id would
- * put `loon.cute` in front of the user. Identity is carried by the closures below, never by the
- * displayed text: `current()` compares the stored selection with the style's id, and `action()`
- * persists that id, so renaming a label cannot lose a user's choice.
+ * put `loon.cute` in front of the user. The row's own `label` is the visible text too, derived from
+ * that `label` (or the author's `rowLabel`, N1/N3): the id stays internal here as well. Identity is
+ * carried by the closures below, never by the displayed text: `current()` compares the stored
+ * selection with the style's id, and `action()` persists that id, so renaming a label cannot lose a
+ * user's choice.
  *
  * `current()` reads the persisted selection live (so the bullet cannot lie), `action()` persists
- * FIRST and lets the host's repaint follow, and `preview()` is literal.
+ * FIRST and then repaints both card surfaces before returning (`selectStyle`, R3) rather than waiting
+ * for an unrelated frame, and `preview()` is literal.
  */
+/**
+ * Select a style and repaint both surfaces (R3).
+ *
+ * Persistence happens FIRST, then the rail's transform is (re)attached if it never was, then the host
+ * is asked for a frame — all synchronously, before the action returns, and nothing at all when the
+ * stored selection is already the one picked: a press that changes nothing must not cost a frame.
+ * The conversation and the rail both paint chrome from this value, so both are repainted.
+ */
+function selectStyle(id: string): void {
+  if (getCardStyleSelection() === id) return;
+  setCardStyleSelection(id);
+  refreshCardStyleSurfaces();
+  requestSurfaceRepaint({ cause: `card style → ${id}`, surfaces: ["conversation", "rail"] });
+}
+
 function styleRow(style: CardStyleRegistration, setting: string): CustomizeRow {
   return {
     category: HOST_CARD_STYLE_CATEGORY,
-    label: () => style.label,
+    label: () => cardStyleRowLabelText(style),
     choice: {
       setting,
       value: style.label,
+      // Move, then Enter (A1): a repaint of both surfaces on every ←/→ would change the card the
+      // user is looking at while they are only walking the values (`visual-customize-view.ts:565`).
+      applyOnMove: false,
       current: () => getCardStyleSelection() === style.id,
     },
     preview: () => previewFor(style),
-    action: () => setCardStyleSelection(style.id),
+    action: () => selectStyle(style.id),
   };
 }
 
@@ -172,13 +202,16 @@ function nativeRow(setting: string): CustomizeRow {
     choice: {
       setting,
       value: CARD_STYLE_NATIVE,
+      // Same rule as every other value the bridge contributes (A1): the way back to the host's own
+      // cards is confirmed with Enter too, never applied by passing over it.
+      applyOnMove: false,
       current: () => getCardStyleSelection() === CARD_STYLE_NATIVE,
     },
     preview: () => ({
       title: "Cards · native",
       sample: "native: the bridge does not touch the conversation",
     }),
-    action: () => setCardStyleSelection(CARD_STYLE_NATIVE),
+    action: () => selectStyle(CARD_STYLE_NATIVE),
   };
 }
 
@@ -206,7 +239,9 @@ function bridgeStyleActive(): boolean {
  * selection is cleared to `native`. Everything else — `choice.value`, `choice.setting`,
  * `choice.hint`, `choice.applyOnMove`, `label`, `preview`, whatever else the host put there — is
  * carried over as the same reference, so the host's persistence keeps running and the bridge does
- * not reimplement `neon`/`float`.
+ * not reimplement `neon`/`float`. That includes `choice.applyOnMove` (A3): the host's own values keep
+ * applying on ←/→ if the host wrote them that way, while the bridge value spliced beside them waits
+ * for Enter — inside one rendered line each row's own field governs its own behaviour.
  */
 function wrapHostRow(row: CustomizeRow): CustomizeRow {
   if (Object.hasOwn(row, NATIVE_ROW_WRAPPED)) return row;
@@ -234,7 +269,7 @@ function wrapHostRow(row: CustomizeRow): CustomizeRow {
         recordActionFailure(value, error);
         result = undefined;
       } finally {
-        setCardStyleSelection(CARD_STYLE_NATIVE);
+        selectStyle(CARD_STYLE_NATIVE);
       }
       if (!isThenable(result)) return undefined;
       // An async setter's rejection arrives after the call returns; the selection is already native,
@@ -275,7 +310,7 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
  * The fallback provider. Its rows are rebuilt per menu build, never cached.
  *
  * With no style registered it contributes NOTHING: a session that never installed a style plugin
- * must not gain a `Bridge → card style` line with a single `native` value on it. The provider is
+ * must not gain a `Bridge card style` line with a single `native` value on it. The provider is
  * still registered (arming precedes the plugins' own `session_start` handlers), so the first style
  * to register appears on the next menu build with no re-registration.
  */

@@ -9,7 +9,7 @@
  * fixed (docs/contract.md §6).
  */
 
-import { snapshotCardStyles, snapshotProviders, snapshotSections } from "./bus.ts";
+import { snapshotCardStyles, snapshotProviders, snapshotSections, snapshotTransforms } from "./bus.ts";
 import {
   CARD_STYLE_ROWS_PROVIDER_ID,
   cardStyleRowMode,
@@ -26,17 +26,35 @@ import { resolveCardStyleSelection } from "./card-styles.ts";
 import { getCaptureDiagnostics, type CaptureOutcome } from "./capture.ts";
 import { getHookDiagnostics } from "./hook.ts";
 import { snapshotNotices, type NoticeLevel } from "./notices.ts";
+import {
+  PAINT_SURFACES,
+  getRepaintDiagnostics,
+  getSurfaceReach,
+  type PaintSurface,
+  type RepaintTrigger,
+} from "./repaint.ts";
+import { getTransformFrameOutcomes, type TransformFrameCounts } from "./transform-pipeline.ts";
+import { getPluginLineReport, type PluginLineReport } from "./plugin-lines.ts";
 import { getLastRowBuild, type RowBuildRecord } from "./rows.ts";
 import {
   getSidebarDiagnostics,
   type SidebarDiagnostics,
   type SidebarFailure,
 } from "./sidebar.ts";
-import { getSectionFailures, type SectionRenderFailure } from "./sidebar-render.ts";
+import { getSectionFailures, getSectionFrameWidth, type SectionRenderFailure } from "./sidebar-render.ts";
+import { getPanelReport } from "./section-panel.ts";
+import { getSectionHoverReport } from "./section-pointer.ts";
 import { SECTION_ROWS_PROVIDER_ID } from "./sections-rows.ts";
+import { sectionRowLabels } from "./row-labels.ts";
+import { getRowNameRejections, type RowNameRejection } from "./row-names.ts";
 import { getStoreDiagnostics, type StoreProblem } from "./store.ts";
-import type { CustomizeRow, RowContext, RowProvider } from "./types.ts";
-import { getSectionVisibility, isSectionVisible } from "./visibility.ts";
+import type { RowContext, RowProvider } from "./types.ts";
+import {
+  getSectionCollapsed,
+  getSectionVisibility,
+  isSectionCollapsed,
+  isSectionVisible,
+} from "./visibility.ts";
 
 export type StatusBackend = "hook" | "capture" | "none";
 
@@ -64,9 +82,42 @@ export interface StatusSectionEntry {
   title: string;
   /** The persisted (or default) visibility right now. */
   visible: boolean;
+  /** Present only while the card is folded (N13); absent keeps every historical line unchanged. */
+  collapsed?: true;
   /** The render position's source: an explicit integer, or registration order when absent. */
   order: number | "registration";
+  /** The label the section's `Sections` row reads (N2). The id stays in `id`, never in a row. */
+  rowLabel: string;
+  /** Present when two sections wanted the same label: the label this one had to move away from. */
+  rowLabelCollision?: string;
 }
+
+/**
+ * How the section frame is drawn and how the pointer reaches it (N11, N15): the answer to "is this
+ * the host's own header, or a port of it, and what could the bridge not reach".
+ */
+export interface StatusSectionFrame {
+  /** `host` when the host's own builders were found on an object the bridge is handed. */
+  source: "host" | "fallback";
+  /** Where they were looked for, in the order the objects were offered. */
+  lookedAt: string[];
+  /** What was missing, as a person reads it; empty when the host's builders were found. */
+  missing: string[];
+  /** Whether Pi has handed the widget factory a theme yet; without one, rows are uncoloured. */
+  theme: "captured" | "missing";
+  /** The pointer path: the host's own dispatch, and how the hover claim is carried. */
+  hover: "host-state" | "unavailable" | "not used";
+  hoverReason?: string;
+  /**
+   * N20: the width the last render was handed and the widest row the bridge produced at it, both in
+   * the host's own columns. Absent until a frame contributes rows, so a session whose rail never
+   * painted keeps its report unchanged.
+   */
+  width?: { given: number; widest: number };
+}
+
+/** One rejected row name, as `/bridge-status` lists it: the string verbatim and the rule it broke. */
+export type StatusRowNameRejection = RowNameRejection;
 
 /** One buffered notice, as `/bridge-status` lists it: still pending, or already delivered. */
 export interface StatusNoticeEntry {
@@ -100,16 +151,49 @@ export type StatusCardStyleSelection =
   | { kind: "style"; id: string; label: string }
   | { kind: "missing"; id: string };
 
+/** One surface the card style paints, with what it last did there (R4). */
+export interface StatusSurfaceEntry {
+  surface: PaintSurface;
+  /** Whether the transform was attached to this surface. */
+  reached: boolean;
+  /** Only when it was not: the attach outcome (`no-layout-root`, `no-sidebar`, `no-rail`, ...). */
+  reason?: string;
+  /** The last frame this surface painted through the transform; `none` before it ran once. */
+  frame: CardStyleFrameOutcome | { kind: "none" };
+}
+
 /** The card-style surface, reported only when there is something to say (see `collectStatus`). */
 export interface StatusCardStyles {
   /** `extended`: the host's own `Card style` line was found and grown. `separate`: the fallback. */
   mode: CardStyleRowMode;
   styles: StatusCardStyleEntry[];
   selection: StatusCardStyleSelection;
-  /** The most recent frame's outcome; `none` before the transform ever ran. */
+  /** The most recent CONVERSATION frame's outcome; `none` before the transform ever ran. */
   frame: CardStyleFrameOutcome | { kind: "none" };
+  /**
+   * Per-surface reach and last frame (R4): the conversation and the rail are separate surfaces that
+   * share one transform, so "the style is selected but the sidebar looks untouched" is answerable.
+   */
+  surfaces: StatusSurfaceEntry[];
   wiring: CardStyleWiringDiagnostics;
   failures: CardStyleTransformFailure[];
+}
+
+/** One registered transform, as `/bridge-status` lists it: in pipeline order. */
+export interface StatusTransformEntry {
+  id: string;
+  /** The position's source: an explicit integer, or registration order when absent. */
+  order: number | "registration";
+  /** What the LAST frame did with it; `not run` when no frame has reached it yet. */
+  outcome: "applied" | "skipped" | "failed" | "not run";
+  /** Only when `outcome` is `failed`: the transform's own message, verbatim. */
+  message?: string;
+  /**
+   * The last frame's counts (F1, F2): the lines it received and what its own grammar reported —
+   * candidates examined, cards recognised, cards rewritten, shapes matched by name. Absent only for
+   * `not run`, where no frame has asked the transform anything.
+   */
+  counts?: TransformFrameCounts;
 }
 
 export interface StatusSnapshot {
@@ -122,6 +206,11 @@ export interface StatusSnapshot {
   duplicates?: StatusDuplicate[];
   /** Absent when no section is registered, so a row-only run keeps its historical output. */
   sections?: StatusSectionEntry[];
+  /**
+   * How the section frame is drawn (N11) and what it could not reach (N15). Absent when no section
+   * is registered, so a row-only session keeps its historical output exactly.
+   */
+  sectionFrame?: StatusSectionFrame;
   /** Absent when the most recent sidebar frame had no section failure. */
   sectionFailures?: SectionRenderFailure[];
   /**
@@ -131,6 +220,12 @@ export interface StatusSnapshot {
   sidebarFailures?: SidebarFailure[];
   /** Absent when the sidebar backend was never installed (reported as "not armed"). */
   sidebar?: StatusSidebarEntry;
+  /**
+   * The last repaint a bridge-owned write requested (R3/R4): the surfaces, the cause and whether the
+   * host was actually asked for a frame. Absent until such a write happens, so a session that never
+   * toggled anything keeps its historical output byte for byte.
+   */
+  lastRepaint?: RepaintTrigger;
   /**
    * Every buffered bridge notice, delivered or still pending. Absent when there is none, so the
    * report for a clean session keeps its historical output exactly.
@@ -143,6 +238,25 @@ export interface StatusSnapshot {
    * selection native, no transform attempt and no frame — so a row-only session keeps its output.
    */
   cardStyles?: StatusCardStyles;
+  /**
+   * Plugin row names the bridge rejected for breaking the row-name shape (N8): the offending
+   * string, verbatim, and the rule it broke. Absent when nothing was rejected, so a clean session
+   * keeps its historical output exactly.
+   */
+  rowNames?: StatusRowNameRejection[];
+  /**
+   * Every registered transcript transform in pipeline order, with the last frame's outcome. Absent
+   * when none is registered, so a session that never used the pipeline keeps its historical output
+   * byte for byte.
+   */
+  transforms?: StatusTransformEntry[];
+  /**
+   * The INTEGRATIONS rows this bridge paints on the plugins' behalf (I1–I7): one entry per plugin,
+   * the name and whether it was derived or explicit, the registrations accepted and rejected, and
+   * whether the host's `setStatus` was available at all. Absent when no plugin has registered, so a
+   * session without one keeps its historical output byte for byte.
+   */
+  pluginLines?: PluginLineReport;
 }
 
 /**
@@ -179,24 +293,39 @@ export function collectStatus(): StatusSnapshot {
   };
   const duplicates = findDuplicatesInBuilds(getLastRowBuild());
   if (duplicates !== undefined) snapshot.duplicates = duplicates;
+  // The row-name rejections (N8). Nothing here runs a provider: the records are the ones the last
+  // registration or build already made, so the report matches what the menu shows.
+  const rowNames = getRowNameRejections();
+  if (rowNames.length > 0) snapshot.rowNames = rowNames;
   const lastCapture = backend === "hook" ? hook.lastCapture : capture.lastOutcome;
   if (lastCapture !== undefined) snapshot.lastCapture = lastCapture;
 
   // The sidebar surface. Nothing here runs a section: the table reports registrations and the
   // persisted visibility, and the failures are the ones the last frame already recorded — `lines()`
   // and `meta()` are never called by a diagnostics report.
+  //
+  // Ids belong in THIS report (N4): it is read by the plugin author diagnosing a registration, not by
+  // the user picking a toggle. The rows the user sees show labels only (`./row-labels.ts`), so these
+  // ids exist precisely to be found here. The label column is the same assignment the rows use,
+  // including collision disambiguation, so the report explains what the menu shows instead of
+  // recomputing it differently.
   const sections = snapshotSections();
   if (sections.length > 0) {
     const visibility = getSectionVisibility();
-    snapshot.sections = sections.map((section) => ({
+    const collapsedMap = getSectionCollapsed();
+    snapshot.sections = sectionRowLabels(sections).map(({ section, label, collision }) => ({
       id: section.id,
       title: section.title,
       visible: isSectionVisible(visibility, section),
+      ...(isSectionCollapsed(collapsedMap, section) ? { collapsed: true as const } : {}),
       order:
         typeof section.order === "number" && Number.isFinite(section.order)
           ? section.order
           : "registration",
+      rowLabel: label,
+      ...(collision === undefined ? {} : { rowLabelCollision: collision }),
     }));
+    snapshot.sectionFrame = describeSectionFrame();
   }
   const sectionFailures = getSectionFailures();
   if (sectionFailures.length > 0) snapshot.sectionFailures = sectionFailures;
@@ -220,6 +349,16 @@ export function collectStatus(): StatusSnapshot {
   }
   const cardStyles = describeCardStyles();
   if (cardStyles !== undefined) snapshot.cardStyles = cardStyles;
+  const lastRepaint = describeLastRepaint();
+  if (lastRepaint !== undefined) snapshot.lastRepaint = lastRepaint;
+  // The transform pipeline, in the order the wrapper runs it. Nothing here calls a transform: the
+  // outcomes are the ones the last frame already recorded.
+  const transforms = describeTransforms();
+  if (transforms !== undefined) snapshot.transforms = transforms;
+  // The per-plugin INTEGRATIONS rows. Nothing here calls the host: the records are the ones each
+  // registration (and `session_start`'s paint attempt) already made.
+  const pluginLines = describePluginLines();
+  if (pluginLines !== undefined) snapshot.pluginLines = pluginLines;
   const sidebarEntry = describeSidebar(sidebarDiagnostics);
   // The sidebar line is worth a line only when it explains something: a registered section that may
   // not be appearing, or a rail that IS intercepted. A row-only session with no rail keeps the
@@ -232,6 +371,28 @@ export function collectStatus(): StatusSnapshot {
   }
 
   return snapshot;
+}
+
+/**
+ * How the section frame is drawn (N11) and what the bridge could not reach (N15).
+ *
+ * This is a REPORT of the run, not a claim in a comment: the panel source comes from looking for the
+ * host's builders on every object the bridge is handed, the theme from whether Pi has run the
+ * `setWidget` factory, and the hover mechanism from the last attempt to claim the shared pointer.
+ */
+function describeSectionFrame(): StatusSectionFrame {
+  const panel = getPanelReport();
+  const hover = getSectionHoverReport();
+  const width = getSectionFrameWidth();
+  return {
+    source: panel.source,
+    lookedAt: panel.lookedAt,
+    missing: panel.missing,
+    theme: panel.theme === "captured" ? "captured" : "missing",
+    hover: hover.mechanism,
+    ...(hover.reason === undefined ? {} : { hoverReason: hover.reason }),
+    ...(width === undefined ? {} : { width }),
+  };
 }
 
 /**
@@ -266,9 +427,68 @@ function describeCardStyles(): StatusCardStyles | undefined {
           ? { kind: "missing", id: selection.id }
           : { kind: "style", id: selection.style.id, label: selection.style.label },
     frame: frame === undefined ? { kind: "none" } : frame,
+    surfaces: PAINT_SURFACES.map((surface) => {
+      const reach = getSurfaceReach(surface);
+      const outcome = getCardStyleLastOutcome(surface);
+      return {
+        surface,
+        reached: reach?.reached === true,
+        ...(reach?.reason === undefined ? {} : { reason: reach.reason }),
+        frame: outcome === undefined ? { kind: "none" as const } : outcome,
+      };
+    }),
     wiring,
     failures,
   };
+}
+
+/**
+ * The transform block, or `undefined` when this process registered no transform at all.
+ *
+ * The guard is what keeps a session that never used the pipeline byte-identical: the block appears
+ * only when a transform exists, and the outcomes are the ones the last frame recorded (a transform
+ * registered after that frame reads `not run` rather than borrowing another one's answer).
+ */
+function describeTransforms(): StatusTransformEntry[] | undefined {
+  const registered = snapshotTransforms();
+  if (registered.length === 0) return undefined;
+  const frame = new Map(getTransformFrameOutcomes().map((outcome) => [outcome.id, outcome]));
+  return registered.map((transform) => {
+    const outcome = frame.get(transform.id);
+    return {
+      id: transform.id,
+      order:
+        typeof transform.order === "number" && Number.isFinite(transform.order)
+          ? transform.order
+          : "registration",
+      outcome: outcome?.status ?? "not run",
+      ...(outcome?.message === undefined ? {} : { message: outcome.message }),
+      ...(outcome?.counts === undefined ? {} : { counts: outcome.counts }),
+    };
+  });
+}
+
+/**
+ * The INTEGRATIONS block, or `undefined` when no plugin has registered with the bridge.
+ *
+ * The guard is the same discipline as every other block: a session with no plugin keeps its
+ * historical report exactly. The line's TEXT is deliberately not recomputed here — it is what the
+ * host was handed — but `line`/`reason` say whether a row is currently set, so a missing row is an
+ * answer (I6).
+ */
+function describePluginLines(): PluginLineReport | undefined {
+  const report = getPluginLineReport();
+  return report.plugins.length === 0 ? undefined : report;
+}
+
+/** The last repaint a bridge-owned write requested (R3/R4), or `undefined` before one happened.
+ *
+ * The guard is the same discipline as every other block: a session that never toggled anything keeps
+ * its historical report exactly. A trigger whose outcome is `unavailable` is the interesting case —
+ * the write landed and the screen did not move — so its reason is reported verbatim.
+ */
+function describeLastRepaint(): RepaintTrigger | undefined {
+  return getRepaintDiagnostics().lastTrigger;
 }
 
 function formatCardSelection(selection: StatusCardStyleSelection): string {
@@ -298,10 +518,24 @@ function formatCardFrame(frame: StatusCardStyles["frame"]): string {
 }
 
 function formatCardWiring(wiring: CardStyleWiringDiagnostics): string {
-  if (wiring.wrapped > 0) return "chat wrapped";
+  // Which COMPONENTS carry the transform. The rail is named only once it was wrapped — its failures
+  // have their own per-surface line below (`formatCardSurface`), so nothing is hidden by keeping this
+  // line about the conversation's state, which is what it has always answered.
+  const parts: string[] = [];
+  if ((wiring.railWrapped ?? 0) > 0) parts.push("rail wrapped");
+  if (wiring.wrapped > 0) parts.push("chat wrapped");
+  if (parts.length > 0) return parts.join(", ");
   if (wiring.lastOutcome === undefined) return "not armed";
   const reason = wiring.lastReason === undefined ? "" : `: ${wiring.lastReason}`;
   return `not wrapped (${wiring.lastOutcome}${reason})`;
+}
+
+/** One surface's line: whether the style reached it, and what its last frame did there (R4). */
+function formatCardSurface(entry: StatusSurfaceEntry): string {
+  const reached = entry.reached
+    ? `reached (${entry.surface === "conversation" ? "chat wrapped" : "rail wrapped"})`
+    : `not reached (${entry.reason ?? "not attempted"})`;
+  return `card style surface ${entry.surface}: ${reached}, last frame ${formatCardFrame(entry.frame)}`;
 }
 
 /**
@@ -442,6 +676,18 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
     }
   }
 
+  if (snapshot.rowNames !== undefined) {
+    lines.push(`row name rejections: ${snapshot.rowNames.length}`);
+    for (const rejection of snapshot.rowNames) {
+      // The offending string is printed EXACTLY as the author wrote it: the report is how they find
+      // it, and the bridge never rewrites a name it refused (N8).
+      lines.push(
+        `  - ${rejection.surface} ${JSON.stringify(rejection.id)} ${rejection.field} ` +
+          `${JSON.stringify(rejection.value)}: ${rejection.reason} (rejected, never rewritten)`,
+      );
+    }
+  }
+
   // These blocks are emitted only when they have something to say. What is guaranteed: a session
   // that registers no section and never intercepts a rail prints exactly the pre-feature output
   // (proved through the real entry, not just this formatter). The sections table appears once a
@@ -453,8 +699,20 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
       const order =
         section.order === "registration" ? "registration order" : `order ${section.order}`;
       const visibility = section.visible ? "visible" : "hidden";
-      lines.push(`  - ${section.id} "${section.title}": ${visibility}, ${order}`);
+      // The id and the title are diagnostics; `row` is what the menu actually reads, and the
+      // collision note says why two equal titles did not produce two equal lines (N2, N4).
+      const row =
+        section.rowLabelCollision === undefined
+          ? `, row "${section.rowLabel}"`
+          : `, row "${section.rowLabel}" (label collision with "${section.rowLabelCollision}")`;
+      lines.push(
+        `  - ${section.id} "${section.title}": ${visibility}${section.collapsed === true ? ", collapsed" : ""}, ${order}${row}`,
+      );
     }
+  }
+
+  if (snapshot.sectionFrame !== undefined) {
+    lines.push(...formatSectionFrame(snapshot.sectionFrame));
   }
 
   if (snapshot.sectionFailures !== undefined) {
@@ -492,6 +750,7 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
     }
     lines.push(`card style selection: ${formatCardSelection(card.selection)}`);
     lines.push(`card style frame: ${formatCardFrame(card.frame)}`);
+    for (const surface of card.surfaces) lines.push(formatCardSurface(surface));
     lines.push(`card style wiring: ${formatCardWiring(card.wiring)}`);
     if (card.failures.length > 0) {
       lines.push(`card style failures: ${card.failures.length}`);
@@ -499,12 +758,39 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
         lines.push(`  - ${failure.styleId}: ${failure.message}`);
       }
     }
-    // S7: a later post-processor (cinlodev wraps the chat container and strips box chrome) can erase
-    // this frame. The bridge cannot prevent it, so it says so instead of pretending otherwise.
+    // S7: a later post-processor — a component that rewrites the conversation's rows after this
+    // frame is drawn — can erase it. The bridge cannot prevent that, so it says so instead of
+    // pretending otherwise.
     lines.push(
-      "card style note: a downstream post-processor (e.g. cinlodev) can strip or override this " +
-        "frame; the bridge cannot prevent it.",
+      "card style note: a downstream post-processor can strip or override this frame; " +
+        "the bridge cannot prevent it.",
     );
+  }
+
+  if (snapshot.lastRepaint !== undefined) {
+    const trigger = snapshot.lastRepaint;
+    const outcome =
+      trigger.outcome === "repainted" ? "repainted" : `unavailable: ${trigger.reason ?? "no reason recorded"}`;
+    lines.push(`last repaint: ${trigger.surfaces.join(", ")} for ${trigger.cause} (${outcome})`);
+  }
+
+  if (snapshot.transforms !== undefined) {
+    lines.push(`transforms: ${snapshot.transforms.length} registered`);
+    for (const entry of snapshot.transforms) {
+      const order = entry.order === "registration" ? "registration order" : `order ${entry.order}`;
+      const outcome =
+        entry.outcome === "failed"
+          ? `failed (${entry.message ?? "no message"})`
+          : entry.outcome;
+      // F2: the counts the SAME frame recorded, on the same line as the outcome: "it ran" and "it
+      // recognised nothing" are one answer, and the line has to read as one.
+      const counts = entry.counts === undefined ? "" : `, ${formatTransformCounts(entry.counts)}`;
+      lines.push(`  - ${entry.id} (${order}): ${outcome}${counts}`);
+    }
+  }
+
+  if (snapshot.pluginLines !== undefined) {
+    lines.push(...formatPluginLines(snapshot.pluginLines));
   }
 
   if (snapshot.notices !== undefined) {
@@ -518,6 +804,108 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
     lines.push(`notices dropped: ${snapshot.noticesDropped}`);
   }
 
+  return lines;
+}
+
+/**
+ * The counts of one transform's last frame (F1), as the report reads them: lines received,
+ * candidates examined, cards recognised, cards rewritten — then the matched shapes by name, in the
+ * order the transform reported them. Numbers and names only: no line of the frame is ever here.
+ */
+function formatTransformCounts(counts: TransformFrameCounts): string {
+  const parts = [
+    `${counts.lines} ${counts.lines === 1 ? "line" : "lines"}`,
+    `${counts.candidates} ${counts.candidates === 1 ? "candidate" : "candidates"}`,
+    `${counts.recognised} recognised`,
+    `${counts.rewritten} rewritten`,
+  ];
+  if (counts.shapes.length > 0) {
+    parts.push(`shapes: ${counts.shapes.map((shape) => `${shape.name} ${shape.count}`).join(", ")}`);
+  }
+  return parts.join(", ");
+}
+
+/**
+ * The section-frame block: which drawing the header and rows use, how the pointer reaches them, and
+ * the gap the bridge cannot close (N11, N15).
+ *
+ * Every fact here is a measurement of this run: the source comes from looking for the host's two
+ * builder functions on the objects the bridge is actually handed, the theme from whether Pi has run
+ * the widget factory, and the hover mechanism from the last claim of the shared pointer.
+ */
+function formatSectionFrame(frame: StatusSectionFrame): string[] {
+  const looked = frame.lookedAt.length === 0 ? "nothing yet" : frame.lookedAt.join(", ");
+  const why =
+    frame.source === "host"
+      ? `the host's own renderPanelHeader/renderPanelRow, found on: ${looked}`
+      : `looked for renderPanelHeader/renderPanelRow on: ${looked}; found none`;
+  const theme =
+    frame.theme === "captured"
+      ? "theme captured, rows painted in the host's roles"
+      : "no theme captured yet, rows drawn uncoloured";
+  const hover =
+    frame.hover === "not used"
+      ? "hover not used yet"
+      : frame.hover === "host-state"
+        ? "hover owner claimed on the host's sidebar state"
+        : `hover owner unavailable (${frame.hoverReason ?? "no reason recorded"})`;
+  const lines = [
+    `section frame: ${frame.source} (${why}; ${theme})`,
+    `section interaction: rail handleMouse (the host's own dispatch), ${hover}`,
+  ];
+  if (frame.width !== undefined) {
+    // N20: a width bug is visible from the report — the given width next to what the bridge emitted.
+    lines.push(`section width: ${frame.width.given} columns given, widest row ${frame.width.widest}`);
+  }
+  if (frame.source === "fallback") {
+    // N15: the gap, named. Not "unsupported": gentle-shell's panel module publishes no seam on any
+    // object this package is given, so the header and rows are drawn by the byte-identical port.
+    lines.push(
+      "section frame gap: gentle-shell's lib/shell-panel.ts cannot be imported (Pi loads each " +
+        "extension in its own module graph) and publishes no builder on the rail part, the Pi theme " +
+        "or the terminal's sidebar state, so the header and rows are drawn by a byte-identical port",
+    );
+  }
+  return lines;
+}
+
+/** The INTEGRATIONS header's availability note: empty when the host surface is installed. */
+function formatPluginAvailability(report: PluginLineReport): string {
+  if (report.availability === "installed") return "";
+  const state = report.availability === "unavailable" ? "unavailable" : "not armed";
+  const reason = report.reason === undefined ? "" : `: ${report.reason}`;
+  return ` (status ${state}${reason})`;
+}
+
+/** The per-plugin INTEGRATIONS list: the name, how it was chosen, and the registration counts. */
+function formatPluginLines(report: PluginLineReport): string[] {
+  const lines = [`plugin lines: ${report.plugins.length}${formatPluginAvailability(report)}`];
+  for (const plugin of report.plugins) {
+    const source =
+      plugin.nameSource === "explicit"
+        ? "explicit name"
+        : `derived from package ${JSON.stringify(plugin.packageName ?? "")}`;
+    // `(no line)` is a state, not a name: a module path is diagnostics and stays on this line only,
+    // never in the footer (I2).
+    const label = plugin.name === undefined ? "(no line)" : `${JSON.stringify(plugin.name)} (${source})`;
+    const where = plugin.name === undefined ? ` module ${plugin.modulePath}` : "";
+    const state =
+      plugin.line === "set"
+        ? plugin.status
+        : `no line set (${plugin.reason ?? "no reason recorded"})`;
+    lines.push(
+      `  - ${label}${where}: ${state}, ${plugin.accepted} accepted, ${plugin.rejected.length} rejected`,
+    );
+    for (const rejection of plugin.rejected) {
+      lines.push(`    - ${rejection.surface} ${JSON.stringify(rejection.id)}: ${rejection.reason}`);
+    }
+    for (const conflict of plugin.nameConflicts) {
+      lines.push(
+        `    - name conflict on ${conflict.surface} ${JSON.stringify(conflict.id)}: declared ` +
+          `${JSON.stringify(conflict.name)}, kept ${JSON.stringify(conflict.kept)}`,
+      );
+    }
+  }
   return lines;
 }
 

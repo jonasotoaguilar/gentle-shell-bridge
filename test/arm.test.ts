@@ -188,7 +188,7 @@ test("importing the arm module has no side effects", async () => {
 
 test("the same providers produce the same rows through either backend", () => {
   const providers = (): void => {
-    registerRows(labelsProvider("first", "Cards", ["First: a"]));
+    registerRows(labelsProvider("first", "Cards", ["First a"]));
     registerRows({
       id: "boom",
       category: "Banner",
@@ -196,7 +196,7 @@ test("the same providers produce the same rows through either backend", () => {
         throw new Error("shared provider exploded");
       },
     });
-    registerRows(labelsProvider("second", "Layout", ["Second: b"]));
+    registerRows(labelsProvider("second", "Layout", ["Second b"]));
   };
 
   // Capture backend.
@@ -215,6 +215,6 @@ test("the same providers produce the same rows through either backend", () => {
   armBridge(createFakeHost().ui);
   const hookedLabels = registry[0].rows({}).map((row) => String(row.label));
 
-  assert.deepEqual(capturedLabels, ["First: a", "Second: b"]);
+  assert.deepEqual(capturedLabels, ["First a", "Second b"]);
   assert.deepEqual(hookedLabels, capturedLabels, "same providers, same rows, same order");
 });

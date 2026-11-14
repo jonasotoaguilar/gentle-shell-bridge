@@ -23,10 +23,32 @@
  * ## What the wrapper does
  *
  * It calls the host's own `render(width)` first (the host's failure path stays the host's), and then
- * hands the rows to `transformCardLines` — which is a pass-through unless a registered style is
- * selected, and which never throws. The wrapper captures the generation it was created in: once
- * `disableCardStyleTransform()` (or a reset) bumps it, a wrapper foreign code kept a reference to is
- * a plain pass-through, not an injector.
+ * hands the rows to the pipeline: `transformCardLines` repaints the selected card style (a
+ * pass-through unless a style is selected, and it never throws), and `applyTransforms` then runs the
+ * registered transcript transforms in order over that output (`./transform-pipeline.ts`). With no
+ * style selected and no transform registered the host's own array is what the wrapper returns, so a
+ * session that uses neither is byte-identical. The wrapper captures the generation it was created
+ * in: once `disableCardStyleTransform()` (or a reset) bumps it, a wrapper foreign code kept a
+ * reference to is a plain pass-through, not an injector.
+ *
+ * ## The rail surface (R1, R3)
+ *
+ * The second surface is gentle-shell's fullscreen rail. On a transparent rail the host re-frames
+ * every section itself — `sectionCardRows`/`headerParts` through `floatRows`/`cardTop`/`cardLine`
+ * (`lib/shell-sidebar-layout.ts:36-47,392-410`), host sections and contributed ones alike — and the
+ * FRAMED rows are the child of the rail's `ScrollView` in the layout tree
+ * (`lib/shell-sidebar-layout.ts:486-499`): the root's layout node is a `vstack` holding an `hstack`
+ * whose SECOND entry is that scroll view, and `ScrollView[LAYOUT_NODE]()` reports its child
+ * (`pi-tui/dist/components/scroll-view.js:191-192`). That child renders the whole rail, so wrapping
+ * its `render(width)` is the one place that sees every rail frame AFTER the host framed it — which
+ * is exactly what a repaint needs, and why a style reaches host sections and bridge sections
+ * without the bridge drawing either frame.
+ *
+ * The rail wrapper runs ONLY the card-style transform (`transformCardLines(..., "rail")`): the
+ * registered transcript transforms are the conversation's extension point, and handing a plugin's
+ * conversation rows for the rail would let it corrupt a surface it never asked for. Every absence is
+ * an outcome here too (`no-layout-root`, `no-sidebar`, `no-rail`), and each attempt records the
+ * surface's reach for `/bridge-status` (`./repaint.ts`).
  *
  * ## Every absence is a reported state
  *
@@ -41,7 +63,9 @@
  */
 
 import { transformCardLines } from "./card-style-transform.ts";
+import { getRepaintHost, recordSurfaceReach, type PaintSurface } from "./repaint.ts";
 import { isRecord } from "./rows.ts";
+import { applyTransforms } from "./transform-pipeline.ts";
 
 /** The layout protocol symbol, exactly as `pi-tui` defines it (`layout-node.js:1`). */
 const LAYOUT_NODE: symbol = Symbol.for("@earendil-works/pi-tui/layout-node");
@@ -61,13 +85,16 @@ export type CardStyleInstallOutcome =
   | "no-document"
   | "no-conversation"
   | "render-missing"
+  | "no-layout-root"
+  | "no-sidebar"
+  | "no-rail"
   | "wrong-shape";
 
 export interface InstallCardStyleResult {
   installed: boolean;
   outcome: CardStyleInstallOutcome;
   /** The component the wrapper landed on, when it landed. */
-  component?: "chat";
+  component?: "chat" | "rail";
   /** Only for `wrong-shape`: the message a host accessor threw. */
   reason?: string;
 }
@@ -75,12 +102,18 @@ export interface InstallCardStyleResult {
 export interface CardStyleWiringDiagnostics {
   /** Conversation components currently wrapped in this process. */
   wrapped: number;
-  /** Present when at least one component is wrapped. */
+  /** Present when at least one conversation component is wrapped. */
   component?: "chat";
-  /** The most recent install attempt's outcome; absent when the transform was never attempted. */
+  /** The most recent conversation install attempt's outcome; absent when never attempted. */
   lastOutcome?: CardStyleInstallOutcome;
   /** Only for `wrong-shape`: the reason, verbatim. */
   lastReason?: string;
+  /** Rail components currently wrapped in this process (R1); absent when a rail was never reached. */
+  railWrapped?: number;
+  /** The most recent rail install attempt's outcome; absent when never attempted. */
+  lastRailOutcome?: CardStyleInstallOutcome;
+  /** Only for a rail `wrong-shape`: the reason, verbatim. */
+  lastRailReason?: string;
 }
 
 /** The part of a component this module needs: Pi's `Component.render(width): string[]`. */
@@ -100,6 +133,8 @@ interface WrappedRecord {
   component: Renderable;
   original: RenderFunction;
   wrapper: RenderFunction;
+  /** Which surface this record serves; one wrapper draws one surface. */
+  surface: PaintSurface;
 }
 
 interface WiringState {
@@ -108,6 +143,8 @@ interface WiringState {
   wrapped: WrappedRecord[];
   lastOutcome?: CardStyleInstallOutcome;
   lastReason?: string;
+  lastRailOutcome?: CardStyleInstallOutcome;
+  lastRailReason?: string;
 }
 
 function wiringHost(): Record<symbol, WiringState | undefined> {
@@ -133,11 +170,16 @@ function wiringState(): WiringState {
 /** Diagnostics snapshot for `/bridge-status` (T4) and for this module's own tests. */
 export function getCardStyleWiringDiagnostics(): CardStyleWiringDiagnostics {
   const state = wiringState();
+  const chat = state.wrapped.filter((record) => record.surface === "conversation").length;
+  const rail = state.wrapped.filter((record) => record.surface === "rail").length;
   return {
-    wrapped: state.wrapped.length,
-    ...(state.wrapped.length === 0 ? {} : { component: "chat" as const }),
+    wrapped: chat,
+    ...(chat === 0 ? {} : { component: "chat" as const }),
     ...(state.lastOutcome === undefined ? {} : { lastOutcome: state.lastOutcome }),
     ...(state.lastReason === undefined ? {} : { lastReason: state.lastReason }),
+    ...(rail === 0 ? {} : { railWrapped: rail }),
+    ...(state.lastRailOutcome === undefined ? {} : { lastRailOutcome: state.lastRailOutcome }),
+    ...(state.lastRailReason === undefined ? {} : { lastRailReason: state.lastRailReason }),
   };
 }
 
@@ -147,17 +189,27 @@ export function resetCardStyleWiringForTests(): void {
   state.wrapped.length = 0;
   delete state.lastOutcome;
   delete state.lastReason;
+  delete state.lastRailOutcome;
+  delete state.lastRailReason;
   // Bump so a wrapper a previous test retained becomes a pass-through instead of injecting.
   state.generation += 1;
 }
 
 /** Read `[LAYOUT_NODE]()` from a component, if it exposes it. */
-function layoutNodeOf(value: unknown): { entries?: ReadonlyArray<{ component?: unknown }>; component?: unknown } | undefined {
+interface LayoutNode {
+  type?: unknown;
+  entries?: ReadonlyArray<{ component?: unknown }>;
+  component?: unknown;
+}
+
+function layoutNodeOf(value: unknown): LayoutNode | undefined {
   if (value === null || typeof value !== "object") return undefined;
   const read = (value as Record<symbol, unknown>)[LAYOUT_NODE];
   if (typeof read !== "function") return undefined;
   const node: unknown = read.call(value);
-  return isRecord(node) ? (node as { entries?: ReadonlyArray<{ component?: unknown }>; component?: unknown }) : undefined;
+  // SAFETY: the layout protocol's node is `{ type, entries?, component? }` (`pi-tui`
+  // `layout-node.d.ts`); every member this module reads is re-validated at the point of use.
+  return isRecord(node) ? (node as LayoutNode) : undefined;
 }
 
 /**
@@ -204,15 +256,61 @@ function findConversation(tui: Record<string, unknown>): ConversationFound {
   return primary;
 }
 
+/** The component name each surface reports when its wrapper lands. */
+const SURFACE_COMPONENT: Record<PaintSurface, "chat" | "rail"> = {
+  conversation: "chat",
+  rail: "rail",
+};
+
+/**
+ * Find the rail component behind `tui`: the child of the rail `ScrollView` in the host's layout tree
+ * (`lib/shell-sidebar-layout.ts:486-499`, `pi-tui/dist/components/scroll-view.js:191-192`).
+ *
+ * The tree is walked by SHAPE, not by index into the root: the root's layout node is a `vstack`
+ * whose entries include the `hstack` host, and that hstack is `[conversation, rail ScrollView]`
+ * (`lib/shell-sidebar-layout.ts:490-497`). A second entry qualifies only when its own layout node is
+ * a `scroll` AND the component that node reports has a `render`, so neither the transcript's scroll
+ * view nor an unrelated stack can be mistaken for the rail.
+ */
+function findRail(tui: Record<string, unknown>): ConversationFound {
+  const root = tui.layoutRoot;
+  if (root === undefined) return { found: false, outcome: "no-layout-root" };
+  const scroll = findRailScroll(layoutNodeOf(root), 0);
+  if (scroll === undefined) return { found: false, outcome: "no-sidebar" };
+  const rail = layoutNodeOf(scroll)?.component;
+  if (!isRecord(rail) || typeof rail.render !== "function") {
+    return { found: false, outcome: "no-rail" };
+  }
+  // SAFETY: `render` is verified callable above, and it is the only member this module reads; the
+  // rail's other fields (`digest`, `cardGroups`, `surface`, ...) stay on the host's own object
+  // because the wrapper replaces only `render`.
+  return { found: true, component: rail as unknown as Renderable };
+}
+
+/** The rail `ScrollView` of the host's `hstack`, found in the small tree the layout root publishes. */
+function findRailScroll(node: LayoutNode | undefined, depth: number): Record<string, unknown> | undefined {
+  if (node === undefined || depth > 3) return undefined;
+  if (node.type === "hstack") {
+    // entries[0] is the conversation's host, entries[1] the rail (`lib/shell-sidebar-layout.ts:493-496`).
+    const candidate = node.entries?.[1]?.component;
+    if (isRecord(candidate) && layoutNodeOf(candidate)?.type === "scroll") return candidate;
+  }
+  for (const entry of node.entries ?? []) {
+    const found = findRailScroll(layoutNodeOf(entry.component), depth + 1);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
 /** Wrap one component, once, with a marker that certifies the exact function installed. */
-function wrapConversation(component: Renderable): InstallCardStyleResult {
+function wrapComponent(component: Renderable, surface: PaintSurface): InstallCardStyleResult {
   const current = component.render;
   // SAFETY: a component is an object (verified by `isRecord` before it gets here) and the marker is
   // the only symbol-keyed property this module writes on it, so reading it through a widened record
   // is exact.
   const marked = component as unknown as Record<symbol, unknown>;
   if (Object.hasOwn(component, TRANSFORM_WRAPPED) && marked[TRANSFORM_WRAPPED] === current) {
-    return { installed: true, outcome: "already-wrapped", component: "chat" };
+    return { installed: true, outcome: "already-wrapped", component: SURFACE_COMPONENT[surface] };
   }
 
   const state = wiringState();
@@ -222,9 +320,16 @@ function wrapConversation(component: Renderable): InstallCardStyleResult {
     const lines = current.call(component, width);
     if (wiringState().generation !== generation) return lines;
     if (!Array.isArray(lines)) return lines;
-    // SAFETY: `Array.isArray` just proved this is the host's own `string[]`; `transformCardLines`
-    // only ever reads it and returns either that instance or a new array of strings.
-    return transformCardLines(lines as string[], width);
+    // SAFETY: `Array.isArray` just proved this is the host's own `string[]`; the card-style
+    // transformer and the transform pipeline only ever read it and return either that instance or a
+    // new array of strings.
+    const rows = lines as string[];
+    // R1: ONE repaint for every surface. The rail stops after the card style — the registered
+    // transcript transforms belong to the conversation, and a plugin's conversation rows must never
+    // be handed the rail.
+    return surface === "conversation"
+      ? applyTransforms(transformCardLines(rows, width, "conversation"), width)
+      : transformCardLines(rows, width, "rail");
   };
 
   component.render = wrapper;
@@ -236,10 +341,10 @@ function wrapConversation(component: Renderable): InstallCardStyleResult {
   // Reconfiguring a component we already wrapped (a foreign rebind kept the marker but replaced
   // `render`) replaces the record instead of adding a second one.
   const previous = state.wrapped.findIndex((record) => record.component === component);
-  const record: WrappedRecord = { component, original: current, wrapper };
+  const record: WrappedRecord = { component, original: current, wrapper, surface };
   if (previous === -1) state.wrapped.push(record);
   else state.wrapped[previous] = record;
-  return { installed: true, outcome: "wrapped", component: "chat" };
+  return { installed: true, outcome: "wrapped", component: SURFACE_COMPONENT[surface] };
 }
 
 /**
@@ -251,28 +356,66 @@ function wrapConversation(component: Renderable): InstallCardStyleResult {
  * inside the host's widget factory, where an exception would take the sidebar and the rows with it.
  */
 export function installCardStyleTransform(tui: unknown): InstallCardStyleResult {
+  const result = attemptInstall(tui, "conversation");
   const state = wiringState();
-  const result = attemptInstall(tui);
   state.lastOutcome = result.outcome;
   if (result.reason === undefined) delete state.lastReason;
   else state.lastReason = result.reason;
   return result;
 }
 
-function attemptInstall(tui: unknown): InstallCardStyleResult {
-  if (!isRecord(tui)) return { installed: false, outcome: "no-tui" };
+/**
+ * Attach the same transform to the host's rail component (R1). Called from the widget factory, and
+ * re-attempted by `refreshCardStyleSurfaces()` because the host's fullscreen layout may not be
+ * mounted at the moment the factory runs — a reported outcome, never a timer.
+ */
+export function installRailCardStyleTransform(tui: unknown): InstallCardStyleResult {
+  const result = attemptInstall(tui, "rail");
+  const state = wiringState();
+  state.lastRailOutcome = result.outcome;
+  if (result.reason === undefined) delete state.lastRailReason;
+  else state.lastRailReason = result.reason;
+  return result;
+}
+
+/**
+ * Re-attempt every surface whose repaint path was not reached, against the `tui` the bridge captured.
+ *
+ * Not a retry loop and not a poll: this runs exactly once per bridge-owned write, at the moment that
+ * write needs its surface repainted. The host's rail is mounted by the time a user can open the
+ * customize menu, which is why that moment is the reliable one; when even then no rail is reachable,
+ * the outcome stays recorded for `/bridge-status`.
+ */
+export function refreshCardStyleSurfaces(): void {
+  const tui = getRepaintHost();
+  if (tui === undefined) return;
+  // Re-attempting an attached surface is free (`already-wrapped`), and it keeps a reloaded host's
+  // new component wrapped without another entry point.
+  installCardStyleTransform(tui);
+  installRailCardStyleTransform(tui);
+}
+
+function attemptInstall(tui: unknown, surface: PaintSurface): InstallCardStyleResult {
+  if (!isRecord(tui)) {
+    recordSurfaceReach(surface, { reached: false, reason: "no-tui" });
+    return { installed: false, outcome: "no-tui" };
+  }
+  let result: InstallCardStyleResult;
   try {
-    const found = findConversation(tui);
-    if (!found.found) return { installed: false, outcome: found.outcome };
-    return wrapConversation(found.component);
+    const found = surface === "conversation" ? findConversation(tui) : findRail(tui);
+    result = found.found
+      ? wrapComponent(found.component, surface)
+      : { installed: false, outcome: found.outcome };
   } catch (error) {
     // A host accessor that throws is a shape problem, not a crash: report it and stay inert.
-    return {
+    result = {
       installed: false,
       outcome: "wrong-shape",
       reason: error instanceof Error ? error.message : String(error),
     };
   }
+  recordSurfaceReach(surface, result.installed ? { reached: true } : { reached: false, reason: result.outcome });
+  return result;
 }
 
 /**

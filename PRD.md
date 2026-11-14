@@ -54,14 +54,15 @@ behind the adapter.
 | R7 | A diagnostics command reports providers, active backend, last capture outcome and last failures. | `/bridge-status` | Implemented as `/bridge-status`; formatter and entry tested, including store problems and duplicate settings from the last menu build |
 | R8 | Composition is stateless; persistence is the plugin's, with an optional namespaced store helper. | `createStore`, [docs/state.md](docs/state.md) | Implemented; `createStore` tested against temporary directories. One documented exception: a sidebar section's visibility is bridge-owned (see R12) |
 | R9 | `registerSection(section)` adds a card to gentle-shell's sidebar and returns a disposer that removes it, with no extra step from the plugin. | `registerSection`, section shape | Implemented; end-to-end over the public API against the fake rail, never in a real TUI |
-| R10 | Each registered section automatically contributes two consecutive rows to `Sections` (its title, `shown`/`hidden`), reading and persisting the same value the rail renders. | Automatic toggle rows | Implemented; the menu, the persistence file and the next rail frame are asserted together — against the fake host and fake rail |
+| R10 | Each registered section automatically contributes two consecutive rows to `Sections` (a readable label derived from its title or an explicit `rowLabel`, plus `shown`/`hidden`), reading and persisting the same value the rail renders; the id stays internal and never appears in a row. | Automatic toggle rows | Implemented; the menu, the persistence file and the next rail frame are asserted together — against the fake host and fake rail — including the label derivation and the collision rule |
 | R11 | A hidden section is neither rendered nor built (`lines()`/`meta()` not called); a throwing section loses only its own body and is reported. | S7 failure isolation | Implemented; pinned with call counters and `/bridge-status` section failures, against the fake host |
 | R12 | Section visibility persists in the bridge's own store, not the host's `visual-customization.json`, which rejects unknown keys. | `bridge-sections.json`, [docs/state.md](docs/state.md) | Implemented; the document shape is asserted byte-for-byte, and the reason for the separate file is recorded |
 | R13 | `registerCardStyle(style)` accepts `{ id, label, frame: { top, line, bottom }, preview?, order? }`, validates id/label/frame before storing, replaces in place on the same id, and returns a disposer that removes exactly that style. | `registerCardStyle`, frame contract | Implemented; validation, ordering, replacement and disposal are unit-tested, and the published-API path is exercised end to end |
 | R14 | A registered style joins the host's own `Card style` line (spliced in place, one coalesced line, the host's values untouched), with a `Bridge → card style` fallback line only when the host's line is not reachable; the selection is bridge-owned state, pressing a host value returns to native rendering, and a disposed style degrades to `native`/`missing`. | `bridge-card-style.json`, [docs/contract.md](docs/contract.md) §12 | Implemented; one bullet at a time, the way back, the fallback line and the missing-selection degrade are pinned against the fake host and reported by `/bridge-status` |
 | R15 | When a registered style is selected, the bridge repaints the conversation frames the host already drew — detection, title/hint extraction, one style at a time, width clipping, and a pass-through for `native`, for a missing selection and for any throw — and reports the frame outcome. | [docs/architecture.md](docs/architecture.md) §14 | Implemented; proven against a fake conversation built from real `shell-card.ts` output, plus the end-to-end suite through the public API. A downstream post-processor can override the frame, which `/bridge-status` states |
+| R16 | `registerTransform(transform)` accepts `{ id, order?, transform(lines, ctx) }`, validates the id and the function before storing, replaces in place on the same id and returns a disposer that removes exactly that transform; the conversation wrapper runs the card-style repaint first and then every transform in order, each receiving the previous output, clipping the result to the host width, isolating a throw or a non-lines return to that transform, and returning the host's own array when nothing changed; `/bridge-status` lists the pipeline in order with the last frame's outcome per transform. | `registerTransform`, [docs/contract.md](docs/contract.md) §13 | Implemented; ordering, replacement, disposal, identity, clipping, throw isolation and the status block are unit-tested, and the worked example's toggle is proven to restyle cards already on screen, with past and new cards byte-identical |
 
-Fifteen requirements are implemented and covered by the 328-test `node --test` suite, 26 of them
+Sixteen requirements are implemented and covered by the 367-test `node --test` suite, 26 of them
 end to end through the public API and the real extension entry. What is proven and what is not:
 
 - **Proven against a fake host.** The row side drives a fake menu host that models
@@ -70,7 +71,10 @@ end to end through the public API and the real extension entry. What is proven a
 - **Proven against a fake conversation.** The card-style side drives a fake transcript built from
   real `gentle-shell/lib/shell-card.ts` output at a fixed width, plus a fake `tui` that models Pi's
   documented tree: detection, repaint, clipping, the pass-through paths, the disposal degrade, the
-  host line splice, the fallback line and the generation guard.
+  host line splice, the fallback line and the generation guard. The transform pipeline drives the
+  same conversation through the real wrapper: ordering, identity, clipping, per-transform throw
+  isolation and the `/bridge-status` block — plus the worked example's `Bash rendering` toggle, end
+  to end, where a card drawn before the switch and one drawn after it come out byte-identical.
 - **Proven against a fake rail.** The sidebar side drives a fake terminal that models
   `lib/shell-sidebar.ts`'s state symbol and `parts` map plus the layout's card frame
   (`lib/shell-sidebar-layout.ts:35-44,392-410`): section cards, ordering, the `Sections` rows,
@@ -84,7 +88,7 @@ end to end through the public API and the real extension entry. What is proven a
   tests.
 - **The card-style repaint has not been seen in a live TUI.** It depends on the host's `float`
   grammar and on Pi's component tree; both are cited, neither is observed at runtime here, and a
-  downstream post-processor (cinlodev) can erase the frame — reported, not prevented.
+  downstream post-processor can erase the frame — reported, not prevented.
 
 ## Success criteria
 
@@ -98,6 +102,9 @@ end to end through the public API and the real extension entry. What is proven a
 - A plugin can add a card style with one call: the value appears on the host's own `Card style`
   line, selecting it repaints every card the host drew, and selecting a host value or losing the
   plugin returns the conversation to the host's rendering.
+- A plugin can apply a rendering choice to the WHOLE conversation with one call: the choice reaches
+  cards drawn before the switch, not only the next one, and the worked example proves that a bash
+  card drawn before and one drawn after are byte-identical.
 - The reference probe's observed result reproduces through the package against the fake host
   that models the real call chain: a `Cards` category showing the injected line
   `Card bash   ● activity ○ output`. It has not yet been re-run in the real TUI through the

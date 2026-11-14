@@ -42,30 +42,37 @@ const labelsProvider = (id: string, category: string, labels: string[]): RowProv
 interface FakeApi {
   api: BridgeExtensionApi;
   sessionHandlers: BridgeSessionHandler[];
+  shutdownHandlers: BridgeSessionHandler[];
   commands: Array<{ name: string; description?: string; handler: BridgeCommandHandler }>;
 }
 
 const createFakeApi = (): FakeApi => {
   const sessionHandlers: BridgeSessionHandler[] = [];
+  const shutdownHandlers: BridgeSessionHandler[] = [];
   const commands: Array<{ name: string; description?: string; handler: BridgeCommandHandler }> = [];
   const api: BridgeExtensionApi = {
     on(event, handler) {
-      assert.equal(event, "session_start", "the extension only listens to session_start");
-      sessionHandlers.push(handler);
+      if (event === "session_start") {
+        sessionHandlers.push(handler);
+        return;
+      }
+      assert.equal(event, "session_shutdown", `not a session event: ${String(event)}`);
+      shutdownHandlers.push(handler);
     },
     registerCommand(name, command) {
       commands.push({ name, description: command.description, handler: command.handler });
     },
   };
-  return { api, sessionHandlers, commands };
+  return { api, sessionHandlers, shutdownHandlers, commands };
 };
 
-test("registers exactly one session_start handler and one command", () => {
+test("registers one session_start handler, one session_shutdown handler and one command", () => {
   const fake = createFakeApi();
 
   gentleShellBridge(fake.api);
 
   assert.equal(fake.sessionHandlers.length, 1);
+  assert.equal(fake.shutdownHandlers.length, 1, "shutdown is how the INTEGRATIONS row is cleared");
   assert.equal(fake.commands.length, 1);
   assert.equal(fake.commands[0].name, STATUS_COMMAND);
   assert.equal(typeof fake.commands[0].description, "string");

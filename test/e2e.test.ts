@@ -28,6 +28,8 @@ import {
   type Store,
   type StoreProblem,
   type StoreProblemKind,
+  type TransformContext,
+  type TranscriptTransform,
 } from "../src/index.ts";
 // The real Pi entry: armed and commanded exactly as Pi loads it.
 import gentleShellBridge, {
@@ -127,13 +129,13 @@ const armAndBuild = (host: FakeHost): Entry => {
 };
 
 test("two providers reach one menu build through registerRows, in subscription order", () => {
-  registerRows(labels("first", "Cards", ["First: a"]));
-  registerRows(labels("second", "Banner", ["Second: b"]));
+  registerRows(labels("first", "Cards", ["First a"]));
+  registerRows(labels("second", "Banner", ["Second b"]));
   const host = createFakeHost();
 
   armAndBuild(host);
 
-  assert.deepEqual(host.rendered().slice(4), ["First: a", "Second: b"]);
+  assert.deepEqual(host.rendered().slice(4), ["First a", "Second b"]);
   assert.deepEqual(
     host.liveRows().slice(4).map((row) => row.category),
     ["Cards", "Banner"],
@@ -141,7 +143,7 @@ test("two providers reach one menu build through registerRows, in subscription o
 });
 
 test("a throwing provider loses only its rows, the menu still renders, and status records it", () => {
-  registerRows(labels("before", "Cards", ["Before: ok"]));
+  registerRows(labels("before", "Cards", ["Before ok"]));
   registerRows({
     id: "boom",
     category: "Banner",
@@ -149,12 +151,12 @@ test("a throwing provider loses only its rows, the menu still renders, and statu
       throw new Error("e2e provider exploded");
     },
   });
-  registerRows(labels("after", "Layout", ["After: ok"]));
+  registerRows(labels("after", "Layout", ["After ok"]));
   const host = createFakeHost();
 
   const entry = armAndBuild(host);
 
-  assert.deepEqual(host.rendered().slice(4), ["Before: ok", "After: ok"]);
+  assert.deepEqual(host.rendered().slice(4), ["Before ok", "After ok"]);
   const status = printStatus(entry);
   assert.match(status, /^last failures: 1$/m);
   assert.match(status, /boom: e2e provider exploded \(rows dropped\)/);
@@ -268,9 +270,9 @@ test("S8 end to end: action persists first and the repaint shows the new bullet"
   const store = createStore("e2e-toggle");
   const toggle = (value: string): CustomizeRow => ({
     category: "Banner",
-    label: () => "Loon: banner source",
+    label: () => "Loon banner source",
     choice: {
-      setting: "Loon → Banner source",
+      setting: "Loon banner source",
       value,
       current: () => store.get("bannerSource", "activity") === value,
     },
@@ -287,7 +289,7 @@ test("S8 end to end: action persists first and the repaint shows the new bullet"
   armThroughEntry(host.ui);
   host.buildMenu();
 
-  assert.deepEqual(host.toggleLines(), ["Loon → Banner source ● activity ○ output"]);
+  assert.deepEqual(host.toggleLines(), ["Loon banner source ● activity ○ output"]);
 
   await host.pressRow((row) => row.choice?.value === "output");
 
@@ -295,7 +297,7 @@ test("S8 end to end: action persists first and the repaint shows the new bullet"
   assert.deepEqual(
     host.toggleLines(),
     // Row order is fixed by the menu; only the rendered bullet moves onto the new value.
-    ["Loon → Banner source ○ activity ● output"],
+    ["Loon banner source ○ activity ● output"],
     "the same menu repaints onto the new value, with no second build",
   );
   assert.equal(host.factoryCallCount(), 1, "no second menu build was needed");
@@ -303,14 +305,17 @@ test("S8 end to end: action persists first and the repaint shows the new bullet"
 
 test("the public entry exports exactly the contract surface and no test seams", () => {
   assert.deepEqual(Object.keys(publicApi).sort(), [
+    "BRIDGE_READY_EVENT",
     "STORE_SCHEMA_VERSION",
     "VERSION",
     "bridgeApi",
     "createStore",
     "isBridgeApi",
+    "onBridgeApi",
     "registerCardStyle",
     "registerRows",
     "registerSection",
+    "registerTransform",
   ]);
   for (const seam of [
     "installCardStyleTransform",
@@ -346,6 +351,11 @@ test("the public entry exports exactly the contract surface and no test seams", 
     "resetBridgeApiForTests",
     "publishBridgeApi",
     "BRIDGE_API_KEY",
+    "snapshotTransforms",
+    "resetTransformsForTests",
+    "applyTransforms",
+    "getTransformFrameOutcomes",
+    "resetTransformPipelineForTests",
   ]) {
     assert.equal(seam in publicApi, false, `${seam} must not be public`);
   }
@@ -390,9 +400,23 @@ test("the documented values and types are reachable from the public entry", () =
     defaultVisible: true,
     order: 1,
   };
+  // The transform surface: one function over the rows, plus the context it receives.
+  const transform: TranscriptTransform = {
+    id: "api.transform",
+    order: 2,
+    transform: (lines: readonly string[], transformCtx: TransformContext) => [
+      ...lines,
+      String(transformCtx.width),
+    ],
+  };
 
   assert.equal(provider.rows(context).length, 0);
   assert.equal(typeof publicApi.registerCardStyle, "function", "the entry exports the registration");
+  assert.equal(
+    typeof publicApi.registerTransform,
+    "function",
+    "and the transcript-transform registration",
+  );
   assert.equal(cardStyle.frame.top({ width: 1, title: "t" }), "t");
   assert.equal(cardStyle.frame.line({ text: "x", width: 1, first: true }), "xtrue");
   assert.equal(cardStyle.frame.bottom({ width: 7 }), "7");
@@ -406,5 +430,6 @@ test("the documented values and types are reachable from the public entry", () =
   assert.equal(STORE_SCHEMA_VERSION, 1);
   assert.equal(section.title, "API");
   assert.equal(section.lines(context).length, 1);
-  assert.equal(VERSION, "0.2.0");
+  assert.deepEqual(transform.transform(["a"], { width: 3 }), ["a", "3"]);
+  assert.equal(VERSION, "0.3.0");
 });

@@ -1,6 +1,6 @@
 /**
- * The process-global bus: providers (docs/architecture.md §7, docs/contract.md §1, §5) and
- * sidebar sections (the sidebar spec's S1, S2).
+ * The process-global bus: providers (docs/architecture.md §7, docs/contract.md §1, §5), sidebar
+ * sections (the sidebar spec's S1, S2) and transcript transforms (this feature's S1).
  *
  * Pi loads every extension through its own jiti loader with `moduleCache: false`, so module
  * scope is per-copy and cannot hold shared state. The registration lists therefore live on
@@ -11,7 +11,8 @@
  * Sections share this slot rather than taking one of their own: both surfaces are registrations
  * that must be process-global for the same reason, and one slot means one place to read (and to
  * reset) what this process has contributed. `bus()` grows the `sections` list on a slot created
- * by a copy that predates it, so a provider list already in flight is kept.
+ * by a copy that predates it, so a provider list already in flight is kept. The same holds for
+ * `cardStyles` and `transforms`.
  *
  * The key is the bridge's own; it is NOT the hook registry key
  * `Symbol.for("gentle-pi.customize-row-providers")`, which belongs to the host (S4/T5), and it
@@ -23,7 +24,15 @@
  */
 
 import { HOST_CARD_STYLE_VALUES, RESERVED_CARD_STYLE_IDS } from "./card-style-line.ts";
-import type { CardStyleRegistration, RowProvider, SidebarSection } from "./types.ts";
+import { attributeRegistration } from "./plugin-lines.ts";
+import { cardStyleRowLabelText, sectionRowLabelText } from "./row-labels.ts";
+import { rejectRowName, clearRowNameRejections } from "./row-names.ts";
+import type {
+  CardStyleRegistration,
+  RowProvider,
+  SidebarSection,
+  TranscriptTransform,
+} from "./types.ts";
 
 /** Stable process-global slot for the bridge's registration lists. */
 const BUS_KEY = Symbol.for("gentle-shell-bridge.providers");
@@ -40,6 +49,10 @@ interface CardStyleEntry {
   style: CardStyleRegistration;
 }
 
+interface TransformEntry {
+  transform: TranscriptTransform;
+}
+
 interface BusState {
   /** Providers in subscription order; one entry per live `id`. */
   entries: BusEntry[];
@@ -47,6 +60,8 @@ interface BusState {
   sections: SectionEntry[];
   /** Card styles in registration order; one entry per live `id`. Ordering: `snapshotCardStyles`. */
   cardStyles: CardStyleEntry[];
+  /** Transcript transforms in registration order; ordering happens in `snapshotTransforms`. */
+  transforms: TransformEntry[];
 }
 
 /** The slot shape on `globalThis`; keeps the cast in one place. */
@@ -72,9 +87,12 @@ function bus(): BusState {
     // Same for card styles: an older copy's bus gains the list instead of being replaced, so a
     // style registered through one copy is visible to every other (S12, determinism).
     if (!Array.isArray(existing.cardStyles)) existing.cardStyles = [];
+    // And for transforms: a copy that predates the pipeline keeps its live registrations and gains
+    // the list, so the wrapper another copy installed sees what this copy registered.
+    if (!Array.isArray(existing.transforms)) existing.transforms = [];
     return existing;
   }
-  const created: BusState = { entries: [], sections: [], cardStyles: [] };
+  const created: BusState = { entries: [], sections: [], cardStyles: [], transforms: [] };
   host[BUS_KEY] = created;
   return created;
 }
@@ -90,6 +108,13 @@ function bus(): BusState {
  *   disposer twice does nothing the second time.
  */
 export function registerRows(provider: RowProvider): () => void {
+  // Attribution is a wrapper, not part of the store: the plugin gets ONE INTEGRATIONS line from any
+  // number of registrations (`./plugin-lines.ts`, I1), and `registerRowsStored` keeps doing exactly
+  // what it did — including throwing a plugin's invalid id back at it.
+  return attributeRegistration("rows", provider, undefined, () => registerRowsStored(provider));
+}
+
+function registerRowsStored(provider: RowProvider): () => void {
   const state = bus();
   const entry: BusEntry = { provider };
   const index = state.entries.findIndex((candidate) => candidate.provider.id === provider.id);
@@ -167,8 +192,36 @@ function assertSectionId(id: unknown): asserts id is string {
   assertRegistrationId("section", id);
 }
 
+/**
+ * `rowLabel`, when present, is text a human reads in the menu, so an empty one is a plugin bug and
+ * is rejected before anything is stored — the same discipline as the id.
+ */
+function assertRowLabel(kind: string, id: string, rowLabel: unknown): void {
+  if (rowLabel === undefined) return;
+  if (typeof rowLabel !== "string" || rowLabel.trim() === "") {
+    throw new Error(
+      `gentle-shell-bridge: invalid ${kind} rowLabel for ${JSON.stringify(id)}: it must be a ` +
+        "non-empty string. It is the text a user reads in the menu; the id stays internal. Omit it " +
+        "to let the bridge derive a label from the visible text instead.",
+    );
+  }
+}
+
 export function registerSection(section: SidebarSection): () => void {
+  return attributeRegistration("section", section, "section", () => registerSectionStored(section));
+}
+
+function registerSectionStored(section: SidebarSection): () => void {
   assertSectionId(section.id);
+  assertRowLabel("section", section.id, section.rowLabel);
+  // The label is what a user reads, so it obeys the row-name shape before anything is stored (N8):
+  // `Music: now playing` is rejected here, reported by `/bridge-status`, and never rewritten. A
+  // DERIVED label cannot fail this check — derivation applies the same shape (`./row-labels.ts`).
+  if (rejectRowName("section", section.id, "row label", sectionRowLabelText(section))) {
+    return () => {};
+  }
+  // The name in force now conforms, so a record left by the name it replaced is no longer true.
+  clearRowNameRejections("section", section.id);
   const state = bus();
   const entry: SectionEntry = { section };
   const index = state.sections.findIndex((candidate) => candidate.section.id === section.id);
@@ -303,6 +356,12 @@ function assertCardStyleLabelIsDistinct(style: CardStyleRegistration): void {
  *   never half-registers and never reaches a menu build.
  */
 export function registerCardStyle(style: CardStyleRegistration): () => void {
+  return attributeRegistration("card style", style, "card style", () =>
+    registerCardStyleStored(style),
+  );
+}
+
+function registerCardStyleStored(style: CardStyleRegistration): () => void {
   assertRegistrationId("card style", style.id);
   if (RESERVED_CARD_STYLE_IDS.has(style.id)) {
     throw new Error(
@@ -313,6 +372,13 @@ export function registerCardStyle(style: CardStyleRegistration): () => void {
   }
   assertCardStyleLabel(style.id, style.label);
   assertCardStyleLabelIsDistinct(style);
+  assertRowLabel("card style", style.id, style.rowLabel);
+  // Same rule, same place in the sequence: a row label that breaks the row-name shape is rejected
+  // before the style is stored, and `/bridge-status` reports the string and the rule (N8).
+  if (rejectRowName("card style", style.id, "row label", cardStyleRowLabelText(style))) {
+    return () => {};
+  }
+  clearRowNameRejections("card style", style.id);
   assertCardFrame(style.id, style.frame);
 
   const state = bus();
@@ -361,4 +427,102 @@ export function snapshotCardStyles(): CardStyleRegistration[] {
  */
 export function resetCardStylesForTests(): void {
   bus().cardStyles.length = 0;
+}
+
+/**
+ * A transform's `order`, when it has one that can be sorted on. `NaN`, `Infinity` and a missing
+ * value are not sort keys: a transform with one of those keeps its registration position.
+ */
+function sortableTransformOrder(transform: TranscriptTransform): number | undefined {
+  return typeof transform.order === "number" && Number.isFinite(transform.order)
+    ? transform.order
+    : undefined;
+}
+
+/**
+ * The transform member must be exactly what the pipeline calls, checked before anything is stored:
+ * a registration the first frame would throw on is a plugin bug, not a frame's problem.
+ */
+function assertTransformFunction(id: string, transform: unknown): void {
+  if (typeof transform !== "function") {
+    throw new Error(
+      `gentle-shell-bridge: invalid transform ${JSON.stringify(id)}: transform must be a function `
+        + `of (lines, ctx) that returns the lines to draw. A transform rewrites rows; the bridge `
+        + `clips them, isolates its throw and reports it in /bridge-status (S1).`,
+    );
+  }
+}
+
+/**
+ * Register a transcript transform and return a disposer that removes exactly that transform (S1).
+ *
+ * Same entry discipline as providers, sections and card styles, because a plugin author should not
+ * have to learn two:
+ *
+ * - A second registration with an existing `id` replaces the previous one IN PLACE, so the
+ *   transform keeps the position its registration earned (ordering is computed in
+ *   `snapshotTransforms`, so a replacement that changes `order` moves the transform on the next
+ *   read). Two plugins cannot both own `loon.restyle`: the later registration wins.
+ * - The returned disposer removes only the registration it created: after a same-id replacement the
+ *   replaced transform's disposer is a no-op instead of removing the replacement, and calling a
+ *   disposer twice does nothing the second time.
+ * - Validation happens BEFORE anything is stored (id, `transform`), so a rejected transform never
+ *   half-registers and never reaches a frame.
+ */
+export function registerTransform(transform: TranscriptTransform): () => void {
+  return attributeRegistration("transform", transform, undefined, () =>
+    registerTransformStored(transform),
+  );
+}
+
+function registerTransformStored(transform: TranscriptTransform): () => void {
+  assertRegistrationId("transform", transform.id);
+  assertTransformFunction(transform.id, transform.transform);
+
+  const state = bus();
+  const entry: TransformEntry = { transform };
+  const index = state.transforms.findIndex((candidate) => candidate.transform.id === transform.id);
+  if (index === -1) state.transforms.push(entry);
+  else state.transforms[index] = entry;
+
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    const current = state.transforms.indexOf(entry);
+    if (current !== -1) state.transforms.splice(current, 1);
+  };
+}
+
+/**
+ * Every registered transform, in pipeline order (S2): transforms with an `order` first, ascending,
+ * then those without, in registration order.
+ *
+ * Both halves are computed from the registration list, never from `Map` iteration: the sort is on
+ * explicit keys with the registration index as the tiebreak, so equal `order`s and unordered
+ * transforms are deterministic across sessions and across package copies. The array is a fresh
+ * copy, so a frame iterating it sees a stable list even if a transform registers or disposes
+ * mid-frame.
+ */
+export function snapshotTransforms(): TranscriptTransform[] {
+  const ordered: Array<{ transform: TranscriptTransform; order: number; index: number }> = [];
+  const rest: TranscriptTransform[] = [];
+
+  bus().transforms.forEach((entry, index) => {
+    const order = sortableTransformOrder(entry.transform);
+    if (order === undefined) rest.push(entry.transform);
+    else ordered.push({ transform: entry.transform, order, index });
+  });
+
+  ordered.sort((a, b) => a.order - b.order || a.index - b.index);
+  return [...ordered.map((entry) => entry.transform), ...rest];
+}
+
+/**
+ * Test-only seam for the transform list only, so a transform test and a section test do not clear
+ * each other's registrations. Like `resetBusForTests`, it is deliberately not re-exported from
+ * `src/index.ts`.
+ */
+export function resetTransformsForTests(): void {
+  bus().transforms.length = 0;
 }

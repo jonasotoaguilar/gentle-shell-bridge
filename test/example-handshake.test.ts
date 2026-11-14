@@ -20,9 +20,14 @@ import {
   publishBridgeApi,
   resetBridgeApiForTests,
 } from "../src/api.ts";
-import { resetBusForTests, resetSectionsForTests, snapshotProviders, snapshotSections } from "../src/bus.ts";
+import { armBridge } from "../src/arm.ts";
+import { installCardStyleRows } from "../src/card-style-rows.ts";
+import { HOST_CARD_STYLE_SETTING } from "../src/card-style-line.ts";
+import { resetBusForTests, resetSectionsForTests, snapshotProviders, snapshotSections, snapshotTransforms } from "../src/bus.ts";
+import { installSectionRows } from "../src/sections-rows.ts";
 import { resetStoreStateForTests } from "../src/store.ts";
-import type { CustomizeRow, InlineHelpers } from "../src/types.ts";
+import type { CustomizeRow, InlineHelpers, SectionRow } from "../src/types.ts";
+import { createFakeHost } from "./fake-host.ts";
 
 const hostSlot = (): Record<symbol, unknown> => globalThis as unknown as Record<symbol, unknown>;
 
@@ -158,7 +163,11 @@ test("with no bridge installed the example adds nothing and says so once", async
 
   assert.deepEqual(captured.writes, [], "nothing lands in the terminal");
   assert.equal(sessionHandlers.length, 1, "a session_start handler carries the answer");
-  assert.equal(registrations(), 1, "the bash renderer is still claimed: that half needs no bridge");
+  assert.equal(
+    registrations(),
+    0,
+    "the example claims no tool renderer: the bridge transform is the single owner",
+  );
 
   const { ui, calls } = notifySurface();
   sessionHandlers[0]({}, { hasUI: true, ui });
@@ -231,7 +240,7 @@ test("the example's session handler does nothing without a UI, then registers on
   assert.ok(snapshotSections().some((registered) => registered.id === "bash-card.status"));
 });
 
-test("a Pi without registerToolRenderer reports it through notify, not the terminal", async () => {
+test("a Pi without registerToolRenderer is enough: the example claims no renderer slot", async () => {
   publishBridgeApi();
   const sessionHandlers: SessionHandler[] = [];
   const pi: FakePi = {
@@ -250,11 +259,15 @@ test("a Pi without registerToolRenderer reports it through notify, not the termi
   assert.deepEqual(captured.writes, []);
   const { ui, calls } = notifySurface();
   sessionHandlers[0]({}, { hasUI: true, ui });
-  assert.equal(calls.length, 1);
-  assert.match(calls[0][0], /no pi\.registerToolRenderer/u);
+  assert.deepEqual(calls, [], "no notice: the example needs no renderer slot to render bash");
   assert.ok(
     providerById("bash-card-example.rendering") !== undefined,
-    "the bridge half still registers",
+    "the bridge surfaces register on any Pi",
+  );
+  assert.deepEqual(
+    snapshotTransforms().map((transform) => transform.id),
+    ["bash-card-example.bash-cards"],
+    "and the toggle's rendering is a transform, not a resolver",
   );
 });
 
@@ -300,7 +313,16 @@ test("with the API present at session_start the example registers rows, store an
   assert.ok(exampleSection !== undefined, "the example's section registered itself");
   assert.equal(exampleSection.meta?.(sectionContext()), "tool", "and reads the value just written");
   const lines = exampleSection.lines(sectionContext());
-  assert.deepEqual(lines, ["rendering  tool", "renderer   registered"]);
+  // The first row is STRUCTURED (N10–N12): a glyph, the value in the dimmer meta column, a tone and
+  // a click that switches the mode. The second stays a plain string and carries no action, which is
+  // what makes it inert.
+  const row = lines[0] as SectionRow;
+  assert.equal(row.label, "rendering");
+  assert.equal(row.meta, "tool");
+  assert.equal(row.glyph, "◉");
+  assert.equal(row.tone, "accent");
+  assert.equal(typeof row.onClick, "function", "the row is clickable");
+  assert.equal(lines[1], "transform  registered", "a plain string row: inert, no action");
 });
 
 test("two session_start events leave one provider and one section, not two", async () => {
@@ -374,6 +396,66 @@ test("the example's runtime path resolves no module of the bridge", () => {
   );
   assert.equal(/console\./u.test(source), false, "no console write survives in the example");
   assert.match(source, /pi\.on\("session_start"/u, "registration happens in session_start");
+  assert.match(
+    source,
+    /gentle-shell-bridge:ready/u,
+    "and a bridge that loads later is heard on the announcement channel",
+  );
+  assert.match(source, /pi\.events/u, "the channel comes from Pi's own bus, not a module");
+});
+
+test("the example's rows read like host rows, and its ids stay internal", async () => {
+  publishBridgeApi();
+  const { pi, sessionHandlers } = recordingPi();
+  const init = await loadExample("row-labels");
+  init(pi);
+  const { ui } = notifySurface();
+  sessionHandlers[0]({}, { hasUI: true, ui });
+
+  installSectionRows();
+  installCardStyleRows();
+  const host = createFakeHost({
+    rows: [
+      { category: "Cards", label: "Card bash: builtin", action: () => {} },
+      { category: "Cards", label: "Card output: builtin", action: () => {} },
+      {
+        category: "Cards",
+        label: () => "Card style: neon",
+        choice: { setting: HOST_CARD_STYLE_SETTING, value: "neon", current: () => false },
+        action: async () => {},
+      },
+      {
+        category: "Cards",
+        label: () => "Card style: float",
+        choice: { setting: HOST_CARD_STYLE_SETTING, value: "float", current: () => true },
+        action: async () => {},
+      },
+    ],
+  });
+  armBridge(host.ui);
+  host.buildMenu();
+
+  assert.ok(
+    host.toggleLines().includes("bash card ● shown ○ hidden"),
+    `the section reads as a label, not \`Section: bash-card.status\` (${host.toggleLines().join(" | ")})`,
+  );
+  assert.ok(
+    host.toggleLines().includes("Card style ○ neon ● float ○ plain"),
+    "the style's value is its human label",
+  );
+
+  const labelOf = (row: CustomizeRow): string => {
+    const label = row.label;
+    return typeof label === "function" ? label() : (label ?? "");
+  };
+  const sectionRow = host.liveRows().find((row) => row.category === "Sections");
+  assert.equal(labelOf(sectionRow as CustomizeRow), "bash card");
+  const cardStyleRow = host.liveRows().find((row) => row.choice?.value === "plain");
+  assert.equal(labelOf(cardStyleRow as CustomizeRow), "plain");
+
+  const rendered = [...host.rendered(), ...host.toggleLines()].join("\n");
+  assert.equal(/bash-card\./u.test(rendered), false, "no dotted id reaches a row");
+  assert.equal(/Section:/u.test(rendered), false, "no `Section: ` prefix survives");
 });
 
 test("the absent case writes zero bytes to stdout and stderr", () => {

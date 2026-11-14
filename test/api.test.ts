@@ -140,6 +140,7 @@ test("publishing stores one frozen, versioned API object at the stable symbol", 
     "registerCardStyle",
     "registerRows",
     "registerSection",
+    "registerTransform",
     "schema",
     "version",
   ]);
@@ -314,8 +315,8 @@ const installWidgetSurface = (host: FakeHost): void => {
 const armThroughEntry = (host: FakeHost): void => {
   const handlers: BridgeSessionHandler[] = [];
   const pi: BridgeExtensionApi = {
-    on(_event, handler) {
-      handlers.push(handler);
+    on(event, handler) {
+      if (event === "session_start") handlers.push(handler);
     },
     registerCommand() {},
   };
@@ -339,8 +340,8 @@ test("a plugin that registers from session_start renders its section and its Sec
     rows: () => [
       {
         category: "Cards",
-        label: "Loon: banner source",
-        choice: { setting: "Loon → Banner source", value: "on", current: () => true },
+        label: "Loon banner source",
+        choice: { setting: "Loon banner source", value: "on", current: () => true },
         action: () => {},
       },
     ],
@@ -354,11 +355,11 @@ test("a plugin that registers from session_start renders its section and its Sec
 
   assert.deepEqual(cardTitles(), ["FOOTER", "MUSIC"], "the registered section reached the rail");
   assert.deepEqual(cardBody("MUSIC"), ["track  one"]);
-  const toggle = host.toggleLines().find((line) => line.startsWith("Section: loon.music"));
+  const toggle = host.toggleLines().find((line) => line.startsWith("music "));
   assert.ok(toggle !== undefined, "and its toggle reached Sections");
   assert.ok(toggle.includes("● shown") && toggle.includes("○ hidden"));
   assert.ok(
-    host.toggleLines().some((line) => line.startsWith("Loon → Banner source")),
+    host.toggleLines().some((line) => line.startsWith("Loon banner source")),
     "the provider's rows reached the menu too",
   );
 });

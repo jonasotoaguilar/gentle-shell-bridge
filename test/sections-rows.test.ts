@@ -104,7 +104,7 @@ function arm(): FakeHost {
 
 const storePath = (): string => join(configHome, "gentle-shell-bridge", "bridge-sections.json");
 
-test("a section becomes two consecutive Sections rows carrying its title and both values", () => {
+test("a section becomes two consecutive Sections rows carrying its title as a label, and both values", () => {
   registerSection(section("loon.music", { title: "MUSIC" }));
   const host = arm();
 
@@ -112,7 +112,11 @@ test("a section becomes two consecutive Sections rows carrying its title and bot
 
   const injected = host.liveRows().filter((row) => row.category === "Sections");
   assert.equal(injected.length, 2, "exactly one toggle: two values, two rows");
-  assert.equal(injected[0].choice?.setting, "Section: loon.music", "the setting is the section id");
+  assert.equal(
+    injected[0].choice?.setting,
+    "music",
+    "the line's name is the row label, never the section id",
+  );
   assert.equal(injected[0].choice?.setting, injected[1].choice?.setting, "one setting, two values");
   assert.deepEqual(
     injected.map((row) => row.choice?.value),
@@ -121,16 +125,18 @@ test("a section becomes two consecutive Sections rows carrying its title and bot
   );
   assert.deepEqual(
     injected.map((row) => (typeof row.label === "function" ? row.label() : row.label)),
-    ["MUSIC", "MUSIC"],
-    "the label names the section a user is toggling",
+    ["music", "music"],
+    "the label is the title as a human reads it, in the row label and in the setting",
   );
 
   const lines = host.toggleLines();
   assert.equal(lines.length, 1, "one rendered line per section");
-  assert.ok(lines[0].startsWith("Section: loon.music"), "the rendered line is keyed by the section id");
+  assert.ok(lines[0].startsWith("music "), "the rendered line reads as a label");
+  assert.equal(lines[0].includes("Section:"), false, "no prefix is added to the label");
+  assert.equal(lines[0].includes("loon.music"), false, "and the id never appears in the row");
   assert.ok(lines[0].includes("● shown"), "defaultVisible defaults to shown");
   assert.ok(lines[0].includes("○ hidden"));
-  assert.ok(host.rendered().includes("MUSIC"), "the title is what the row reads as");
+  assert.ok(host.rendered().includes("music"), "the label is what the row reads as");
 });
 
 test("toggling persists to the bridge store first, then the host repaints", async () => {
@@ -140,7 +146,7 @@ test("toggling persists to the bridge store first, then the host repaints", asyn
   const invalidationsBefore = host.invalidateCount();
 
   await host.pressRow(
-    (row) => row.choice?.setting === "Section: loon.music" && row.choice.value === "hidden",
+    (row) => row.choice?.setting === "music" && row.choice.value === "hidden",
   );
 
   assert.deepEqual(JSON.parse(readFileSync(storePath(), "utf8")), {
@@ -190,7 +196,7 @@ test("hiding takes effect on the sidebar's next frame, without building the sect
   assert.equal(linesCalls, 1);
 
   await host.pressRow(
-    (row) => row.choice?.setting === "Section: loon.music" && row.choice.value === "hidden",
+    (row) => row.choice?.setting === "music" && row.choice.value === "hidden",
   );
   linesCalls = 0;
 
@@ -208,8 +214,8 @@ test("a section registered later gains rows without re-registering the provider"
 
   assert.deepEqual(
     settingsOf(rowsNow()),
-    ["Section: first", "Section: first", "Section: second", "Section: second"],
-    "rows are built per menu build from the live registry",
+    ["first", "first", "second", "second"],
+    "rows are built per menu build from the live registry, each named by its label",
   );
 });
 
@@ -223,7 +229,7 @@ test("a disposed section loses its rows and its card", async () => {
 
   dispose();
 
-  assert.deepEqual(settingsOf(rowsNow()), ["Section: stays", "Section: stays"]);
+  assert.deepEqual(settingsOf(rowsNow()), ["stays", "stays"]);
   assert.deepEqual(cardTitles(), ["FOOTER", "STAYS"]);
 });
 
@@ -234,16 +240,20 @@ test("two sections with the same id replace each other instead of duplicating", 
   const host = arm();
   host.buildMenu();
 
-  const dupRows = rowsNow().filter((row) => row.choice?.setting === "Section: dup");
+  const dupRows = rowsNow().filter((row) => row.choice?.setting === "second title");
   assert.equal(dupRows.length, 2, "still one toggle for that id");
-  assert.equal(host.toggleLines().filter((line) => line.startsWith("Section: dup")).length, 1);
+  assert.equal(
+    host.toggleLines().filter((line) => line.startsWith("second title")).length,
+    1,
+    "and one line, named by the live title's label",
+  );
 
   assert.deepEqual(cardTitles(), ["FOOTER", "SECOND TITLE", "OTHER"], "one card, the live section");
 
-  // One rendered label per toggle value, so the same title appears twice by design; what matters
-  // is that the replaced title is gone.
-  const rendered = [...new Set(host.rendered().filter((label) => label.includes("TITLE")))];
-  assert.deepEqual(rendered, ["SECOND TITLE"], "the replaced title is not left in the menu");
+  // One rendered label per toggle value, so the same label appears twice by design; what matters is
+  // that the replaced label is gone.
+  const rendered = [...new Set(host.rendered().filter((label) => label.includes("title")))];
+  assert.deepEqual(rendered, ["second title"], "the replaced title is not left in the menu");
 });
 
 test("each section's line is independent: one toggle never writes another's key", () => {
@@ -252,7 +262,7 @@ test("each section's line is independent: one toggle never writes another's key"
   arm();
 
   const hideB = rowsNow().find(
-    (row) => row.choice?.setting === "Section: b" && row.choice.value === "hidden",
+    (row) => row.choice?.setting === "bbb" && row.choice.value === "hidden",
   );
   assert.ok(hideB?.action !== undefined);
   hideB.action({ input: async () => undefined, confirm: async () => true, capture: async () => undefined });
@@ -264,9 +274,9 @@ test("each section's line is independent: one toggle never writes another's key"
   const rows = rowsNow();
   const currentFor = (setting: string, value: string): boolean | undefined =>
     rows.find((row) => row.choice?.setting === setting && row.choice.value === value)?.choice?.current();
-  assert.equal(currentFor("Section: a", "shown"), true, "the untouched section stays shown");
-  assert.equal(currentFor("Section: b", "shown"), false);
-  assert.equal(currentFor("Section: b", "hidden"), true);
+  assert.equal(currentFor("aaa", "shown"), true, "the untouched section stays shown");
+  assert.equal(currentFor("bbb", "shown"), false);
+  assert.equal(currentFor("bbb", "hidden"), true);
 });
 
 test("defaultVisible false starts hidden, and the rows say so", () => {

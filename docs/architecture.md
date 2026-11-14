@@ -189,13 +189,25 @@ otherwise leaves the slot absent.
   `●` for current and `○` for the others (`lib/visual-customize-view.ts:583-595`).
 - `choice.hint` feeds the preview headline (`lib/visual-customize-view.ts:745`).
 - `applyOnMove !== false` makes ←/→ apply a choice immediately rather than Enter
-  (`lib/visual-customize-view.ts:565`).
+  (`lib/visual-customize-view.ts:565`). The bridge therefore sets `applyOnMove: false` on EVERY row it
+  contributes — its own `Sections`/card-style rows in `./sections-rows.ts` and `./card-style-rows.ts`,
+  and any provider row, normalised on a copy in `./rows.ts` (`confirmOnEnter`) — so a move only moves
+  the `›` cursor and Enter applies. The host's own rows keep their own field, so a line that holds both
+  (the extended `Card style` line) is per-row correct; the focused line's footer then reads
+  `←/→ choose · Enter apply` (`lib/visual-customize-view.ts:35-38`).
 - After any action the view requests its own re-render
   (`lib/visual-customize-view.ts:579`), so a plugin that persists inside `action()` sees an
   updated `●` without asking for a repaint.
 - `category` is typed to a closed union of existing categories
   (`lib/visual-customize-view.ts:105`); full row shape at `:107-128`, inline helpers at
   `:129-140`.
+
+The bridge's own rows obey the same rule. Its `Sections` and card-style rows put a human label in
+`choice.setting` (`music`, `plain`) and in the row's `label` — never a registration id, which would
+read as the old `Section: bash-card.status` (`src/row-labels.ts`). Identity stays in the registry, so
+replacement, disposal and the stored visibility key remain keyed by id while nothing id-shaped is
+rendered. Two sections whose labels would read the same are disambiguated in render order
+(`music`, `music 2`, …) and `/bridge-status` reports the assignment in force.
 
 The bridge ships no renderer. Every visual behaviour above belongs to gentle-shell, which
 is why the contract can promise row kinds without promising pixels.
@@ -219,6 +231,54 @@ command: armed but never captured, captured a row array that failed the shape ch
 provider threw, provider returned nothing, duplicate `category` + `setting` across
 providers. Silent success is not a valid state.
 
+### The plugin's own INTEGRATIONS line
+
+The host renders Pi's extension-status map (`footerData.getExtensionStatuses()`) as the INTEGRATIONS
+card: one row per entry, plus the permissions row (`extensions/gentle-shell.ts:357-385`,
+`lib/shell-bar.ts:289-298`). A row is the WHOLE opaque string the extension set via
+`ctx.ui.setStatus(key, text)`; the host strips its ANSI and paints every entry with one shared role,
+so a glyph must live inside the text and colour belongs to the host (`lib/shell-bar.ts:151-155`).
+`undefined` removes a key, which is what `session_shutdown` uses.
+
+Because the host has no notion of "a plugin", the bridge owns exactly one key per plugin
+(`src/plugin-lines.ts`). Attribution needs no configuration from the author: every registration in
+`src/bus.ts` goes through `attributeRegistration`, which reads the calling module from the stack
+once per registration (the first frame outside this package's `src/`), walks up from it to the
+nearest `package.json` with a non-empty `name`, and caches BOTH the answer and the plugin identity it
+implies per module. The identity is the package root — so every module in that package is the same
+plugin — or the registering module when no package owns it. Four outcomes: another package (a
+plugin, whose display name is derived from the package name), this package (plumbing — the bridge's
+own providers and fallbacks never claim a row), no owning package (a single copied file: fail
+closed, no row, reason in `/bridge-status`), and the Pi distribution (below). An optional `name` on
+any registration is the documented way for an unattributable file to name itself; it is validated
+against the row-name shape, never rewritten.
+
+The Pi distribution is never a plugin identity (I11): a module attributed to the package that owns
+the running `pi` entry point (`process.argv[1]`, realpath resolved) or to a package whose manifest
+declares the `pi` executable (`bin.pi`) fails closed exactly like an unattributable module. A shared
+extensions directory inside the Pi installation therefore cannot produce a second `Pi coding agent`
+row; a plugin that must be named from such a location names itself explicitly. Recognition is by
+declaration, not by matching a package name.
+
+One key per identity is hashed from the package root (or the module path when it has no owner) and
+NEVER from the display name, so a plugin's ten registrations update one row in place instead of
+adding ten, and a rename of the package or of the explicit name repaints the same key without
+leaving an orphan (I10). An explicit name is sticky for the identity (I9): the first registration
+that declares a usable one fixes it, later registrations inherit it whether or not they repeat it,
+and a later DIFFERENT name never creates a row and never renames — the first name is kept and the
+conflict is reported in `/bridge-status`. A name is attribution, not mutable state, so a deliberate
+rename ships as an edit plus `/reload`, a new registration lifetime. The text is
+`<name> · <ready|degraded>`: `ready` is derived — one rejected registration (an invalid id, a row
+label that broke the shape rule) repaints the same key as `degraded`. `installPluginStatus` runs on
+`session_start` (for plugins that registered before any `ctx.ui` existed) and paints or repaints;
+`clearPluginStatus` runs on `session_shutdown` and clears every key this module set with `undefined`.
+A `ctx.ui` without `setStatus` makes the feature a reported no-op: nothing here can throw into a
+plugin's registration path.
+
+What is proven where: the bridge's side is tested against a fake footer (an object with
+`setStatus`), plus real temporary plugin packages for attribution. The host's rendering — sort
+order, shared role, ANSI stripping — is read-only evidence from gentle-shell, not executed here.
+
 ## 11. Backend selection and module boundaries
 
 Arming happens once per `ctx.ui` object, from `session_start` in `src/extension.ts`. The
@@ -234,20 +294,23 @@ diagnostics stop reporting `hook`.
 
 | Module | Owns |
 | --- | --- |
-| `src/index.ts` | the plugin-facing API: `registerRows`, `registerSection`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, `bridgeApi`, `isBridgeApi`, types; importing it also publishes the handshake through `./api.ts` |
+| `src/index.ts` | the plugin-facing API: `registerRows`, `registerSection`, `registerCardStyle`, `registerTransform`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, `bridgeApi`, `isBridgeApi`, types; importing it also publishes the handshake through `./api.ts` |
 | `src/api.ts` | the runtime handshake: the one `Symbol.for` slot, the frozen published object, the shape gate, `bridgeApi()` and publication |
 | `src/extension.ts` | the Pi entry from `pi.extensions`: `session_start` arming (rows + sidebar widget), the `Sections` provider, and the `/bridge-status` command |
 | `src/arm.ts` | backend selection and the arm result |
 | `src/capture.ts` | the single `Array.prototype.map` patch and the captured array |
 | `src/hook.ts` | the host-registry probe and the one fan-out provider |
-| `src/bus.ts` | the `globalThis` provider list and its ordered snapshot, plus the section registry |
-| `src/rows.ts` | the one row builder both backends call, with per-provider isolation |
+| `src/bus.ts` | the `globalThis` provider list and its ordered snapshot, plus the section, card-style and transform registries |
+| `src/rows.ts` | the one row builder both backends call, with per-provider isolation and the row-name shape check |
+| `src/row-names.ts` | the enforced row-name shape (one to three plain words, no structural marks) and the rejection records `/bridge-status` lists |
 | `src/sidebar.ts` | the rail interception: the state symbol, the patched `parts` map, the rail wrapper |
 | `src/sidebar-render.ts` | the section renderer: card rows and groups per frame, clipping, failures |
 | `src/sections-rows.ts` | the bridge's own `Sections` toggle rows |
+| `src/row-labels.ts` | the visible label for those rows: `rowLabel` or a derived one (clamped to the shape), plus the deterministic collision assignment (never an id) |
 | `src/visibility.ts` | bridge-owned section visibility in the namespaced store |
 | `src/store.ts` | `createStore`, the namespaced path and the atomic write |
 | `src/status.ts` | the `/bridge-status` text |
+| `src/transform-pipeline.ts` | the ordered per-frame transform pass: width clipping, throw isolation and the last frame's outcomes |
 | `src/config.ts`, `src/types.ts` | config-home resolution; the row, provider and context types |
 
 Because both backends call `src/rows.ts`, a plugin sees the same `registerRows` semantics on
@@ -274,7 +337,10 @@ existing part is the only way in, and the `footer` part is painted last.
   (`lib/shell-bar.ts:247,251-316`): unreachable, so no interleaving is possible.
 - The host's own `footer` part is registered at `extensions/gentle-shell.ts:2681`; readers reach
   another part's `spend` through `parts.get("agents").spend()` (`:2652`), which is why every field
-  of the wrapped part is forwarded untouched, `digest` included (the layout memo keys on it).
+  of the wrapped part is forwarded untouched. `digest` is the one field the wrapper owns, because the
+  layout memo re-renders a part only when its VALUE moves (`:114-119`): the host's own answer is
+  forwarded unchanged while nothing contributes rows, and the contributed rows' signature is
+  appended when they do (N14).
 
 ### The interception
 
@@ -289,11 +355,114 @@ and leaves any retained wrapper as a pass-through (a generation guard).
 ### The renderer
 
 `src/sidebar-render.ts` contributes the section rows and their card groups per frame. A hidden
-section is not built at all; a throwing `lines()`/`meta()`, a sparse array or a non-string row
-loses only that section's body and is recorded for `/bridge-status`. Rows are clipped to the width
-the host passes and the body is capped at 8 rows with a visible `… +N more` marker. Width is
-measured in **UTF-16 code units**, not terminal columns, and a plugin that emits ANSI owns its own
-width — the bridge does not parse or strip escape sequences.
+section is not built at all, and neither is a COLLAPSED one: folding is a user choice, and a folded
+body costs nothing (its `lines()` is not called). A throwing `lines()`/`meta()`/`onClick`, a sparse
+array, or a row that is not a string and has no usable `label` loses only that section's body and is
+recorded for `/bridge-status`.
+
+A plain string row is clipped to the width the host passes and the body is capped at 8 rows with a
+visible `… +N more` marker. Width is measured the way the HOST measures a row — `visibleWidth`,
+where a TAB is three columns and a grapheme cluster is charged as a whole — because the host's gate
+and card frame read the row with that model (`src/card-style-transform.ts`'s `hostColumns`);
+measuring in UTF-16 units let a CJK row or a tabbed row measure wider than the budget and the host
+dropped the whole rail (`lib/shell-sidebar-layout.ts:410`). A structured row is fitted by the panel
+builder in the same columns, and padded to the width it was handed, exactly as the host's own
+`renderPanelRow` pads (`lib/shell-panel.ts:78-80`).
+
+### The header and the panel builders (N11, N15)
+
+The host draws its own rail sections with `renderPanelHeader` / `renderPanelRow` and paints a hover
+with `paintHoverable` (`lib/shell-panel.ts:44-80`, `lib/shell-hover.ts:33-38`): `▾`/`▸` by `open`, the
+uppercased title in `text` (bold, `warning` while hovered), the right-aligned count in `muted`, rows
+indented by two and fitted to the width. `src/section-panel.ts` reproduces that drawing exactly, and
+it gets the theme from the same place the host does: the second argument of Pi's `setWidget` factory.
+
+The host's two builders are NOT importable — gentle-shell is not a dependency, and Pi loads every
+extension through its own jiti loader with `moduleCache: false`, so `lib/shell-panel.ts` is a
+separate module graph with no published seam. Rather than claim a reach it does not have, the bridge
+LOOKS for them on every object it is handed — the rail part, the Pi theme, the terminal's sidebar
+state — uses them when they are found, and otherwise draws with the port. `getPanelReport()` feeds
+`/bridge-status` with what was looked for, what was found, and whether a theme had arrived; when the
+answer is `fallback` the report also carries the gap, so "the card does not look native" always has
+an answer. `test/section-panel.test.ts` transcribes the host's own functions and compares bytes, which
+is what makes "byte-identical fallback" a claim a test enforces instead of a comment.
+
+### Width: the one thing a contributed row can cost (N17–N20)
+
+The rail column is allocated from the layout, not from a part's output: `basis: RAIL_WIDTH, grow: 0,
+shrink: 0` (`lib/shell-sidebar-layout.ts:493-496`), so pi-tui never measures the child
+(`dist/layout.js:124`) and the conversation keeps `columns - 53`. The one width decision the host DOES
+take from a part's rows is whether to paint the rail at all: every rail row must fit `contentWidth`
+(`:410`), and one wider row drops the entire rail and hands the conversation every column. So a
+contributed row that measures wider than the width it was given changes the layout's widths.
+
+That is why the bridge measures with the host's own model. `hostColumns`
+(`src/card-style-transform.ts`) ports `visibleWidth` (`pi-tui/dist/utils.js:212-268`): ANSI is zero
+columns, a TAB is three (`graphemeWidth`, `:148-155`), and the rest is segmented into grapheme
+clusters charged as a whole (`:255-258`). `src/section-panel.ts` fits, pads and clips with it, and
+`src/sidebar-render.ts` clips an author's plain row with it, so a row fitted to `N` is `N` columns to
+the host — the padded rows the host's own parts return (`renderPanelRow` → `fitPanelLine`,
+`lib/shell-panel.ts:31-40,78-80`) and the bridge's are the same rule, matched rather than chosen.
+`test/rail-width.test.ts` models the rail path and pins both halves; `getSectionFrameWidth()` feeds
+`/bridge-status` with `section width: <N> columns given, widest row <M>`, so the next width bug is a
+number in the report instead of a screenshot.
+
+### Colouring and the theme
+
+Pi hands a widget factory `(tui, theme)`; gentle-shell's own parts take their theme the same way, and
+`src/extension.ts` now keeps it (`setSectionTheme`). Before that factory runs there is no theme: the
+rows are drawn uncoloured rather than guessed at, and the report says `theme missing`.
+
+### The pointer (N12)
+
+Clicking is POSITIONAL in this host, not a row field. The layout maps a pointer event into the part's
+frame and calls the part's `handleMouse` with those coordinates (`lib/shell-sidebar-layout.ts:245-259`),
+and the wrapper already receives that call, so the bridge's own rows can answer it. The backend hands
+the contributor `position.startRow` — how many rows the host painted before the contribution, recorded
+by the render that preceded the event — and `src/sidebar-render.ts` maps `y - startRow` onto the rows
+it built. A row with `onClick` is clickable and highlights under the pointer; a row without it is
+inert and declines (so the host's own dispatch continues). The header is always actionable: it folds
+the section.
+
+The hover claim uses the host's own published slot rather than a private channel: `SidebarState.hover`
+is declared as "shared across separately loaded extensions" (`lib/shell-sidebar.ts:37`), and
+`src/section-pointer.ts` stores `{ owner, clear }` there with the host's own semantics — the previous
+owner's `clear()` runs when the owner changes, and the host's "pointer left the rail" call
+(`setSidebarHover(tui)` with no owner) clears ours. `NativePointerRegion` itself is not reachable and
+is not needed: the dispatch it adapts is the one the bridge already receives.
+
+### Repaint and the digest (N13, N14)
+
+A collapse persists to the bridge store and then asks for the frame synchronously, through the same
+two steps the host uses for a part-owner write (`invalidateSidebar` + `requestRender`, `src/repaint.ts`).
+A LIVE field needs nothing but the digest: the memo re-renders a part when its digest changes, so the
+contributed rows' signature (bodies, `meta`, collapse flags, the hovered row, and what the theme
+paints) is folded into the wrapper's `digest` and a changed `meta` reaches the screen on the next
+layout pass. Reading `meta()`/`lines()` from the digest is the same trade the host's own parts make
+(`extensions/gentle-agents.ts:2255-2260`).
+
+### The `Sections` toggle names
+
+`src/sections-rows.ts` builds the toggle from the live registry on every menu build, and
+`src/row-labels.ts` decides what it reads: the author's `rowLabel`, else the title made readable
+(lowercase words, dots and punctuation dropped, clamped to three words). The label is BOTH the row's
+`label` and the line's `choice.setting`, because the host prints the setting as the line's name
+(`lib/visual-customize-view.ts:583-595`); the section id never reaches either. Equal labels are
+resolved in render order with the lowest free ordinal suffix, and `collectStatus()` uses the SAME
+function, so the menu and `/bridge-status` cannot disagree about which section reads `music 2`.
+Status output keeps the ids on purpose: it is read by the plugin author diagnosing a registration,
+not by the user picking a toggle.
+
+The LABEL TEXT has one shape (`src/row-names.ts`), because a row named `Bash card → Bash rendering`
+was the third defect of its class: one to three plain words, no arrow, colon, dot, pipe, slash or
+bracket. It is enforced at both boundaries that can create a row name, and never by rewriting the
+author's text: a section or card style whose `rowLabel` breaks the shape is not stored at all, and a
+provider row whose line name or label breaks it is dropped as `buildRows` stages it — absent from the
+host's array and from the build record `collectStatus()` reads, so it is not part of the effective
+set. The rejected string is recorded verbatim with the rule it broke and `/bridge-status` prints both
+under `row name rejections`. Derivation from `title`/`label` applies the same shape (marks become
+word breaks with the rest of the punctuation; the result is clamped), so a derived name can never be
+rejected.
 
 ### Acquiring a `tui` — and what is unconfirmed
 
@@ -330,7 +499,9 @@ installed, configured or imported.
   `emit`/`on` delivers values to listeners at emit time. It is not a registry the host reads
   synchronously while it builds the menu. gentle-shell builds its rows inside the `ctx.ui.custom`
   factory (§5) and reads the rail map at render time (§12), so a plugin reachable only through an
-  event handler cannot put rows into either. Events are not the seam.
+  event handler cannot put rows into either. Events are not the seam for *delivery*. They are the
+  only way to learn that a package loaded later published something, which is what the announcement
+  below uses — and why it carries a signal ("look again") instead of the API itself.
 - **`globalThis` is the one object two separately loaded extensions already share** in one
   process, and gentle-shell already relies on it: one stable `Symbol.for` key per piece of
   process-global state (`lib/shell-card.ts:40-41`, `lib/card-content-policy.ts:78`,
@@ -350,19 +521,46 @@ carrying the schema string, the major version and the three callable members, an
 checks all of them with `isBridgeApi` (`src/api.ts`). `v1` in the key is the major: `v2` is a new
 key and `v1` is never mutated.
 
-### First wins, and consumption at `session_start`
+### First wins, and the publication announcement
 
-`src/api.ts` publishes at module load — importing `./extension.ts` or `./index.ts` loads it — so
-the API exists before any `session_start`. A compatible object already in the slot is kept and
-returned untouched. An incompatible one is left exactly where it is (never overwritten, deleted
-or reset); this copy's own object still works for registration and operates on the same
-process-global bus (§7).
+`src/api.ts` publishes at module load — importing `./extension.ts`, directly or through the package
+root — so the API exists as soon as the package has been loaded. A compatible object already in the
+slot is kept and returned untouched. An incompatible one is left exactly where it is (never
+overwritten, deleted or reset); this copy's own object still works for registration and operates on
+the same process-global bus (§7).
 
-A plugin registers from its own `session_start` handler. Pi completes every extension module's
-async initialization before firing that event (`docs/extensions.md:213`), so the handler either
-finds the object or learns the bridge is not installed. The symbol's presence is the complete
-answer: there is no deferred path and no second publication point. `bridgeApi()` returns the
-object or `undefined`, and registration is idempotent because it is by stable id.
+### The load order, as observed rather than assumed
+
+This design first claimed that `session_start` arrives only after every extension module has
+initialized, so a plugin's handler either found the object or knew the bridge was absent
+(`docs/extensions.md:213`). A real TUI disproved it: `/bridge-status` showed a working bridge
+(`backend: capture`, `sidebar: intercepted`, `card style wiring: chat wrapped`) while the worked
+example — a global extension in `~/.pi/agent/extensions` — reported "no compatible
+gentle-shell-bridge is installed". Global extensions load, and receive `session_start`,
+before a configured package's module publishes. The symbol was read too early, not missing.
+
+So an absent slot at `session_start` means "not yet". Two mechanisms answer that, and they stay
+separate on purpose:
+
+1. **the symbol** remains the only authority for *which* object to use (`isBridgeApi`, first wins);
+2. **`gentle-shell-bridge:ready`** tells the process *when* a publication happened. It is emitted
+   from `announceBridgeReady` at the extension factory — the first moment `pi.events` exists —
+   exactly once per process (a `globalThis` flag like every other piece of process state, §7), and
+   never when the slot holds an incompatible payload, because there would be nothing to look at.
+
+A listener never receives the API: it waits for the signal and reads the symbol again, so the gate,
+the first-wins rule and the "absent is absent" rule are unchanged. `onBridgeApi(handler, pi.events)`
+is the helper form — immediate when the object is already published and a subscription when it is
+not, with the subscription detaching itself after one delivery. Registration stays idempotent by
+stable id, so a plugin that registers from `session_start` *and* from the announcement leaves one of
+each surface, and the announcement can arrive before or after the session event without either path
+having to know about the other.
+
+What was rejected: a queue inside the bridge (a plugin's registrations waiting invisibly for a
+version that may never load — the previous revision of this file described exactly that and removed
+it), and retrying `session_start` on a timer (no event to hang it on, and the plugin would have to
+keep state it does not need). The announcement is neither: one event, no holding area, and the
+plugin decides what an absent-and-unannounced bridge means for it.
 
 ### Why a path, and why an environment variable, were rejected
 
@@ -432,20 +630,132 @@ marker and bumps the generation, so a wrapper foreign code retained becomes a pa
 than an injector. The same rule governs a retained *style*: a disposed style resolves to `missing`,
 and `missing` is the pass-through.
 
+### The rail: a second surface, one transform
+
+The rail frames its own cards — `sectionCardRows`/`headerParts` over `floatRows`/`cardTop`/
+`cardLine` (`lib/shell-sidebar-layout.ts:36-47`), host sections and contributed sections through the
+same call — and it frames them AFTER a part hands over its rows. A part therefore cannot restyle its
+own card, and wrapping the contributed part would only ever reach the rows it contributed. The
+reachable seam is one level up: the framed rows are the child of the rail's `ScrollView` in the
+layout tree (`lib/shell-sidebar-layout.ts:486-499`; `ScrollView[LAYOUT_NODE]()` reports its child,
+`pi-tui/dist/components/scroll-view.js:191-192`), so wrapping that component's `render(width)` sees
+every rail frame the host produced — its own sections and ours, in one place.
+
+`src/card-style-wiring.ts` walks that tree by SHAPE (the root's layout node → the `hstack` → its
+second entry → that scroll view's child), never by index into the root, and requires the candidate to
+expose both a layout protocol and a `render`. The wrapper is the conversation's wrapper with one
+difference: the rail runs ONLY the card-style repaint. The registered transcript transforms are the
+conversation's extension point (their contract is "the conversation's rows"); handing them the rail
+would let a plugin corrupt a surface it never claimed. Every absence is a reported outcome
+(`no-layout-root`, `no-sidebar`, `no-rail`), recorded per surface for `/bridge-status`.
+
+### A write repaints its surface
+
+The rail and the conversation both display bridge-owned state: a section's visibility, and the
+card-style selection. Persisting is not painting — gentle-shell re-renders a rail part only when its
+digest changes or its layout revision moves (`lib/shell-sidebar-layout.ts:310-350`), so a
+bridge-owned row used to change the store and leave the screen alone until something else repainted
+it. `src/repaint.ts` performs the two steps gentle-shell's own part owners perform
+(`lib/shell-sidebar-layout.ts:105-107`, `extensions/gentle-agents.ts:2147-2148`), synchronously,
+inside the row's `action()`: bump `tui.terminal[CACHE].revision` (the documented
+`invalidateSidebar(tui)` effect, reached through the host's published symbol because this package
+cannot import the host's modules) and call `tui.requestRender()`. No timer, no poll, no retry, and no
+frame when the write changed nothing. An unavailable path is recorded and reported, not swallowed.
+
 ### The conflict that cannot be won
 
-cinlodev wraps the chat container's `render` and strips any box chrome it finds
-(`pi-cinlodev-cute/transcript-unwrap.ts:160-206`), which can erase this frame on exactly the cards it
-re-frames — bash in particular. The bridge cannot prevent that, does not try, and says so in
-`/bridge-status`:
+A post-processor downstream of this bridge can wrap the chat container's `render` and strip any box
+chrome it finds — a class of consumer that re-frames the conversation, and the frame that reaches
+the screen is the last one written. That can erase this frame on exactly the cards it re-frames —
+bash in particular. The bridge cannot prevent that, does not try, and says so in `/bridge-status`:
 
-> a downstream post-processor (e.g. cinlodev) can strip or override this frame; the bridge cannot
-> prevent it.
+> a downstream post-processor can strip or override this frame; the bridge cannot prevent it.
+
+Nothing user-visible names such a consumer: the bridge ships to whoever installs it, and no package
+it cannot see is allowed to be a prerequisite for its own report.
 
 ### Why not ask gentle-shell to add a style registry
 
 Rejected in [state.md](state.md) (§Alternatives rejected, F/G). The package exists because the host
 does not take every change; a design that waits for one is not a bridge.
+
+## 15. The transform pipeline
+
+The fourth surface. §14 explains how the bridge reaches the conversation component; this section
+is what that wrapper does with the rows it intercepts, now that it serves more than one feature.
+
+### One wrapper, an ordered pipeline inside it
+
+`src/card-style-wiring.ts` installs a single `render(width)` wrapper on the conversation component.
+Inside it the host's own render runs first (a host failure stays the host's), then:
+
+1. `transformCardLines` (`src/card-style-transform.ts`) repaints the selected card style, or returns
+   the host's array unchanged when there is nothing to do;
+2. `applyTransforms` (`src/transform-pipeline.ts`) runs every registered transform in order, handing
+   each one the previous output and clipping what comes back to the width the host passed;
+3. the result goes to Pi.
+
+With no style selected and no transform registered, both steps return their input, so the host's own
+array instance reaches Pi: the identity the card styles already promised is now the whole pipeline's
+promise. The wrapper keeps the generation guard and the own-property marker unchanged, so a rebind, a
+second `session_start` or a second package copy still resolve to `already-wrapped` instead of
+stacking pipelines.
+
+### Why the loop belongs to the bridge, not to each plugin
+
+`pi.registerToolRenderer` resolves when a tool row is BUILT (`docs/extensions.md`, "Custom
+Rendering"), so a rendering choice made through that slot can only reach the next row. Pi exposes no
+API to repaint rows that are already drawn, and the component that renders them is not reachable
+from a row's `action()`. The bridge already wraps that component for card styles, so the transform
+layer is a widening of a proven path rather than a new interception: one loop, one place to clip, one
+place to isolate a throw, and one place `/bridge-status` reads.
+
+That is also why the worked example retired its `pi.registerToolRenderer` resolver: a resolver draws
+its own component from the tool's arguments, while a transform can only restyle what the host
+already drew. Keeping both would have meant two different pictures of the same card — the transform
+for history, the resolver for new rows — which is exactly the asymmetry the feature exists to remove.
+The transform is the single owner there, and `test/example-transform.test.ts` proves that a card
+drawn before the switch and one drawn after it are byte-identical.
+
+### Ordering, isolation and the width
+
+`snapshotTransforms()` decides the sequence once per frame, with the same rule as sections and card
+styles: an explicit `order` first, ascending, then registration order. A transform that throws, or
+that returns something which is not an array of strings, is skipped for that frame — the lines in
+force are kept and the remaining transforms still run — and the failure is recorded with its id and
+message for `/bridge-status`. Whatever comes back is clipped with `clipToWidth`, so a transform
+cannot make the frame wider than the terminal — and, just as importantly, a row that already fits
+the host's own measure is returned byte-identical: the pipeline never rewrites lines a transform did
+not change (a no-op transform hands back the same array, and a fitting row is never measured into a
+cut). The measure is `hostColumns` (TAB three columns, a grapheme cluster as a unit, CSI/OSC/APC
+zero columns, so a hyperlink contributes its text and not its URL); a row that must be cut is cut
+between clusters, with an open OSC-8 link closed and an active SGR reset so the shortened row cannot
+leak either into the rows after it.
+
+### Telemetry: the counts that distinguish "missed" from "never ran"
+
+The pipeline records, per transform and per frame, what the frame did and what the transform saw:
+the outcome, the number of lines it received, and whatever the transform reported through
+`ctx.report(...)` — candidates examined, cards recognised, cards rewritten, and the shapes that
+matched, by name (`src/transform-pipeline.ts`, `TransformFrameCounts`). It exists because a real TUI
+could not tell two failures apart: a wrapper that never reaches the conversation, and a grammar that
+reaches it and recognises nothing. Those two read differently in the record — zero lines received
+versus candidates without recognition — without another round of guessing.
+
+Two rules make the record safe to keep. **Counts only:** a frame carries the user's private output,
+so no line and no text is stored; numbers are clamped to non-negative integers and a shape name is
+kept only when it is a name (lowercase letters, digits, `_`, `.`, `-`, at most 24 characters, at most
+12 per frame), which means a line cannot be smuggled into the record through that field. **Nothing
+it does reaches the frame:** the counts are collected in the call that already produces the output
+(no second pass), and every step of recording is guarded, so a transform that reports nonsense, or
+none at all, loses counts and never a frame. `/bridge-status` prints the counts on the transform's
+own line, and the block is still absent entirely when no transform is registered.
+
+The worked example reports `float` (the host's frame), `plain` (its own frame) and `neon` (the
+host's outlined frame — the bridge's repaint is `float`-only, so a neon card reaches a transform
+untouched and the example's grammar is the only thing that can recognise it) as shape names, so the
+next step after a real-TUI report is data-driven: a `skipped` line with candidates and no
+recognition names a grammar gap, and recognition with `0 rewritten` names a setting.
 
 ## Limits
 

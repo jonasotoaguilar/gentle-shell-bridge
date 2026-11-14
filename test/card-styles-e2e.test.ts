@@ -54,7 +54,7 @@ import { resetStoreStateForTests } from "../src/store.ts";
 import { createFakeHost, type FakeHost, type FakeRow } from "./fake-host.ts";
 import { READ_CARD, createFakeTranscriptTui, type FakeTui } from "./fake-transcript.ts";
 
-const FALLBACK_SETTING = "Bridge → card style";
+const FALLBACK_SETTING = "Bridge card style";
 const HOST_SETTING = "Card style";
 
 let configHome: string;
@@ -414,7 +414,7 @@ test("a host without its own Card style line gets the fallback line, and it sele
 
   assert.equal(
     settingLine(world.host.toggleLines(), FALLBACK_SETTING),
-    "Bridge → card style ● native ○ mono",
+    "Bridge card style ● native ○ mono",
     "one line, native by default plus every registered style",
   );
   assert.equal(settingLine(world.host.toggleLines(), HOST_SETTING), undefined);
@@ -467,7 +467,7 @@ test("a tui without a conversation is reported, and rows and sections still work
   const provider: RowProvider = {
     id: "loon.banner-source",
     category: "Banner",
-    rows: () => [{ label: "Loon: banner source", action: () => {} }],
+    rows: () => [{ label: "Loon banner source", action: () => {} }],
   };
   registerRows(provider);
 
@@ -476,12 +476,12 @@ test("a tui without a conversation is reported, and rows and sections still work
 
   assert.match(printStatus(entry), /^card style wiring: not wrapped \(no-conversation\)$/m);
   assert.deepEqual(
-    host.rendered().filter((label) => label.startsWith("Loon: banner source")),
-    ["Loon: banner source"],
+    host.rendered().filter((label) => label.startsWith("Loon banner source")),
+    ["Loon banner source"],
     "the row provider reached the menu",
   );
   assert.ok(
-    host.toggleLines().some((line) => line.startsWith("Section: loon.music ")),
+    host.toggleLines().some((line) => line.startsWith("music ")),
     "and the section toggle is there too",
   );
   assert.ok(snapshotProviders().some((registered) => registered.id === "loon.banner-source"));

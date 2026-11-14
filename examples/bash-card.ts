@@ -191,6 +191,19 @@ const BASH_CARD_PALETTE_ITEM: CommandContributionLike = {
   section: BASH_CARD_PALETTE_SECTION,
 };
 
+/**
+ * The OTHER shape of the same registration: an item that joins a section the host already has.
+ * `Diagnostics` is one of the catalog's own pages, so this proves both cases at once — the example's
+ * own page (Panel) and an existing one — with a second real command behind it.
+ */
+const BASH_CARD_KEY_COMMAND = "bash-card:key";
+const BASH_CARD_DIAGNOSTICS_ITEM: CommandContributionLike = {
+  id: "bash-card.key",
+  label: "Bash card · key and surfaces",
+  command: BASH_CARD_KEY_COMMAND,
+  section: "Diagnostics",
+};
+
 // ---------------------------------------------------------------------------------------------
 // Host shapes, declared structurally
 // ---------------------------------------------------------------------------------------------
@@ -1518,7 +1531,7 @@ export default function bashCardExample(pi: ExtensionApiLike): () => void {
     const registerCommands = api.registerCommands;
     if (typeof registerCommands === "function") {
       try {
-        disposers.push(registerCommands.call(api, BASH_CARD_PALETTE_ITEM));
+        disposers.push(registerCommands.call(api, [BASH_CARD_PALETTE_ITEM, BASH_CARD_DIAGNOSTICS_ITEM]));
         state.paletteRegistered = true;
       } catch (error) {
         recordNotice(
@@ -1595,6 +1608,21 @@ export default function bashCardExample(pi: ExtensionApiLike): () => void {
     pi.registerCommand(BASH_CARD_COMMAND, {
       description: "Report what the bash-card example registered, and the key bound to its action.",
       handler: async (_args: unknown, ctx: SessionContextLike) => reportState(ctx),
+    });
+    // The second command exists to prove the OTHER palette shape: an item that joins a section the
+    // host already owns. It says where the key comes from, which is the one thing a row cannot show.
+    pi.registerCommand(BASH_CARD_KEY_COMMAND, {
+      description: "Report the key bound to the bash-card action and where to rebind it.",
+      handler: async (_args: unknown, ctx: SessionContextLike) => {
+        const ui = ctx?.ui as NoticeUiLike | undefined;
+        if (typeof ui?.notify !== "function") return;
+        ui.notify(
+          boundKey === undefined
+            ? `[bash-card] no key bound. ${state.keymapRegistered ? "Open /gentle:customize → Keymaps and assign one." : "This shell does not read plugin keymaps."}`
+            : `[bash-card] ${boundKey} → ${BASH_CARD_KEYMAP.label}. Rebind it in /gentle:customize → Keymaps.`,
+          "info",
+        );
+      },
     });
   }
 

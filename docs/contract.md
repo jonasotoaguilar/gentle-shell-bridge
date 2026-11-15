@@ -527,6 +527,13 @@ the id — is the line's name: `music  ● shown  ○ hidden`, next to the host'
 called. A throw loses only that section's body and is reported by `/bridge-status`. `dispose()`
 removes the card and the toggle together, leaving every other section untouched.
 
+Those rows draw no preview of their own. Every `Sections` row shows the host's ONE shared preview —
+the list of the sections that are active (`[changes] [rdd] [agents] [todo] [usageCost]`) — and the
+bridge puts the section into that list itself: `issues` appears beside the host's own while it is
+shown, and leaves the list when it is hidden. A `shown` row previews the list with the section in
+it, a `hidden` row previews it without, on top of the persisted state of the rest. There is nothing
+to declare and nothing to opt into: `registerSection` has no `preview` field.
+
 ### Surface 3: the optional namespaced store
 
 `createStore(pluginId)` is optional. A plugin may keep its own file instead; the bridge never reads
@@ -656,7 +663,9 @@ dropping foreign top-level keys. Rationale and rejected alternatives: [state.md]
 One call adds a card to gentle-shell's fullscreen sidebar **and** its show/hide toggle to
 `/gentle:customize` → `Sections`. The plugin writes content; it never writes a `setting`, a
 `value`, a `current()`, an `action()`, a `preview()`, never names the `Sections` category and
-never touches the rail.
+never touches the rail. The shared preview is part of that promise: every `Sections` row draws the
+host's one list of active sections, and the bridge adds a section to it itself — there is no preview
+to declare and nothing to opt into.
 
 ```ts
 import { registerSection } from "gentle-shell-bridge";
@@ -701,6 +710,9 @@ const dispose: () => void = registerSection({
 - `order` — sections **with** an `order` render first, ascending; sections without one follow
   in registration order. Ties keep registration order. The rule is computed from an explicit
   sort key, never from map iteration.
+- `preview` — **not a field**, and there is nothing to opt into. Every `Sections` row draws the
+  host's single shared preview, the list of sections that are active, and the bridge adds this
+  section to it automatically (see *The automatic `Sections` rows*).
 
 `ctx` carries the same shape as `RowContext`: the resolved gentle-shell config home and, now that Pi
 hands the bridge a theme (`ctx.ui.setWidget(key, (tui, theme) => …)`), the host theme — so a section
@@ -849,8 +861,16 @@ values `shown` and `hidden`:
   section is never registered, and the string and the rule appear under `row rejections`;
 - `current()` reads the persisted value live, so the `●` never lies;
 - `action()` persists **first** and returns; the host's own repaint re-reads `current()`;
-- `preview()` returns a literal depiction of the card in that state, never the host's
+- `preview()` is the host's shared `Sections` preview, not a picture of the card: the list of
+  active sections with this row's own hypothetical applied — a `shown` row lists the section, a
+  `hidden` row leaves it out — on top of the persisted state of the rest. It is never the host's
   "Preview unavailable" default.
+
+The list is the host's own, extended: the bridge reads the sample of the host `Sections` row whose
+`current()` is `true` (that row's hypothetical *is* the persisted state), appends the labels of the
+bridge sections that are visible right now — the same strings the rows read — and every `Sections`
+row previews that merged list. Hiding a section therefore removes it from the preview of every row,
+including the host's own.
 
 **The id is internal, the label is public.** `id` keys the registry (replacement and ordering), the
 `Sections`-row disposer and `bridge-sections.json`; it is never rendered. The label is the only

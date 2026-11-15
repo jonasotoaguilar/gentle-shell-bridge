@@ -159,8 +159,10 @@ test("toggling persists to the bridge store first, then the host repaints", asyn
   assert.ok(host.toggleLines()[0].includes("● hidden"), "and landed on hidden");
 });
 
-test("the previews are literal in both states, never the host's default", () => {
+test("both values draw the host's shared Sections preview, never a picture of the card", () => {
   registerSection(section("loon.music", { title: "MUSIC" }));
+  // The provider is read directly, so no host rows array was ever captured: the base list is the
+  // host's own empty case and only the bridge's section can be listed.
   arm();
 
   const rows = rowsNow();
@@ -169,12 +171,12 @@ test("the previews are literal in both states, never the host's default", () => 
   assert.ok(shown?.preview !== undefined && hidden?.preview !== undefined);
 
   assert.deepEqual(shown.preview(), {
-    title: "MUSIC — shown",
-    sample: "▾ MUSIC\n(the card is drawn in the sidebar)",
+    title: "Sections · music shown",
+    sample: "[music]",
   });
   assert.deepEqual(hidden.preview(), {
-    title: "MUSIC — hidden",
-    sample: "▾ MUSIC  (not drawn)\n(the card does not render and its content is not built)",
+    title: "Sections · music hidden",
+    sample: "[no optional sections]",
   });
 });
 

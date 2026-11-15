@@ -14,8 +14,9 @@
  * that field would put `Section: bash-card.status` in front of the user (N1, N2, `./row-labels.ts`).
  * The section id stays identity — replacement, the disposer, the visibility store — and never
  * reaches a row. `current()` reads the persisted value live, `action()` writes it before returning
- * (the host repaints afterwards, and its repaint re-reads `current()`), and `preview()` depicts the
- * card literally instead of leaving the host's "Preview unavailable" default.
+ * (the host repaints afterwards, and its repaint re-reads `current()`), and `preview()` draws the
+ * host's ONE shared `Sections` preview with the bridge's own sections in it (`./sections-preview.ts`)
+ * instead of a picture of the card: every `Sections` row previews the same list.
  *
  * ## Where the value lives
  *
@@ -34,7 +35,8 @@ import { registerRows, snapshotSections } from "./bus.ts";
 import { refreshCardStyleSurfaces } from "./card-style-wiring.ts";
 import { requestSurfaceRepaint } from "./repaint.ts";
 import { sectionRowLabels } from "./row-labels.ts";
-import type { CustomizeRow, RowPreview, SidebarSection } from "./types.ts";
+import { sharedSectionsPreview } from "./sections-preview.ts";
+import type { CustomizeRow, SidebarSection } from "./types.ts";
 import { getSectionVisibility, isSectionVisible, setSectionVisible } from "./visibility.ts";
 
 /** The internal provider's id; it is the bridge's own registration, never a plugin's. */
@@ -49,21 +51,16 @@ export const SECTION_HIDDEN = "hidden";
 /** One of a toggle's two values. */
 export type SectionValue = typeof SECTION_SHOWN | typeof SECTION_HIDDEN;
 
-function previewFor(section: SidebarSection, shown: boolean): RowPreview {
-  return shown
-    ? {
-        title: `${section.title} — ${SECTION_SHOWN}`,
-        sample: `▾ ${section.title}\n(the card is drawn in the sidebar)`,
-      }
-    : {
-        title: `${section.title} — ${SECTION_HIDDEN}`,
-        sample: `▾ ${section.title}  (not drawn)\n(the card does not render and its content is not built)`,
-      };
-}
+/**
+ * Marks a row this module created. `Sections` is the host's category and the bridge's own rows share
+ * it, so the shared-preview patch (`./sections-preview.ts`) needs a way to tell the two apart: a
+ * bridge row is skipped, because its preview is already the merged list.
+ */
+export const SECTION_TOGGLE_ROW = Symbol.for("gentle-shell-bridge.sections-rows.toggle.v1");
 
 function toggleRow(section: SidebarSection, label: string, value: SectionValue): CustomizeRow {
   const shown = value === SECTION_SHOWN;
-  return {
+  const row: CustomizeRow = {
     category: SECTIONS_CATEGORY,
     // The label names the line, so a user can tell which toggle controls what. It is the SAME string
     // as `choice.setting`, because the host prints the setting as the line's name; the id is not a
@@ -79,7 +76,9 @@ function toggleRow(section: SidebarSection, label: string, value: SectionValue):
       // Live read: the bullet reflects what is on disk right now, not what was true at build time.
       current: () => isSectionVisible(getSectionVisibility(), section) === shown,
     },
-    preview: () => previewFor(section, shown),
+    // The host's shared preview, with this row's own hypothetical applied: the same list the host's
+    // own `Sections` rows draw, never a picture of the card.
+    preview: () => sharedSectionsPreview(label, shown, section.id),
     // Persist FIRST and synchronously; the host's repaint runs after this returns and re-reads
     // `current()`, so the bullet cannot land on a value that was never written. The store is keyed
     // by the section id, never by the label.
@@ -98,6 +97,12 @@ function toggleRow(section: SidebarSection, label: string, value: SectionValue):
       });
     },
   };
+  Object.defineProperty(row, SECTION_TOGGLE_ROW, {
+    value: true,
+    enumerable: false,
+    configurable: true,
+  });
+  return row;
 }
 
 /**

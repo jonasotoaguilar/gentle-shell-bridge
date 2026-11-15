@@ -101,6 +101,12 @@
 import { extendCardStyleLine } from "./card-style-rows.ts";
 import { findCardStyleLine } from "./card-style-line.ts";
 import { buildRows, createRowContext, type RowBuildFailure } from "./rows.ts";
+import {
+  patchSharedSections,
+  resetSharedSectionsPreviewForTests,
+  undoSharedSections,
+  type SharedSectionsPatch,
+} from "./sections-preview.ts";
 import type { CustomizeRow } from "./types.ts";
 
 /** Marks a UI target this module wrapped; the value is the wrapper function it installed. */
@@ -244,6 +250,8 @@ interface EarlyInjection {
   rows: readonly CustomizeRow[];
   /** The in-place `Card style` splice, when one happened, so a rollback can undo it exactly. */
   cardStyle?: EarlyCardStyleSplice;
+  /** The in-place `Sections` preview patch, when one happened, for the same rollback. */
+  sectionPreview?: SharedSectionsPatch;
   /** What the build recorded while failing, reported if the injection survives. */
   failures: CaptureFailure[];
 }
@@ -326,6 +334,9 @@ export function resetCaptureStateForTests(): void {
   state.lastOutcome = undefined;
   state.lastFailures = [];
   state.wrappers = [];
+  // The shared `Sections` preview keeps the last patch, which is how a bridge row finds the host's
+  // base list; a new test starts with no patched array to borrow from.
+  resetSharedSectionsPreviewForTests();
 }
 
 /** The probe records into the innermost session and forwards to the saved original. */
@@ -587,6 +598,11 @@ function resolveSession(session: CaptureSession, component: HostCustomResult): v
     extendCardStyleLine(captured);
   }
 
+  // S1/S2: the host's own `Sections` rows now preview the bridge's sections too. Patched after the
+  // splice, so the recorded indices describe the array the providers are about to join, and before
+  // the rows are built: a bridge row's preview reads the patch lazily, at render time.
+  patchSharedSections(captured);
+
   const built = buildRows(createRowContext(session.theme));
   state.lastFailures = built.failures;
   if (built.rows.length > 0) captured.push(...built.rows);
@@ -655,6 +671,13 @@ function rollbackEarly(session: CaptureSession): void {
   } catch {
     // frozen, sealed or exotic: nothing more can be taken back from this array
   }
+  // Reverse order of the writes: the preview patch was applied after the `Card style` splice, so it
+  // goes back FIRST, while its recorded indices still describe the array it edited.
+  try {
+    undoSharedSections(early.sectionPreview);
+  } catch {
+    // same: the host's own previews stay as the host left them
+  }
   try {
     undoCardStyleSplice(array, early.cardStyle);
   } catch {
@@ -721,6 +744,7 @@ function injectProvisionalRows(
   session.injecting = true;
   const state = captureState();
   let cardStyle: EarlyCardStyleSplice | undefined;
+  let sectionPreview: SharedSectionsPatch | undefined;
   try {
     // S1, same ordering as the late path: the host's own line is extended before the providers'
     // rows are appended (the fallback provider's contribution depends on that order). The splice is
@@ -729,10 +753,15 @@ function injectProvisionalRows(
       session.extendedCardStyle = true;
       cardStyle = extendCardStyleProvisional(array);
     }
+    // S1/S2: the host's `Sections` rows are patched BEFORE the host's own `map` reads this array,
+    // so the list it previews already names the bridge's sections. Undone with everything else.
+    sectionPreview = patchSharedSections(array);
     const built = buildRows(createRowContext(session.theme));
     if (built.rows.length > 0 && !provesAppendedRows(callback, thisArg, array, built.rows)) {
       // The host's own `map` would meet a row it cannot derive a page for. Nothing is pushed: the
-      // splice goes back too, and the late path handles this array exactly as it did before S18.
+      // splice and the preview patch go back too, and the late path handles this array exactly as it
+      // did before S18.
+      undoSharedSections(sectionPreview);
       undoCardStyleSplice(array, cardStyle);
       session.extendedCardStyle = false;
       return;
@@ -751,11 +780,13 @@ function injectProvisionalRows(
       failures: built.failures,
     };
     if (cardStyle !== undefined) injection.cardStyle = cardStyle;
+    if (sectionPreview !== undefined) injection.sectionPreview = sectionPreview;
     session.earlyInjection = injection;
     state.lastFailures = built.failures;
   } catch {
     // The provider build isolates its own failures, so reaching this means the array refused the
     // edit. Nothing of the provisional step stays behind.
+    undoSharedSections(sectionPreview);
     undoCardStyleSplice(array, cardStyle);
     session.extendedCardStyle = false;
   } finally {

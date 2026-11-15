@@ -52,8 +52,9 @@ reading first, because they are what a plugin could not do at all before.
 
 ## Key Features You Should Know About
 
-- **Settings rows** for the host's categories, or a page of your own; toggles and button rows, with
-  the host's own `●`/`○` marker and arrow handling.
+- **Settings rows** for the host's categories, or a page of your own: toggles, button rows, and the
+  host's own `●`/`○` marker, arrow handling and footer for a focused row — `←/→ choose · Enter apply`
+  — so a plugin never draws chrome of its own.
 - **Sidebar sections** that join the rail after the native cards, each contributing its own
   visibility toggle automatically.
 - **Card styles** and **transcript transforms**: the bridge rewrites frames the host already drew,

@@ -179,17 +179,36 @@ jobs:
 
       # Read from the registry, outside the publish job: the artifact is what
       # counts, not the step that produced it.
+      #
+      # A successful publish answers "your package is being processed", and the
+      # public registry can take a couple of minutes to serve the new version.
+      # Reading once would fail on that delay and report a broken release that
+      # is not broken, so each read is bounded and retried.
       - name: Registry serves this version
         run: |
           set -euo pipefail
           name=$(node -p "require('./package.json').name")
           version=$(node -p "require('./package.json').version")
-          published=$(npm view "${name}@${version}" version)
+          read_registry() {
+            for _ in $(seq 1 20); do
+              out=$(npm view "$1" "$2" 2>/dev/null || true)
+              if [[ -n "${out}" ]]; then
+                printf '%s' "${out}"
+                return 0
+              fi
+              sleep 15
+            done
+            return 1
+          }
+          if ! published=$(read_registry "${name}@${version}" version); then
+            echo "::error::registry never served ${name}@${version}"
+            exit 1
+          fi
           if [[ "${published}" != "${version}" ]]; then
             echo "::error::registry reports ${published}, expected ${version}"
             exit 1
           fi
-          latest=$(npm view "${name}" dist-tags.latest)
+          latest=$(read_registry "${name}" dist-tags.latest) || true
           if [[ "${latest}" != "${version}" ]]; then
             echo "::error::dist-tag latest is ${latest}, expected ${version}"
             exit 1

@@ -17,14 +17,18 @@
   "license": "Apache-2.0",
   "files": [
     "src",
-    "docs/contract.md",
-    "docs/state.md",
-    "docs/architecture.md",
+    "docs",
+    "examples",
+    "skills",
+    "PRD.md",
     "README.md"
   ],
   "pi": {
     "extensions": [
       "./src/extension.ts"
+    ],
+    "skills": [
+      "./skills"
     ]
   },
   "engines": {

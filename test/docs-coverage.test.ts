@@ -34,6 +34,40 @@ const isShipped = (path: string): boolean =>
     return path === bare || path.startsWith(`${bare}/`);
   });
 
+test("AGENTS.md indexes every project skill and every link in it resolves", () => {
+  const path = "AGENTS.md";
+  assert.ok(
+    existsSync(resolve(packageRoot, path)),
+    "AGENTS.md must tell an agent which skill and which document governs the work",
+  );
+  const text = readFileSync(resolve(packageRoot, path), "utf8");
+
+  const dirs = readdirSync(resolve(packageRoot, "skills"), { withFileTypes: true })
+    .filter((dirent) => dirent.isDirectory())
+    .map((dirent) => dirent.name)
+    .sort();
+
+  for (const dir of dirs) {
+    assert.ok(
+      text.includes(`skills/${dir}/SKILL.md`),
+      `AGENTS.md does not index skills/${dir}/SKILL.md`,
+    );
+  }
+
+  // A row for a skill that no longer exists sends an agent to a path it cannot read.
+  const indexed = [...text.matchAll(/skills\/([^/`)\]]+)\/SKILL\.md/g)].map((match) => match[1]);
+  for (const name of new Set(indexed)) {
+    assert.ok(dirs.includes(name), `AGENTS.md indexes a skill that does not exist: ${name}`);
+  }
+
+  for (const { target, line } of localTargets(path)) {
+    assert.ok(
+      existsSync(resolve(packageRoot, dirname(path), target)),
+      `${path}:${line} links a path that does not exist: ${target}`,
+    );
+  }
+});
+
 /** Every shipped skill document, the same files the skill test below walks. */
 const skillDocs = (): string[] => {
   const skillsRoot = resolve(packageRoot, "skills");

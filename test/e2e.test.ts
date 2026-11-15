@@ -439,5 +439,5 @@ test("the documented values and types are reachable from the public entry", () =
   assert.equal(section.title, "API");
   assert.equal(section.lines(context).length, 1);
   assert.deepEqual(transform.transform(["a"], { width: 3 }), ["a", "3"]);
-  assert.equal(VERSION, "0.3.2");
+  assert.equal(VERSION, "0.4.0");
 });

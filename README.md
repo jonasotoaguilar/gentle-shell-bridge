@@ -78,6 +78,7 @@ reading first, because they are what a plugin could not do at all before.
 | Know what the bridge persists, and where | [docs/state.md](docs/state.md) |
 | See a real consumer, end to end | [examples/bash-card.ts](examples/bash-card.ts) |
 | Read the requirements and the reason each one exists | [PRD.md](PRD.md) |
+| Teach a plugin author — human or agent — to build one against this bridge | [skills/gentle-shell-bridge-plugins/SKILL.md](skills/gentle-shell-bridge-plugins/SKILL.md) |
 
 ## Limits
 

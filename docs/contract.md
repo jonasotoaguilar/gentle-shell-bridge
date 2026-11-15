@@ -1,4 +1,4 @@
-# Contract — `registerRows`, providers, rows, diagnostics
+# Contract — rows, sections, the store, card styles, transforms, tool designs, keymaps, palette items and diagnostics
 
 What a plugin can rely on. The mechanism behind it is in
 [architecture.md](architecture.md); the persistence decision in [state.md](state.md).
@@ -7,7 +7,7 @@ What a plugin can rely on. The mechanism behind it is in
 
 ```ts
 const dispose: () => void = registerRows(provider);
-```text
+```
 
 Registers a row provider with the process-global bridge and returns a disposer
 unsubscribing exactly that provider — no other provider's rows and no bridge state are
@@ -35,7 +35,7 @@ interface RowProvider {
   name?: string;                               // optional: this plugin's INTEGRATIONS row (§8)
   rows(ctx: RowContext): CustomizeRow[];       // evaluated lazily, per menu build
 }
-```text
+```
 
 - `rows()` runs each time the menu is built, never at registration. That is what makes
   `current()` honest: the plugin reads its live state at build time, so the bullet matches
@@ -77,6 +77,32 @@ Inline helpers available to `action` (`lib/visual-customize-view.ts:129-140`):
 They exist so a row never opens a nested native dialog; a plugin that needs a value should
 use them rather than `ctx.ui.input`.
 
+### Visibility
+
+`visible` is the one row field the bridge never reads. It is handed to the host as the same function
+reference — `test/button-rows.test.ts:185-212` asserts that identity and that no field is added,
+dropped or renamed — so whether a row shows is the plugin's own live state, evaluated by the
+renderer, not a bridge setting. The contract on it is two sentences (`src/types.ts:87-88`): hidden
+when it returns `false`, and a throw fails closed, so the row is hidden.
+
+A hidden row is still a row the provider returned: the bridge neither evaluates nor filters it
+(`src/rows.ts:203-240` is the whole row build, and it never mentions `visible`), so its
+`choice.setting` still counts towards the duplicate check of §6 and its `label` still has to pass
+the row-name rule of §4. A row hidden by a throw leaves no trace in the BRIDGE's channels either —
+`visible` is not wrapped the way a button `action` is, so a failure inside it reaches neither the
+notice buffer of §8 nor the `Last failures` block; what the host does with that throw is the host's
+business, as §7 records.
+
+The fail-closed sentence is the row contract's, and the only evaluator of it in this repository is the
+suite's fake host (`test/fake-host.ts:86-92`: no `visible` means visible, a throw returns `false`),
+which models the host's renderer instead of proving it. The renderer itself is not in this workspace,
+and no test here makes a `visible()` throw. Nothing beyond those two sentences is promised.
+
+This is not the bridge-owned visibility of a sidebar section (`src/visibility.ts:119-132`), which is
+persisted per section id and reaches the user as the generated `Sections` toggle (§11). A row's
+`visible()` belongs to the plugin: nothing about it is stored, and its answer is whatever the
+plugin's state says when the renderer asks.
+
 ## 4. How a toggle works
 
 A toggle is not a widget type. Push two consecutive rows sharing the same `choice.setting`
@@ -91,7 +117,7 @@ const toggle = (value: string) => ({
 });
 
 rows: () => [toggle("activity"), toggle("output")], // one rendered line
-```text
+```
 
 The renderer draws one line, `Name  ● current  ○ other`, and handles the keys itself: ←/→ moves
 the cursor inside the line and applies a value only when that row does not defer, Enter applies
@@ -151,7 +177,7 @@ Bash design                     OK    a row name: the host's own vocabulary
 Bash card → Bash rendering      BAD   arrow and a repeated qualifier: reads as a breadcrumb
 Bash card: rendering            BAD   colon
 Section: bash-card.status       BAD   prefix plus a dotted id
-```text
+```
 
 The bridge enforces the shape instead of trusting authors; it is never a silent rewrite:
 
@@ -281,6 +307,44 @@ card styles or transforms that plugin registers (one plugin, one line).
 The row name is the diagnostic column's label; the key and the module path stay in this report,
 because it is read by the plugin author, not by the user reading the footer.
 
+### What the user sees when a registration fails
+
+This report is for the plugin author; the user is told about a failure through Pi's own UI, never
+through the terminal. The bridge writes nothing to stdout or stderr (`src/notices.ts:1-19`), and every
+message it produces out of band is recorded with `recordNotice(message, level = "warning")`
+(`src/notices.ts:77-92`) and delivered as `ui.notify(message, level)` by `flushNotices`
+(`src/notices.ts:102-120`).
+
+What that buffer does with a repeated failure:
+
+- **Recorded once.** An identical `message` + `level` pair is stored once, and a blank message is
+  dropped (`src/notices.ts:78-81`), so a row that fails on every press is one line, not a stream.
+- **Bounded.** At most `MAX_NOTICES = 20` messages are kept (`src/notices.ts:43`). Past that, the
+  oldest ALREADY delivered entry is evicted first; only a buffer in which nothing was delivered yet
+  drops a pending message, and the loss is counted and printed as `notices dropped`
+  (`src/notices.ts:83-90`, `src/status.ts:1028-1029`).
+- **Delivered at `session_start`.** The extension calls `flushNotices(ctx.ui)` once per session,
+  after the `hasUI` check and before anything is armed (`src/extension.ts:211-222`). A session
+  without a UI delivers nothing and marks nothing, so the message waits for the next one; a `notify`
+  that throws leaves its message pending instead of losing it (`src/notices.ts:108-118`,
+  `test/notices.test.ts:198-228`). A failure that happens DURING a session is therefore not a toast
+  right away: it is in `/bridge-status` immediately and appears in the TUI at the next
+  `session_start` (the events listed in §9).
+- **Kept afterwards.** Delivered entries stay in the buffer (`src/notices.ts:122-129`), and the
+  report prints them with `delivered: true` beside the pending ones (`src/status.ts:425-435`,
+  `:1019-1031`), so a message the user scrolled past is still readable.
+
+What the bridge itself puts in that channel today: an incompatible API slot, once per process
+(`src/api.ts:257-272`); a keymap or palette id registered twice
+(`src/plugin-surface.ts:143,177`); a host `Card style` setter that threw
+(`src/card-style-rows.ts:292-298`); and a button row's `action` that threw or rejected, at level
+`error`, wrapped so the menu stays open (`src/rows.ts:143-159`).
+
+What it does NOT put there: a `register*` call that refuses its argument. That throws into the
+caller — the reserved `Keymaps` category does exactly that (`src/bus.ts:135-144`) — so reporting it
+is the plugin's own job, through `ctx.ui.notify` or a line of its own. The refusal is still visible
+to the author in the plugin's INTEGRATIONS line and in the `row rejections` block above.
+
 ## 9. Reaching the bridge — `session_start`, or the announcement
 
 **The rule: register at `session_start` if the package loaded first, otherwise when the
@@ -313,7 +377,7 @@ Object.freeze({
   requestRepaint,                    // since 0.3.0; optional on an older published object
   createStore,
 });
-```text
+```
 
 Publication is **first wins**: a compatible object already in the slot is kept and never replaced,
 and the slot is never reset. A consumer gates on the schema string, `version === 1` and the three
@@ -359,7 +423,7 @@ pi.on("session_start", (_event, ctx) => {
     );
   }
 });
-```text
+```
 
 Or import the package and call `onBridgeApi(handler, pi.events)`, which does both forms for you: the
 handler runs immediately when the object is already published (and no listener is taken), otherwise
@@ -374,7 +438,7 @@ const register = (api: BridgeApi): void => {
 
 // Works in both orders: this package loaded first, or the plugin did.
 const dispose = onBridgeApi(register, pi.events);
-```text
+```
 
 `bridgeApi()` never waits, defers or retries: it answers about the slot as it is right now.
 
@@ -387,7 +451,7 @@ When this package publishes its object, it emits one event on Pi's cross-extensi
 pi.events.on("gentle-shell-bridge:ready", (payload) => {
   // { schema: "gentle-shell-bridge/api", version: 1, VERSION: "0.3.0" }
 });
-```text
+```
 
 - **Name:** `gentle-shell-bridge:ready`. Payload: `{ schema, version, VERSION }` — the same identity,
   major and release the published object carries, frozen. Informational only: the payload says
@@ -432,7 +496,7 @@ const dispose = api.registerRows({
   category: "Cards",
   rows: () => [toggle("activity"), toggle("output")], // consecutive rows → one line
 });
-```text
+```
 
 Nothing may sit between the two values or the renderer draws two lines. `current()` is evaluated
 when the menu is built, `action()` runs before the host's own repaint, and `preview()` replaces the
@@ -454,7 +518,7 @@ const dispose = api.registerSection({
   defaultVisible: true,         // absent means true
   order: 10,                    // optional integer
 });
-```text
+```
 
 The bridge generates the `Sections` rows for it: two consecutive rows sharing one label,
 values `shown` / `hidden`, with a live `current()` and a persist-first `action()`. The label — not
@@ -472,7 +536,7 @@ or writes that file.
 const store = api.createStore("loon");
 store.set("bannerSource", "activity");
 const value = store.get("bannerSource", "activity"); // caller's fallback when absent or unreadable
-```text
+```
 
 The document is `{ "schemaVersion": 1, "values": { … } }` at
 `<gentle config home>/gentle-shell-bridge/<pluginId>.json`. `values` is an envelope, so a plugin
@@ -503,6 +567,73 @@ deferred silently. A newer bridge and an older plugin meet the same way when the
 demands a member the old object does not have. That is the intended answer: a plugin can always
 tell the user it found no compatible bridge, and no registration can sit invisible in a holding
 area waiting for a version that will never arrive.
+
+### The canonical `session_start` skeleton
+
+The four steps a plugin owns, in the order they happen. `examples/bash-card.ts` is the same shape
+without the import — it cannot import the package, so it inlines the gate and the event name — and
+its `dispose()` (`examples/bash-card.ts:1421-1432`) is the teardown below.
+
+```ts
+import { onBridgeApi, type BridgeApi } from "gentle-shell-bridge";
+
+/** This plugin's one registration lifetime: every disposer the bridge handed back. */
+const disposers: Array<() => void> = [];
+let stopListening: (() => void) | undefined;
+
+/** Stable ids are what make a second call replace, never stack (§5). */
+const register = (api: BridgeApi): void => {
+  // The helper already detached its own listener (`src/api.ts:468-475`); keep the state honest.
+  stopListening = undefined;
+  disposers.push(
+    api.registerRows({
+      id: "loon.banner-source",
+      category: "Cards",
+      rows: () => [/* §4: the toggle pair, built from live state */],
+    }),
+  );
+};
+
+/** Every surface this plugin registered, in one teardown. */
+const disposeAll = (): void => {
+  stopListening?.();
+  stopListening = undefined;
+  for (const disposeOne of disposers.splice(0, disposers.length)) {
+    try {
+      disposeOne();
+    } catch {
+      // A disposer that throws must not strand the others.
+    }
+  }
+};
+
+pi.on("session_start", () => {
+  // Immediate when the bridge loaded first, a subscription when it has not, one lookup either way.
+  if (stopListening !== undefined || disposers.length > 0) return;
+  stopListening = onBridgeApi(register, pi.events);
+});
+
+// The end of this lifetime's registrations; the next `session_start` registers again.
+pi.on("session_shutdown", () => disposeAll());
+```
+
+1. **Reach it.** `onBridgeApi(handler, events)` (`src/api.ts:435`) is the corrected timing rule in one
+   call: the handler runs in the same turn when the object is already published, and takes no
+   subscription at all (`src/api.ts:445-449`); otherwise it subscribes to
+   `gentle-shell-bridge:ready`, runs the handler once and detaches itself (`src/api.ts:468-475`). A
+   host with no `pi.events` can never hear a later publication, so the helper returns a no-op
+   (`src/api.ts:451-452`) — the honest answer there, and the reason the returned disposer is kept
+   even when it does nothing. A handler that throws is contained, because one plugin's failure must
+   not break the announcement for the next listener (`src/api.ts:437-443`).
+2. **Register, and keep what comes back.** Every `register*` returns a disposer that removes exactly
+   that registration, and a registration with the same `id` replaces the previous one in place
+   instead of adding a second (`src/bus.ts:146-161`).
+3. **Dispose.** The array is the plugin's, and dropping the disposers leaves only replacement by `id`
+   as a way out. `session_shutdown` is where this package drops its own footer rows
+   (`src/extension.ts:260-262`), and it is the natural end of a registration lifetime.
+4. **`/reload` replaces.** Pi fires `session_start` for `reload` too (above), and a reloaded module
+   registers the same ids again; with stable ids that is one registration per surface, whether or
+   not the previous lifetime's `disposeAll()` ever ran.
 
 ## 10. Persistence
 
@@ -548,7 +679,7 @@ const dispose: () => void = registerSection({
   defaultVisible: true,             // absent means true
   order: 10,                        // optional integer
 });
-```text
+```
 
 - `id` — registering an existing id **replaces** the previous section in place; a second
   card never appears. It is the toggle's identity (replacement, disposer and the persisted
@@ -582,7 +713,7 @@ A row is a plain **string** or a structured **row object**:
 
 ```ts
 { label: string; meta?: string; glyph?: string; tone?: Tone; onClick?: () => void }
-```text
+```
 
 - a plain string is drawn **byte for byte**: the author's characters, clipped to the width, no
   indent, no padding, no styling. Every section written before structured rows existed looks
@@ -626,7 +757,7 @@ child, and the conversation gets `columns - 53`. One decision IS made from a par
 
 ```text
 const active = railLines.length > 0 && railLines.every((line) => visibleWidth(line) <= contentWidth);
-```text
+```
 (`lib/shell-sidebar-layout.ts:410`) — a single rail row wider than the content width drops the whole
 rail, and the conversation then takes every column: the layout's widths changed because of what a
 part returned.
@@ -706,7 +837,7 @@ label the user reads, never an id and never a prefix:
 ```text
 stats             ● shown  ○ hidden     ← the host's own row
 music             ● shown  ○ hidden     ← a plugin's section (id "loon.music", title "MUSIC")
-```text
+```
 
 For every registered section the bridge emits **two consecutive rows** in category `Sections`,
 sharing one label as their `choice.setting` (the host prints the setting as the line's name) with
@@ -752,7 +883,7 @@ one namespaced file:
     "collapsed": { "loon.music": true }
   }
 }
-```text
+```
 
 `sections` maps a section id to `true` (shown) / `false` (hidden); a missing id falls back to
 `defaultVisible`. `collapsed` maps a section id to `true` (folded) / `false` (open); a missing id is
@@ -781,7 +912,7 @@ const dispose: () => void = registerCardStyle({
   frame: { top, line, bottom }, // the three functions below; nothing else is called
   preview: () => ({ title: "Cute", sample: "○ cute  ╭─ welcome ─╮" }), // optional, literal
 });
-```text
+```
 
 The id never appears in a row: the host's line reads `Card style  ○ neon ● float ○ cute`, and the
 style's own row is labelled `cute` (or the author's `rowLabel`), exactly like a host row's visible
@@ -794,7 +925,7 @@ text. `label` stays the line's value — the text the host renders and the uniqu
 top(ctx: { width: number; title?: string; hint?: string }): string;
 line(ctx: { text: string; width: number; first: boolean }): string;
 bottom(ctx: { width: number }): string;
-```text
+```
 
 `width` is the width the host rendered at. `title` is the heading the host printed, without its
 glyph and without the right-aligned hint; `hint` is that hint when its style runs prove it is one
@@ -812,7 +943,7 @@ setting, so the user sees ONE line in the host's own position:
 
 ```text
 Card style  ○ neon ● float ○ cute
-```text
+```
 
 The host's own rows keep the host's `current()` and `action()`, wrapped in exactly two ways:
 `current()` reports `false` while a registered style is selected (one bullet at a time), and
@@ -868,7 +999,7 @@ The selection is the bridge's state, not the plugin's:
 
 ```json
 { "schemaVersion": 1, "values": { "cardStyle": "loon.cute" } }
-```text
+```
 
 `cardStyle` is a style id or `native`. A missing file, an unreadable one, an unknown
 `schemaVersion` or a non-string value reads as `native`. A stored id whose style was disposed
@@ -928,7 +1059,7 @@ const dispose: () => void = registerTransform({
     return rows;
   },
 });
-```text
+```
 
 ### What the transform receives
 
@@ -1009,13 +1140,77 @@ keeps its report byte for byte:
 transforms: 2 registered
   - loon.bash-cards (order 10): applied, 13 lines, 4 candidates, 1 recognised, 1 rewritten, shapes: float 1
   - loon.strict (registration order): failed (definitions are missing), 13 lines, 0 candidates, 0 recognised, 0 rewritten
-```text
+```
 
 `applied` means the frame changed, `skipped` means the transform was called and left the rows as they
 were, `failed` carries its message, and `not run` means it was registered after the last frame. The
 outcome is the LAST frame's, not a history: a report is about what the user is looking at now. The
 counts after it belong to that same frame — lines received, then what the transform reported — and a
 `not run` transform has none, because no frame has asked it anything yet.
+
+### A worked transform
+
+One rule, end to end: on a bash card, the user's home directory is printed as `~`. It rewrites rows
+in place, only the rows the origin says came from the `bash` child, and it makes a row shorter
+rather than longer, so `ctx.width` still holds afterwards.
+
+```ts
+import { registerTransform, type TransformContext } from "gentle-shell-bridge";
+
+/** `/home/<user>` or `/Users/<user>`, followed by more path: the part a card can shorten. */
+const HOME_PREFIX = /(^|\s)(?:\/home\/[^/\s]+|\/Users\/[^/\s]+)(?=\/)/u;
+
+const dispose = registerTransform({
+  id: "loon.tilde",
+  transform: (lines: readonly string[], ctx: TransformContext): readonly string[] => {
+    // Optional on the context and ALWAYS set by this bridge: an unknown origin is [], never a guess.
+    const rows = ctx.rows ?? [];
+    let candidates = 0;
+    let recognised = 0;
+    let rewritten = 0;
+
+    const out = lines.map((line, index) => {
+      // The child's toolName, never the words the card draws (src/types.ts:288-295).
+      if (rows[index]?.toolName !== "bash") return line;
+      candidates += 1;
+      if (!HOME_PREFIX.test(line)) return line;
+      recognised += 1;
+      const next = line.replace(HOME_PREFIX, "$1~");
+      if (next === line) return line;
+      rewritten += 1;
+      return next; // never wider than the row it replaces
+    });
+
+    // Telemetry is optional on the context too: gate before calling, and report COUNTS only.
+    if (typeof ctx.report === "function") {
+      ctx.report({ candidates, recognised, rewritten });
+    }
+    return out;
+  },
+});
+```
+
+- **The signature is the contract.** `transform(lines: readonly string[], ctx: TransformContext):
+  readonly string[]` (`src/types.ts:348`). `id` is the replacement key and the name this report
+  prints; `order` decides where it runs (`src/types.ts:337-349`).
+- **`ctx.width` is a limit, not a target.** Whatever comes back is clipped to it with the card
+  style's own `clipToWidth` before the host draws it (`src/transform-pipeline.ts:259-262`), so a row
+  that grew loses its tail — possibly exactly the text that was added. A rewrite that is no wider
+  than the row it replaces cannot be cut by its own transform.
+- **`ctx.rows ?? []`, only when the origin matters.** The field is optional because a context from an
+  older copy has no such member, while this pipeline always sets it and represents an unknown origin
+  as `[]` (`src/types.ts:303-314`, `src/transform-pipeline.ts:281-305`). It identifies the host child
+  per row (`toolName`, `component`) and never drawn text (`src/types.ts:288-295`); it describes the
+  frame the host produced and is handed UNCHANGED to every transform in the chain, so once an earlier
+  transform has added or removed rows the indices no longer line up with the array that arrives.
+- **Counts only, behind a guard.** `report` is optional for the same reason
+  (`src/types.ts:315-323`): gate with `typeof ctx.report === "function"`. What is stored is numbers
+  and shape names — a count clamped to a non-negative integer, a name kept only when it matches
+  `^[a-z][a-z0-9_.-]*$` and is at most 24 characters (`src/types.ts:262-271`,
+  `src/transform-pipeline.ts:96-109`, `:167-191`). A transform that rewrites card text therefore must
+  not stash it: no line, no substring, no plugin output in a count, a shape name, a log line or a
+  store. The rule the example follows is the one to copy — count what the grammar did, return the
+  rows, and keep every character of the user's output inside that call.
 
 ## 14. Tool designs
 
@@ -1034,7 +1229,7 @@ api.registerToolDesign({
     return lines.map((line) => rewriteTheMarkOnly(line));
   },
 });
-```text
+```
 
 ### The convention: lines in, lines out
 
@@ -1208,7 +1403,7 @@ order.
 
 ```text
 Symbol.for("gentle-shell-bridge/plugin-surface/v1") → { schema: 1, keymaps(), commands() }
-```text
+```
 
 Both getters answer with a **copy**, never the live array, so a host that keeps one cannot mutate
 what the bridge owns.

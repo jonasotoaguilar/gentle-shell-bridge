@@ -642,7 +642,8 @@ the host allows: it lets gentle-shell draw, then repaints the frames the host al
 ### Where the conversation component is, and how that was proven
 
 The full derivation, with every citation, is the evidence block at the top of `src/card-styles.ts`
-(§1). In short, from the `tui` Pi hands a `ctx.ui.setWidget` factory (`src/extension.ts:108-109`):
+(§1). In short, from the `tui` Pi hands a `ctx.ui.setWidget` factory (`src/extension.ts:110-148`,
+the call itself at `:130-147`):
 
 1. **Primary:** `tui.children[0]` → the document container → `children[2]` (the chat container).
    `children` is a declared member of the public `TUI` interface (`pi-tui/dist/tui.d.ts:223-231`)

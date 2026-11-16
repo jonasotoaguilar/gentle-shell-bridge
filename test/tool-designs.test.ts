@@ -639,6 +639,58 @@ test("S12: the design reads the host's render context by value, live, for both h
   assert.ok(!("invalidate" in (seen[1].render ?? {})), "no host function reaches a design");
 });
 
+test("S12 on a grouped LINE: every tool the line paints gets its own ctx.tool and ctx.render", () => {
+  const seen: ToolDesignContext[] = [];
+  registerToolDesign(
+    groupedDesign({
+      tools: ["bash", "write"],
+      apply: (lines: readonly string[], ctx: ToolDesignContext): string[] => {
+        seen.push(ctx);
+        return [...lines];
+      },
+    }),
+  );
+  setToolDesignLineSelection("line", "tools", "loon.tools-activity");
+
+  // The same shape Pi hands a grouped design: the call's identity, its arguments, its state.
+  const hostContext = {
+    toolCallId: "call-1",
+    args: { command: "ls -la" },
+    isPartial: false,
+    isError: true,
+    durationMs: 12,
+    expanded: false,
+    state: { secret: true },
+  };
+  const render = (tool: string, card: readonly string[]): void => {
+    const resolved = toolDesignResolver(tool, () => fakeRenderers({ call: card, result: card }).renderers);
+    assert.ok(resolved !== undefined, `${tool}: the line wraps its card`);
+    const component = (resolved.renderCall as (...values: unknown[]) => FakeComponent)(
+      {},
+      THEME,
+      hostContext,
+    );
+    assert.deepEqual(component.render(80), card, `${tool}: the design draws the host's rows`);
+  };
+
+  render("bash", BASH_CARD);
+  render("write", WRITE_CARD);
+
+  const expected = {
+    toolCallId: "call-1",
+    args: { command: "ls -la" },
+    isPartial: false,
+    isError: true,
+    durationMs: 12,
+    expanded: false,
+  };
+  assert.equal(seen.length, 2, "apply runs once per pass, one pass per tool");
+  assert.deepEqual(seen.map((ctx) => ctx.tool), ["bash", "write"], "ctx.tool names the tool the line painted");
+  assert.deepEqual(seen[0].render, expected, "the line path forwards `render` exactly like the per-tool path");
+  assert.deepEqual(seen[1].render, expected);
+  assert.ok(!("state" in (seen[1].render ?? {})), "nothing beyond the documented fields crosses");
+});
+
 test("S12: no render context from the host, no `render` on the design's context", () => {
   const seen: ToolDesignContext[] = [];
   registerToolDesign({

@@ -454,7 +454,7 @@ When this package publishes its object, it emits one event on Pi's cross-extensi
 
 ```ts
 pi.events.on("gentle-shell-bridge:ready", (payload) => {
-  // { schema: "gentle-shell-bridge/api", version: 1, VERSION: "0.3.0" }
+  // { schema: "gentle-shell-bridge/api", version: 1, VERSION: "0.8.0" }
 });
 ```
 

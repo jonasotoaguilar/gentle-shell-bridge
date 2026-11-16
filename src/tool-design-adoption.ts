@@ -55,7 +55,7 @@
  */
 
 import { isRecord } from "./rows.ts";
-import { recordToolDesignFailure, snapshotToolDesigns } from "./tool-designs.ts";
+import { designsOfTool, recordToolDesignFailure } from "./tool-designs.ts";
 import {
   TOOL_RENDERERS_WRAPPED,
   wrapRenderers,
@@ -177,7 +177,7 @@ function adoptCard(child: unknown): CardOutcome {
   // Recognition is by component identity, never by the drawn frame (S1): a child that is not a tool
   // card is not ours to touch, and neither is a tool nobody declared a design for.
   if (typeof tool !== "string" || tool === "") return "ignored";
-  if (snapshotToolDesigns(tool).length === 0) return "ignored";
+  if (designsOfTool(tool).length === 0) return "ignored";
 
   const definition = child.toolDefinition;
   if (definition === undefined || definition === null) {

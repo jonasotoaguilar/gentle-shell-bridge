@@ -280,9 +280,19 @@ interface CardStyleLike {
 /**
  * One tool design as the bridge accepts it (`src/types.ts`, `ToolDesignRegistration`). The host's
  * rows go in, the rows to draw come out; `apply` never sees Pi and never owns the frame.
+ *
+ * Exactly one of `tool` / (`line` + `tools`) is required. This example uses the UNGROUPED shape, so
+ * it keeps its own `Card bash` line. A design that paints several tools at once names a line and the
+ * tools it covers (`{ line: "tools", tools: ["bash", "grep"], … }`), and the customize menu then
+ * shows ONE `Card tools` line for all of them.
  */
 interface ToolDesignLike {
-  tool: string;
+  /** Ungrouped: the tool this design draws, and the name of its own `Card <tool>` line. */
+  tool?: string;
+  /** Grouped: the line this design joins; several designs naming it share one `Card <line>`. */
+  line?: string;
+  /** Grouped: the tools this design paints. Required with `line`, refused with `tool`. */
+  tools?: readonly string[];
   id: string;
   /** The plugin's INTEGRATIONS row, honoured on the first registration only. */
   name?: string;
@@ -928,14 +938,13 @@ function applyBashHeading(lines: readonly string[], ctx: ToolDesignContextLike):
   return [...lines];
 }
 
-/** A literal depiction for `/gentle:customize`'s preview, every row the same 25 columns. */
+/**
+ * A literal depiction for `/gentle:customize`'s preview. A Cards value draws ONE row (D5), so the
+ * sample is the card's heading row and nothing else: the bridge uses a preview's first line.
+ */
 const DESIGN_PREVIEW = {
   title: `Cards · ${DESIGN_LABEL}`,
-  sample: [
-    "╭─ bash npm test ───────╮",
-    "│ PASS 42 tests         │",
-    "╰───────────────────────╯",
-  ].join("\n"),
+  sample: "╭─ bash npm test ───────╮",
 };
 
 /** The one registration this file sends. The caller decides whether the surface exists. */

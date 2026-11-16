@@ -24,9 +24,11 @@ import { createStore, resetStoreStateForTests } from "../src/store.ts";
 import {
   TOOL_DESIGN_DEFAULT_LABEL,
   TOOL_DESIGN_NATIVE,
+  getToolDesignLineSelection,
   getToolDesignSelection,
   registerToolDesign,
   resetToolDesignsForTests,
+  setToolDesignSelection,
   toolNamesWithDesigns,
 } from "../src/tool-designs.ts";
 import {
@@ -358,3 +360,75 @@ test("PRESERVE: the provider's rows stay empty after the last design is disposed
   dispose();
   assert.deepEqual(rowsForBuild(), []);
 });
+
+// ---------------------------------------------------------------------------------------------
+// S1/S3/S8 — ONE line over several tools
+// ---------------------------------------------------------------------------------------------
+
+const grouped = (overrides: Partial<ToolDesignRegistration> = {}): ToolDesignRegistration => ({
+  line: "tools",
+  tools: ["bash", "write"],
+  id: "loon.tools-activity",
+  label: "activity",
+  apply: (lines) => [...lines],
+  ...overrides,
+});
+
+test("S1/S3: a grouped line is ONE Cards row named after the line, default first, then its designs", () => {
+  registerToolDesign(grouped({ tools: ["bash", "write"] }));
+  registerToolDesign(grouped({ id: "loon.tools-complete", label: "complete", tools: ["bash"] }));
+
+  const lines = toggleLines(rowsForBuild());
+  assert.deepEqual(
+    lines,
+    ["Card tools ● default ○ activity ○ complete"],
+    "one line for bash, write and read, named by the line, in registration order",
+  );
+});
+
+test("S7: picking a grouped value stores it per LINE under `lines`, never per tool", async () => {
+  registerToolDesign(grouped());
+
+  const pick = rowsForBuild().find((row) => row.choice?.value === "activity");
+  assert.ok(pick?.action !== undefined);
+  await pick.action({ input: async () => undefined, confirm: async () => true, capture: async () => undefined });
+
+  assert.equal(getToolDesignLineSelection("line", "tools"), "loon.tools-activity");
+  assert.equal(getToolDesignSelection("bash"), TOOL_DESIGN_NATIVE, "the per-tool map did not move");
+  assert.deepEqual(
+    createStore("bridge-tool-designs").get("selections", {}),
+    { $lines: { tools: "loon.tools-activity" } },
+    "the choice is keyed by the line, inside the ONE stored value (one read per frame)",
+  );
+});
+
+test("S8: a line and a tool that derive the same name are told apart by the ordinal rule", () => {
+  registerToolDesign({ ...writeBadge, tool: "tools", id: "loon.tool-tools", label: "tools card" });
+  registerToolDesign(grouped({ tools: ["bash"], id: "loon.line-tools", label: "line tools" }));
+
+  const settings = [...new Set(rowsForBuild().map((row) => row.choice?.setting))];
+  assert.deepEqual(
+    settings,
+    ["Card tools", "Card tools 2"],
+    "the same name from a tool and a line gets the lowest free ordinal, deterministically",
+  );
+});
+
+test("D5: a design preview is drawn as ONE row: the sample's first line only", () => {
+  registerToolDesign({
+    ...bashHeading,
+    preview: () => ({ title: "Cards · multiline", sample: "first row\nsecond row" }),
+  });
+
+  const row = rowsForBuild().find((candidate) => candidate.choice?.value === bashHeading.label);
+  assert.ok(row?.preview !== undefined);
+  assert.deepEqual(row.preview(), { title: "Cards · multiline", sample: "first row" });
+});
+
+test("D3: a legacy per-tool value appears selected on the line once the tool joins it", () => {
+  setToolDesignSelection("bash", "loon.tools-activity");
+  registerToolDesign(grouped({ tools: ["bash", "write"] }));
+
+  assert.match(toggleLines(rowsForBuild())[0] ?? "", /○ default ● activity/u);
+});
+

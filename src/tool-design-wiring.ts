@@ -66,9 +66,9 @@
 import { isRecord } from "./rows.ts";
 import {
   applyToolDesign,
+  designsOfTool,
   recordToolDesignFailure,
   resolveToolDesignSelection,
-  snapshotToolDesigns,
   type ToolDesignSelection,
 } from "./tool-designs.ts";
 import type { ToolDesignContext, ToolDesignRender } from "./types.ts";
@@ -117,7 +117,7 @@ export const toolDesignResolver: ToolDesignResolver = (toolName, next) => {
   const renderers = next();
   try {
     // No design for this tool: there is nothing to choose, so nothing may change, not even identity.
-    if (snapshotToolDesigns(toolName).length === 0) return renderers;
+    if (designsOfTool(toolName).length === 0) return renderers;
     if (renderers === undefined) return renderers;
     return wrapRenderers(renderers, toolName);
   } catch (error) {

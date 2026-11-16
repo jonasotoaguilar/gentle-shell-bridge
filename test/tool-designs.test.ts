@@ -16,7 +16,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -35,14 +35,18 @@ import { resetStoreStateForTests } from "../src/store.ts";
 import {
   TOOL_DESIGN_NATIVE,
   TOOL_DESIGN_STORE_ID,
+  designsOfTool,
   getToolDesignConflicts,
   getToolDesignFailures,
+  getToolDesignLineSelection,
   getToolDesignSelection,
   registerToolDesign,
   resetToolDesignsForTests,
   resolveToolDesignSelection,
+  setToolDesignLineSelection,
   setToolDesignSelection,
   snapshotToolDesigns,
+  toolDesignLines,
   toolNamesWithDesigns,
 } from "../src/tool-designs.ts";
 import type { ToolDesignContext, ToolDesignRegistration } from "../src/types.ts";
@@ -884,3 +888,304 @@ test("PRESERVE: armBridge still reports its own outcome with designs registered"
   const result = armBridge(host.ui);
   assert.notEqual(result.backend, "none", "the design bus never changes the row interception");
 });
+
+// ---------------------------------------------------------------------------------------------
+// S1–S8 — ONE line over several tools (the grouped registration)
+// ---------------------------------------------------------------------------------------------
+
+/** A grouped registration: one line, several tools, same `apply`. */
+const groupedDesign = (overrides: Partial<ToolDesignRegistration> = {}): ToolDesignRegistration => ({
+  line: "tools",
+  tools: ["bash", "write", "read"],
+  id: "loon.tools-activity",
+  label: "activity",
+  apply: (lines: readonly string[]) => [...lines],
+  ...overrides,
+});
+
+/**
+ * The stored value `/bridge-status` and the tests read: the bridge's own file, never the host's config.
+ * ONE document holds both maps — the tool selections flat, the lines under the reserved key — so a
+ * frame reads the file once (S9/D6).
+ */
+const readDesignStore = (): { selections?: Record<string, unknown>; lines: Record<string, unknown> } => {
+  const values = JSON.parse(
+    readFileSync(join(configHome, "gentle-shell-bridge", `${TOOL_DESIGN_STORE_ID}.json`), "utf8"),
+  ).values as Record<string, unknown>;
+  const stored = values["selections"];
+  const document =
+    typeof stored === "object" && stored !== null && !Array.isArray(stored)
+      ? (stored as Record<string, unknown>)
+      : {};
+  const { $lines, ...selections } = document;
+  return {
+    ...(Object.keys(selections).length === 0 ? {} : { selections }),
+    lines:
+      typeof $lines === "object" && $lines !== null && !Array.isArray($lines)
+        ? ($lines as Record<string, unknown>)
+        : {},
+  };
+};
+
+test("S2/S3: a grouped registration names ONE line and paints the union of its tools", () => {
+  registerToolDesign(groupedDesign({ tools: ["bash", "write"] }));
+  registerToolDesign(
+    groupedDesign({ id: "loon.tools-complete", label: "complete", tools: ["write", "read"] }),
+  );
+
+  assert.deepEqual(
+    toolDesignLines().map((line) => ({ scope: line.scope, line: line.line, tools: line.tools })),
+    [{ scope: "line", line: "tools", tools: ["bash", "write", "read"] }],
+    "two registrations naming the same line join it; its tool set is the union",
+  );
+  assert.deepEqual(
+    toolDesignLines()[0]?.designs.map((design) => design.id),
+    ["loon.tools-activity", "loon.tools-complete"],
+    "the line's values stay in registration order",
+  );
+  assert.deepEqual(designsOfTool("read").map((design) => design.id), ["loon.tools-complete"]);
+  assert.deepEqual(toolNamesWithDesigns(), ["bash", "write", "read"]);
+});
+
+test("S2: mixing `tool` with `line`/`tools`, an empty tool set and duplicates are refused whole", () => {
+  for (const invalid of [
+    { ...groupedDesign(), tool: "bash" },
+    { ...bashHeadingDesign, tools: ["bash"] },
+    { line: "tools", tools: [], id: "loon.empty", label: "empty", apply: groupedDesign().apply },
+    {
+      line: "tools",
+      tools: ["bash", "bash"],
+      id: "loon.dupe",
+      label: "dupe",
+      apply: groupedDesign().apply,
+    },
+    { line: "tools", tools: [""], id: "loon.blank", label: "blank", apply: groupedDesign().apply },
+    { line: "", tools: ["bash"], id: "loon.noline", label: "no line", apply: groupedDesign().apply },
+    { line: "tools", id: "loon.notools", label: "no tools", apply: groupedDesign().apply },
+  ]) {
+    assert.throws(() => registerToolDesign(invalid as unknown as ToolDesignRegistration));
+  }
+  assert.deepEqual(toolDesignLines(), [], "a refused registration never half-registers");
+});
+
+test("S3: an array may mix an ungrouped and a grouped registration, and stays all-or-nothing", () => {
+  const dispose = registerToolDesign([
+    bashHeadingDesign,
+    groupedDesign({ tools: ["grep"] }),
+    writeBadgeDesign,
+  ]);
+  assert.deepEqual(toolNamesWithDesigns(), ["bash", "grep", "write"]);
+  dispose();
+  assert.deepEqual(toolNamesWithDesigns(), []);
+
+  assert.throws(() => registerToolDesign([bashHeadingDesign, groupedDesign({ tools: ["bash"] })]));
+  assert.deepEqual(
+    toolNamesWithDesigns(),
+    [],
+    "the ungrouped registration before the refused grouped one is rolled back",
+  );
+});
+
+test("S5/D1: a tool belongs to at most one line; a second line refuses the WHOLE registration and is reported", () => {
+  registerToolDesign(bashHeadingDesign);
+
+  assert.throws(() => registerToolDesign(groupedDesign({ tools: ["write", "bash"] })));
+  assert.deepEqual(toolNamesWithDesigns(), ["bash"], "no half-registration: write joined nothing");
+  const conflict = getToolDesignConflicts().at(-1);
+  assert.equal(conflict?.kind, "line");
+  assert.equal(conflict?.tool, "bash");
+
+  registerToolDesign(groupedDesign({ tools: ["grep"], id: "loon.tools-grep" }));
+  assert.throws(() => registerToolDesign({ ...writeBadgeDesign, tool: "grep" }));
+  assert.deepEqual(toolNamesWithDesigns(), ["bash", "grep"], "and so is a legacy registration on that tool");
+  assert.equal(getToolDesignConflicts().at(-1)?.kind, "line");
+});
+
+test("D2: the same (line, id) replaces in place and is reported, and its tools are the later one's", () => {
+  const first = registerToolDesign(groupedDesign({ tools: ["bash"] }));
+  registerToolDesign(groupedDesign({ tools: ["write"], label: "activity two" }));
+
+  assert.deepEqual(toolDesignLines()[0]?.tools, ["write"], "the later registration's tool set is the line's");
+  assert.deepEqual(designsOfTool("bash"), [], "a tool the replacement dropped leaves the line");
+  assert.deepEqual(snapshotToolDesigns("write").map((design) => design.id), ["loon.tools-activity"]);
+  const replaced = getToolDesignConflicts().find((conflict) => conflict.kind === "replaced");
+  assert.ok(replaced !== undefined);
+  assert.equal(replaced.tool, "tools", "the report names the line the value belongs to");
+
+  first();
+  assert.equal(designsOfTool("write").length, 1, "the replaced registration's disposer removes nothing");
+});
+
+test("S6/S7/D4: the selection is per LINE, and a covered tool outside the selected value is `not covered`", () => {
+  registerToolDesign(groupedDesign({ tools: ["bash", "grep"], id: "loon.tools-activity" }));
+  registerToolDesign(groupedDesign({ tools: ["bash"], id: "loon.tools-complete", label: "complete" }));
+
+  assert.equal(getToolDesignLineSelection("line", "tools"), TOOL_DESIGN_NATIVE, "default first");
+  setToolDesignLineSelection("line", "tools", "loon.tools-complete");
+  assert.equal(getToolDesignLineSelection("line", "tools"), "loon.tools-complete");
+
+  assert.equal(resolveToolDesignSelection("bash").kind, "design");
+  assert.deepEqual(
+    resolveToolDesignSelection("grep"),
+    { kind: "not-covered", id: "loon.tools-complete" },
+    "the line covers grep, the value does not: it draws default and says why",
+  );
+  assert.deepEqual(readDesignStore().lines, { tools: "loon.tools-complete" });
+  assert.equal(readDesignStore().selections, undefined, "per-line choices never touch the per-tool map");
+
+  setToolDesignLineSelection("line", "tools", "loon.gone");
+  assert.deepEqual(resolveToolDesignSelection("bash"), { kind: "missing", id: "loon.gone" });
+});
+
+test("D3: joining a line migrates the joining tool's legacy per-tool value ONCE, at registration", () => {
+  // The shape a store written before `line` existed has: a per-tool value and no `lines` key.
+  setToolDesignSelection("bash", "loon.tools-activity");
+
+  registerToolDesign(groupedDesign({ tools: ["bash", "grep"] }));
+
+  assert.equal(getToolDesignLineSelection("line", "tools"), "loon.tools-activity");
+  assert.deepEqual(
+    readDesignStore().selections,
+    { bash: "loon.tools-activity" },
+    "the legacy map is kept exactly as it was",
+  );
+  assert.deepEqual(readDesignStore().lines, { tools: "loon.tools-activity" });
+  assert.equal(resolveToolDesignSelection("bash").kind, "design");
+
+  // A line that already has a stored value is never migrated again, even when a later tool joins.
+  setToolDesignSelection("grep", "loon.tools-complete");
+  registerToolDesign(groupedDesign({ id: "loon.tools-complete", label: "complete", tools: ["grep"] }));
+  assert.equal(getToolDesignLineSelection("line", "tools"), "loon.tools-activity");
+});
+
+test("S5/D2: a failed batch RESTORES the grouped design it replaced on its way", () => {
+  const original = groupedDesign({ tools: ["bash", "grep"] });
+  registerToolDesign(original);
+  setToolDesignLineSelection("line", "tools", "loon.tools-activity");
+
+  assert.throws(() =>
+    registerToolDesign([
+      // Replaces `(line, tools)` and narrows its tools to bash...
+      groupedDesign({ tools: ["bash"], label: "replacement" }),
+      // ...then fails on the tool bash now belongs to.
+      bashHeadingDesign,
+    ]),
+  );
+
+  assert.deepEqual(
+    toolDesignLines().map((line) => ({ line: line.line, tools: line.tools })),
+    [{ line: "tools", tools: ["bash", "grep"] }],
+    "the replaced registration is back, with its own tools",
+  );
+  assert.equal(designsOfTool("grep")[0], original, "grep is painted again");
+  assert.equal(resolveToolDesignSelection("bash").kind, "design");
+});
+
+test("D3: a store that cannot be migrated leaves the registration live and reported, never a throw", () => {
+  const activity = groupedDesign({ tools: ["bash"] });
+  registerToolDesign(activity);
+  // The migration only runs when a line has no value yet; force the store to refuse the write.
+  const blocked = mkdtempSync(join(tmpdir(), "gsb-blocked-"));
+  const previous = process.env.XDG_CONFIG_HOME;
+  rmSync(join(configHome, "gentle-shell-bridge"), { recursive: true, force: true });
+  writeFileSync(join(configHome, "gentle-shell-bridge"), "not a directory");
+  try {
+    assert.doesNotThrow(() => registerToolDesign(groupedDesign({ tools: ["grep"] })));
+    assert.equal(resolveToolDesignSelection("grep").kind, "native", "the line keeps its own value");
+  } finally {
+    rmSync(join(configHome, "gentle-shell-bridge"), { force: true });
+    if (previous === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previous;
+    rmSync(blocked, { recursive: true, force: true });
+  }
+});
+
+test("S4/BASELINE: disposing the design a tool's selection names resolves to `missing`", () => {
+  const dispose = registerToolDesign(bashHeadingDesign);
+  setToolDesignSelection("bash", "loon.bash-heading");
+  assert.equal(resolveToolDesignSelection("bash").kind, "design");
+  dispose();
+  assert.deepEqual(
+    resolveToolDesignSelection("bash"),
+    { kind: "missing", id: "loon.bash-heading" },
+    "the stored choice is not silently rewritten: it is reported",
+  );
+});
+
+test("D3: a legacy value that names no design of the line is not migrated", () => {
+  setToolDesignSelection("bash", "loon.elsewhere");
+  registerToolDesign(groupedDesign({ tools: ["bash"] }));
+
+  assert.equal(getToolDesignLineSelection("line", "tools"), TOOL_DESIGN_NATIVE);
+  assert.deepEqual(readDesignStore().lines, {}, "nothing was written for the line");
+});
+
+test("S6/D4: a grouped design paints only the tools it names; a covered tool outside it draws the host's card", () => {
+  registerToolDesign(
+    groupedDesign({
+      tools: ["bash"],
+      apply: (lines: readonly string[]) => lines.map((line) => line.replace("$ ", "bash ")),
+    }),
+  );
+  registerToolDesign(groupedDesign({ tools: ["write"], id: "loon.tools-write", label: "write activity" }));
+  setToolDesignLineSelection("line", "tools", "loon.tools-activity");
+
+  const bash = bashRenderers();
+  const bashResolved = toolDesignResolver("bash", () => bash.renderers);
+  assert.ok(bashResolved !== undefined);
+  assert.deepEqual(renderThrough(bashResolved, "renderCall", 80).lines, DESIGNED_BASH_CARD);
+
+  const write = writeRenderers();
+  const writeResolved = toolDesignResolver("write", () => write.renderers);
+  assert.ok(writeResolved !== undefined);
+  assert.notEqual(writeResolved, write.renderers, "the line covers write, so its card is wrapped too");
+  assert.deepEqual(
+    renderThrough(writeResolved, "renderCall", 80).lines,
+    WRITE_CARD,
+    "not covered by the selected value: the host's own rows, byte for byte",
+  );
+});
+
+test("D7: /bridge-status reports the line, its tools, each value's coverage and the line per tool", () => {
+  registerToolDesign(groupedDesign({ tools: ["bash", "write"], id: "loon.tools-activity" }));
+  registerToolDesign(groupedDesign({ tools: ["bash"], id: "loon.tools-complete", label: "complete" }));
+  setToolDesignLineSelection("line", "tools", "loon.tools-complete");
+
+  const snapshot = collectStatus();
+  const designs = snapshot.toolDesigns;
+  assert.ok(designs !== undefined);
+  const line = designs.lines?.[0];
+  assert.ok(line !== undefined, "a grouped line is reported");
+  assert.equal(line.line, "tools");
+  assert.equal(line.rowName, "Card tools");
+  assert.deepEqual(line.tools, ["bash", "write"]);
+  assert.deepEqual(
+    line.values.map((value) => [value.id, value.label, value.covers]),
+    [
+      [TOOL_DESIGN_NATIVE, "default", ["bash", "write"]],
+      ["loon.tools-activity", "activity", ["bash", "write"]],
+      ["loon.tools-complete", "complete", ["bash"]],
+    ],
+  );
+  assert.equal(designs.tools.find((entry) => entry.tool === "bash")?.line, "tools");
+  assert.equal(
+    designs.tools.find((entry) => entry.tool === "write")?.selection,
+    "loon.tools-complete (not covered: the tool is not in this design's tools)",
+  );
+
+  const report = formatStatus(snapshot).join("\n");
+  assert.match(report, /tool design lines: 1/u);
+  assert.match(report, /- tools "Card tools": bash, write/u);
+  assert.match(report, /loon\.tools-complete "complete": covers bash/u);
+  assert.match(report, /bash: loon\.tools-complete, .*line "tools"/u);
+});
+
+test("PRESERVE: an ungrouped design's /bridge-status block keeps its exact shape", () => {
+  registerToolDesign(bashHeadingDesign);
+  const designs = collectStatus().toolDesigns;
+  assert.ok(designs !== undefined);
+  assert.equal(designs.lines, undefined, "no grouped line, no line report");
+  assert.equal(designs.tools[0]?.line, undefined, "an ungrouped tool names no line");
+  assert.match(formatStatus(collectStatus()).join("\n"), /- bash: native, wrapper not mounted$/mu);
+});
+

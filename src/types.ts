@@ -415,9 +415,24 @@ export interface ToolDesignRender {
  * builds one, because Pi resolves renderers when the card is constructed.
  */
 export interface ToolDesignRegistration {
-  /** The tool name this design draws, exactly as Pi reports it. */
-  tool: string;
-  /** Unique per tool: it is the value the user selects and the key for replacement. */
+  /**
+   * The tool name this design draws, for an UNGROUPED registration: it gets its own `Card <tool>`
+   * line. Exactly one of `tool` / (`line` + `tools`) is required; mixing them is refused.
+   */
+  tool?: string;
+  /**
+   * The line this design joins, for a GROUPED registration. Several registrations naming the same
+   * line — from one plugin or two — join ONE `Card <line>` line whose values are its designs in
+   * registration order (S3), and whose tool set is the union of their `tools`.
+   */
+  line?: string;
+  /**
+   * The tools a GROUPED design paints. Required with `line`, refused with `tool`. Non-empty,
+   * deduplicated, each a valid tool name. A tool belongs to at most one line (S5/D1): a registration
+   * that would put it in a second line is refused whole and reported in `/bridge-status`.
+   */
+  tools?: readonly string[];
+  /** Unique per line (or per tool when ungrouped): the value the user selects and the key for replacement. */
   id: string;
   /**
    * Optional display name for the plugin's INTEGRATIONS line, e.g. `"Loon kit"`. Same rule as

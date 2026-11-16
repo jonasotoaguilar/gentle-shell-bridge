@@ -41,13 +41,16 @@ import {
   TOOL_DESIGN_NATIVE,
   getToolDesignConflicts,
   getToolDesignFailures,
+  lineOfTool,
   resolveToolDesignSelection,
   snapshotToolDesigns,
+  toolDesignLines,
   toolNamesWithDesigns,
   type ToolDesignConflict,
   type ToolDesignFailure,
+  type ToolDesignLine,
 } from "./tool-designs.ts";
-import { TOOL_DESIGN_ROWS_PROVIDER_ID } from "./tool-design-rows.ts";
+import { TOOL_DESIGN_ROWS_PROVIDER_ID, toolDesignLineNames } from "./tool-design-rows.ts";
 import {
   getToolDesignWiringDiagnostics,
   type ToolDesignResolverOutcome,
@@ -161,10 +164,33 @@ export interface StatusToolDesignEntry {
   description?: string;
 }
 
+/** One value of a grouped line, with the tools it paints (S6/D4). */
+export interface StatusToolDesignLineValue {
+  /** The stored identity: `native` for `default`, otherwise the design's id. */
+  id: string;
+  label: string;
+  /** The tools of the line this value paints. `default` covers every tool of the line. */
+  covers: string[];
+}
+
+/** One grouped line, as `/bridge-status` lists it (D7). */
+export interface StatusToolDesignLine {
+  /** The registered line id (`tools`, `status`, …). */
+  line: string;
+  /** The name the menu shows: `Card tools`. */
+  rowName: string;
+  /** The line's whole tool set, the union of its designs' `tools`. */
+  tools: string[];
+  /** `default` first, then the line's designs in registration order. */
+  values: StatusToolDesignLineValue[];
+}
+
 /** One tool with designs, its values, and the selection in force. */
 export interface StatusToolDesignTool {
   tool: string;
   designs: StatusToolDesignEntry[];
+  /** Only for a tool covered by a GROUPED line: the line id whose switch paints it (D7). */
+  line?: string;
   /** The stored value: a design id, `native`, or `<id> (missing: not registered)`. */
   selection: string;
   /**
@@ -186,6 +212,11 @@ export interface StatusToolDesignTool {
 /** The tool-design surface, reported only when the process has something to say (see below). */
 export interface StatusToolDesigns {
   tools: StatusToolDesignTool[];
+  /**
+   * The grouped lines: their row name, their tools and each value's coverage (D7). Absent when every
+   * design is ungrouped, so a pre-lines report keeps its historical shape byte for byte.
+   */
+  lines?: StatusToolDesignLine[];
   /** How many `pi` objects the ONE resolver was registered on; absent when never attempted. */
   resolver?: { registered: number; lastOutcome?: ToolDesignResolverOutcome; reason?: string };
   /** Registrations that replaced another one or were refused, and why. */
@@ -549,11 +580,13 @@ function describeToolDesigns(): StatusToolDesigns | undefined {
   const conflicts = getToolDesignConflicts();
   const failures = getToolDesignFailures();
   if (tools.length === 0) return undefined;
+  const lineReports = describeToolDesignLines();
   return {
     tools: tools.map((tool) => {
       const selection = resolveToolDesignSelection(tool);
       const wrapped = wiring.wrappedCards.find((entry) => entry.tool === tool);
       const adopted = adoption.adoptedCards.find((entry) => entry.tool === tool);
+      const owner = lineOfTool(tool);
       return {
         tool,
         designs: snapshotToolDesigns(tool).map((design) => ({
@@ -566,15 +599,19 @@ function describeToolDesigns(): StatusToolDesigns | undefined {
             ? TOOL_DESIGN_NATIVE
             : selection.kind === "missing"
               ? `${selection.id} (missing: not registered)`
-              : selection.design.id,
+              : selection.kind === "not-covered"
+                ? `${selection.id} (not covered: the tool is not in this design's tools)`
+                : selection.design.id,
         // The wrapper's identity is per CARD: a card built before the tool had a design (or before
         // the bridge was armed) has none, and no later selection can repaint it.
         ...(wrapped === undefined
           ? { wrapper: "not mounted" as const }
           : { wrapper: "mounted" as const, cards: wrapped.cards }),
         ...(adopted === undefined ? {} : { adopted: adopted.cards }),
+        ...(owner !== undefined && owner.scope === "line" ? { line: owner.line } : {}),
       };
     }),
+    ...(lineReports.length === 0 ? {} : { lines: lineReports }),
     ...(wiring.lastOutcome === undefined
       ? {}
       : {
@@ -587,6 +624,43 @@ function describeToolDesigns(): StatusToolDesigns | undefined {
     conflicts,
     failures,
   };
+}
+
+/** The tools one design paints, restricted to its line's tool set. */
+function coverageOf(line: ToolDesignLine, design: ToolDesignLine["designs"][number]): string[] {
+  if (design.line !== undefined) {
+    if (!Array.isArray(design.tools)) return [...line.tools];
+    return design.tools.filter((tool) => line.tools.includes(tool));
+  }
+  return design.tool === undefined ? [...line.tools] : [design.tool];
+}
+
+/**
+ * The GROUPED lines only: an ungrouped design's line is its tool, already reported per tool, and
+ * adding a line report for it would change the byte-for-byte output of a pre-lines session.
+ */
+function describeToolDesignLines(): StatusToolDesignLine[] {
+  const names = toolDesignLineNames();
+  return toolDesignLines()
+    .filter((line) => line.scope === "line")
+    .map((line) => {
+      const named = names.find(
+        (candidate) => candidate.scope === line.scope && candidate.line === line.line,
+      );
+      return {
+        line: line.line,
+        rowName: named?.name ?? line.line,
+        tools: [...line.tools],
+        values: [
+          { id: TOOL_DESIGN_NATIVE, label: "default", covers: [...line.tools] },
+          ...line.designs.map((design) => ({
+            id: design.id,
+            label: design.label,
+            covers: coverageOf(line, design),
+          })),
+        ],
+      };
+    });
 }
 
 /**
@@ -952,10 +1026,22 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
         entry.adopted === undefined
           ? ""
           : `, adopted ${entry.adopted} ${entry.adopted === 1 ? "card" : "cards"}`;
-      lines.push(`  - ${entry.tool}: ${entry.selection}, ${wrapper}${adopted}`);
+      // D7: a grouped tool's entry names the line whose switch paints it. An ungrouped entry prints
+      // exactly what it printed before lines existed.
+      const line = entry.line === undefined ? "" : ` (line "${entry.line}")`;
+      lines.push(`  - ${entry.tool}: ${entry.selection}, ${wrapper}${adopted}${line}`);
       for (const design of entry.designs) {
         const description = design.description === undefined ? "" : ` — ${design.description}`;
         lines.push(`      ${design.id} "${design.label}"${description}`);
+      }
+    }
+    if (designs.lines !== undefined) {
+      lines.push(`tool design lines: ${designs.lines.length}`);
+      for (const line of designs.lines) {
+        lines.push(`  - ${line.line} "${line.rowName}": ${line.tools.join(", ")}`);
+        for (const value of line.values) {
+          lines.push(`      ${value.id} "${value.label}": covers ${value.covers.join(", ")}`);
+        }
       }
     }
     if (designs.resolver !== undefined) {

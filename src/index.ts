@@ -4,7 +4,8 @@
  * Pi loads `src/extension.ts` (the `pi.extensions` manifest entry) through jiti, so the sources are
  * the published artifact: there is no build step and no `dist/`. This module is the package's
  * programmatic API surface for plugins: rows, sidebar sections, card styles, transcript transforms,
- * per-tool card DESIGNS (one registration point for `pi.registerToolRenderer`), the optional store and
+ * per-tool card DESIGNS (one registration point for `pi.registerToolRenderer`) with the read-only
+ * reader that answers which design a tool draws right now, the optional store and
  * the runtime handshake (`bridgeApi`, `onBridgeApi`, the announcement event). Backend internals — the capture patch, the hook registry, the arm
  * lifecycle, the rail interception, the section renderer, the card-style line and transformer, the
  * transform pipeline, `status` and the bus snapshots — are reached through the extension entry, not
@@ -33,7 +34,8 @@ export type {
   BridgeReadyPayload,
 } from "./api.ts";
 export { registerCardStyle, registerRows, registerSection, registerTransform } from "./bus.ts";
-export { registerToolDesign } from "./tool-designs.ts";
+export { registerToolDesign, resolveToolDesignSelection } from "./tool-designs.ts";
+export type { ToolDesignSelection } from "./tool-designs.ts";
 export {
   KEYMAP_RESOLVER_KEY,
   PLUGIN_SURFACE_KEY,

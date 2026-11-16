@@ -327,5 +327,5 @@ test("a UI without setWidget is reported as unarmed and never throws", () => {
 });
 
 test("the public version is the released one", () => {
-  assert.equal(VERSION, "0.6.0");
+  assert.equal(VERSION, "0.7.0");
 });

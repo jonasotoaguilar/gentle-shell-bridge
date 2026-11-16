@@ -44,6 +44,14 @@ import {
 } from "../src/sidebar.ts";
 import { resetSectionFailuresForTests } from "../src/sidebar-render.ts";
 import { resetStoreStateForTests } from "../src/store.ts";
+import {
+  getToolDesignSelectionReads,
+  registerToolDesign,
+  resetToolDesignSelectionReads,
+  resetToolDesignsForTests,
+  resolveToolDesignSelection,
+  setToolDesignLineSelection,
+} from "../src/tool-designs.ts";
 import type { RowProvider, SidebarSection } from "../src/types.ts";
 import { createFakeHost, type FakeHost, type FakeUiTarget } from "./fake-host.ts";
 import {
@@ -116,6 +124,7 @@ test.beforeEach(() => {
   resetCaptureStateForTests();
   resetHookStateForTests();
   resetRowBuildStateForTests();
+  resetToolDesignsForTests();
   disableCaptureBackend();
   disableSidebarBackend();
 });
@@ -146,6 +155,7 @@ test("publishing stores one frozen, versioned API object at the stable symbol", 
     "registerTransform",
     "requestRepaint",
     "resolveKeymap",
+    "resolveToolDesignSelection",
     "schema",
     "version",
   ]);
@@ -170,6 +180,52 @@ test("the published functions are the working ones, not a stale copy", () => {
   disposeRows();
   assert.deepEqual(snapshotProviders(), []);
   assert.deepEqual(snapshotSections(), []);
+});
+
+test("the published object answers which design a tool draws, one read per call", () => {
+  const api = publishBridgeApi();
+  const read = api.resolveToolDesignSelection;
+  assert.equal(
+    read,
+    resolveToolDesignSelection,
+    "the published reader IS the working one, not a copy that could drift",
+  );
+  assert.equal(typeof read, "function");
+  if (typeof read !== "function") return;
+
+  // Nothing registered and nothing persisted: the host's own card, and never an error.
+  assert.deepEqual(read("read"), { kind: "native" });
+
+  registerToolDesign({
+    line: "tools",
+    tools: ["read"],
+    id: "odd.file-card",
+    label: "file card",
+    apply: (lines) => [...lines],
+  });
+  registerToolDesign({
+    line: "tools",
+    tools: ["write"],
+    id: "odd.file-badge",
+    label: "file badge",
+    apply: (lines) => [...lines],
+  });
+  setToolDesignLineSelection("line", "tools", "odd.file-card");
+
+  const selection = read("read");
+  assert.equal(selection.kind, "design");
+  if (selection.kind === "design") assert.equal(selection.design.id, "odd.file-card");
+  // The line's value names a design that does not paint this tool: the host's card, and why.
+  // The line's value names a design that does not paint this tool: the host's card, and why.
+  assert.deepEqual(read("write"), { kind: "not-covered", id: "odd.file-card" });
+
+  resetToolDesignSelectionReads();
+  read("read");
+  assert.equal(
+    getToolDesignSelectionReads(),
+    1,
+    "one persisted-selection read per call, exactly what a render pass pays",
+  );
 });
 
 test("the shape gate accepts only the v1 surface it advertises", () => {

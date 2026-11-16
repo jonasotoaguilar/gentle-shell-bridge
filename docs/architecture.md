@@ -330,7 +330,7 @@ diagnostics stop reporting `hook`.
 
 | Module | Owns |
 | --- | --- |
-| `src/index.ts` | the plugin-facing API: `registerRows`, `registerSection`, `registerCardStyle`, `registerTransform`, `registerToolDesign`, `registerKeymap`, `registerCommands`, `resolveKeymap`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, `bridgeApi`, `isBridgeApi`, `onBridgeApi`, `KEYMAP_RESOLVER_KEY`, `PLUGIN_SURFACE_KEY`, `BRIDGE_READY_EVENT`, types; importing it also publishes the handshake through `./api.ts` |
+| `src/index.ts` | the plugin-facing API: `registerRows`, `registerSection`, `registerCardStyle`, `registerTransform`, `registerToolDesign`, `resolveToolDesignSelection`, `registerKeymap`, `registerCommands`, `resolveKeymap`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, `bridgeApi`, `isBridgeApi`, `onBridgeApi`, `KEYMAP_RESOLVER_KEY`, `PLUGIN_SURFACE_KEY`, `BRIDGE_READY_EVENT`, types; importing it also publishes the handshake through `./api.ts` |
 | `src/api.ts` | the runtime handshake: the one `Symbol.for` slot, the frozen published object, the shape gate, `bridgeApi()`, `onBridgeApi` and the `gentle-shell-bridge:ready` announcement |
 | `src/extension.ts` | the Pi entry from `pi.extensions`: `session_start` arming (rows + sidebar widget), the `Sections` provider, and the `/bridge-status` command |
 | `src/arm.ts` | backend selection and the arm result |

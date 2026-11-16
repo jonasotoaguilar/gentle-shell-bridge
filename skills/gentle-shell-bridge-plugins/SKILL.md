@@ -40,11 +40,12 @@ renderers) or a plain host theme change — nothing there registers through the 
 | A choice that must reach cards already on screen | `registerTransform` |
 | One tool's card | `registerToolDesign({tool, id, label, apply})` |
 | Several tools behind ONE switch | `registerToolDesign({line, tools, id, label, apply})` |
+| What a tool draws right now | `resolveToolDesignSelection(tool)` |
 | Rebindable action | `registerKeymap` + `resolveKeymap` + own shortcut |
 | Palette item, listed only while its command is registered | `registerCommands` |
 | Persistence / repaint after a bridge-owned write | `createStore` / `requestRepaint()` |
 
-These members are OPTIONAL on an older object: `registerCardStyle`, `registerTransform`, `registerToolDesign`, `requestRepaint`, `registerKeymap`, `registerCommands`, `resolveKeymap` — gate with `typeof api.x === "function"`.
+These members are OPTIONAL on an older object: `registerCardStyle`, `registerTransform`, `registerToolDesign`, `resolveToolDesignSelection`, `requestRepaint`, `registerKeymap`, `registerCommands`, `resolveKeymap` — gate with `typeof api.x === "function"`.
 
 ## Execution Steps
 

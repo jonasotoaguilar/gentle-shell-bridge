@@ -19,8 +19,8 @@ Registration does **not** open the menu. Rows are built when a menu is actually
 constructed.
 
 The package's public entry exports exactly `registerRows`, `registerSection`,
-`registerCardStyle`, `registerTransform`, `registerToolDesign`, `registerKeymap`,
-`registerCommands`, `resolveKeymap`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, the
+`registerCardStyle`, `registerTransform`, `registerToolDesign`, `resolveToolDesignSelection`,
+`registerKeymap`, `registerCommands`, `resolveKeymap`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, the
 runtime helpers `bridgeApi`, `isBridgeApi`, `onBridgeApi`, the two host slots
 `KEYMAP_RESOLVER_KEY` and `PLUGIN_SURFACE_KEY`, the announcement channel
 `BRIDGE_READY_EVENT` (§9), and the row/provider/section/store/keymap/API types.
@@ -373,12 +373,13 @@ told once, on Pi's cross-extension bus.
 Object.freeze({
   schema: "gentle-shell-bridge/api", // identity, so a foreign payload is never mistaken for ours
   version: 1,                        // the major; a breaking change is a NEW symbol key
-  VERSION: "0.6.0",                  // the publishing release; informational only
+  VERSION: "0.7.0",                  // the publishing release; informational only
   registerRows,
   registerSection,
   registerCardStyle,                 // since 0.2.0; optional on an older published object
   registerTransform,                 // since 0.3.0; optional on an older published object
   registerToolDesign,                // since 0.3.0; optional on an older published object
+  resolveToolDesignSelection,        // since 0.7.0; optional on an older published object
   requestRepaint,                    // since 0.3.0; optional on an older published object
   registerKeymap,                    // optional on an older published object
   registerCommands,                  // optional on an older published object
@@ -390,8 +391,8 @@ Object.freeze({
 Publication is **first wins**: a compatible object already in the slot is kept and never replaced,
 and the slot is never reset. A consumer gates on the schema string, `version === 1` and the three
 callable members below — `registerCardStyle`, `registerTransform`, `registerToolDesign`,
-`requestRepaint`, `registerKeymap`, `registerCommands` and `resolveKeymap` are NOT part of the
-gate, so an object published by an older copy is still a usable
+`requestRepaint`, `registerKeymap`, `registerCommands`, `resolveToolDesignSelection` and
+`resolveKeymap` are NOT part of the gate, so an object published by an older copy is still a usable
 bridge for rows, sections and the store; a plugin that needs a later surface checks
 `typeof api.registerCardStyle === "function"` (or the same test on any later member) before
 calling it. Anything else — another library's
@@ -1430,6 +1431,36 @@ means the selected design left the line entirely. The line report lists every va
 A selection naming a design that is no longer registered degrades to the host's own card and is
 reported as `missing` in `/bridge-status`.
 
+### Asking which design a tool draws: `resolveToolDesignSelection(tool)`
+
+```ts
+resolveToolDesignSelection(tool: string):
+  | { kind: "native" }
+  | { kind: "design"; design: ToolDesignRegistration }
+  | { kind: "missing"; id: string }
+  | { kind: "not-covered"; id: string };
+```
+
+The same answer the bridge's own card wrapper acts on, for a plugin that paints its own chrome around
+a tool (a file card beside the rows, a heading, a badge) and must obey the user's `Cards` switch
+instead of guessing. `native` means the host's own card is what draws; `design` carries the LIVE
+registration, so a caller reads its `id` and `label` rather than re-deriving them; `missing` and
+`not-covered` are the two degrades above, and both paint the host's card.
+
+It is a **pure read and never throws**: no store, an unreadable store or a malformed document reads as
+`native`, exactly like `/bridge-status`. It costs **one persisted-selection read per call** — what one
+render pass of the bridge's own wrapper already pays for that tool (`src/tool-design-wiring.ts`) — so
+asking on every frame for the tool being painted is the intended use. Asking once per tool per frame
+multiplies that count, and nothing here caches the answer: a selection can change between frames, and
+that is exactly why the wrapper reads it every pass.
+
+The raw stored value is deliberately **not** on the contract (`getToolDesignLineSelection` stays
+internal): an id alone would push the resolution rule — which design is live, whether it covers the
+tool, what a disposed design means — onto every consumer, and two copies of that rule drift.
+
+A plugin on an older bridge checks `typeof api.resolveToolDesignSelection === "function"` before use
+(§9); a design with no reader draws its own chrome unconditionally, which is the pre-switch behaviour.
+
 **A preview is ONE row (D5).** Whatever a design's `preview()` returns, a Cards value draws only the
 first line of its `sample`. A plugin that wants a multi-row picture cannot have it on a Cards value.
 
@@ -1571,7 +1602,8 @@ running. The Keymaps page says so, and its last row offers the reload.
 ## Limits
 
 - `registerRows`, `registerSection`, `registerCardStyle`, `registerTransform`,
-  `registerToolDesign`, `registerKeymap`, `registerCommands`, `resolveKeymap`, `requestRepaint`,
+  `registerToolDesign`, `resolveToolDesignSelection`,
+  `registerKeymap`, `registerCommands`, `resolveKeymap`, `requestRepaint`,
   `createStore`, `bridgeApi`, `isBridgeApi`, `onBridgeApi`
   and the `gentle-shell-bridge:ready` event are the contract; anything a plugin does inside `action()` beyond
   calling inline helpers is the plugin's own business.
@@ -1621,7 +1653,8 @@ running. The Keymaps page says so, and its last row offers the reload.
 - Card styles are proven against a fake conversation component that reproduces gentle-shell's
   `float` output, never in a running Pi TUI; the downstream-override conflict above is a property of
   a real session the fake cannot reproduce.
-- `registerCardStyle`, `registerTransform`, `registerToolDesign`, `requestRepaint`,
+- `registerCardStyle`, `registerTransform`, `registerToolDesign`, `resolveToolDesignSelection`,
+  `requestRepaint`,
   `registerKeymap`, `registerCommands` and `resolveKeymap` are optional
   on the published object: an object published by a copy older than that surface passes the gate but
   lacks it, so a plugin that needs one checks `typeof api.registerCardStyle === "function"` (or the
@@ -1633,6 +1666,6 @@ running. The Keymaps page says so, and its last row offers the reload.
   simply false) and keeps working.
 - A transform is a per-frame pass, so a slow transform is a slow frame; the bridge isolates its
   failures and clips its width, and can bound nothing else. It sees lines, never tool metadata.
-- The API is released (`0.6.0`). The `v1` symbol is the compatibility boundary: a breaking
+- The API is released (`0.7.0`). The `v1` symbol is the compatibility boundary: a breaking
   change takes a new key instead of mutating this one (§9). The `gentle-shell-bridge:ready` event is
   additive: a plugin that never subscribes loses nothing but the late-load case.

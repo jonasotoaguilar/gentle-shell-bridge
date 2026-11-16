@@ -64,10 +64,10 @@ import { recordNotice } from "./notices.ts";
 import { registerCommands, registerKeymap, resolveKeymap } from "./plugin-surface.ts";
 import { requestRepaint } from "./repaint.ts";
 import { createStore } from "./store.ts";
-import { registerToolDesign } from "./tool-designs.ts";
+import { registerToolDesign, resolveToolDesignSelection } from "./tool-designs.ts";
 
 /** The release that published the object; informational, never the compatibility check. */
-export const VERSION = "0.6.0";
+export const VERSION = "0.7.0";
 
 /** Identity of the object, so a foreign payload at the symbol is never mistaken for ours. */
 export const API_SCHEMA = "gentle-shell-bridge/api";
@@ -176,6 +176,24 @@ export interface BridgeApi {
    * working bridge into "absent" for every plugin that does not register a design.
    */
   readonly registerToolDesign?: typeof registerToolDesign;
+  /**
+   * What a tool's card is drawing RIGHT NOW (S6/D4): `{ kind: "native" }` for the host's own card,
+   * `{ kind: "design", design }` for the design on screen, `{ kind: "missing", id }` when the design
+   * the line names is gone, and `{ kind: "not-covered", id }` when the line's value is a design that
+   * does not paint this tool. The same answer the bridge's own card wrapper acts on, so a plugin that
+   * paints its own chrome for a tool can gate on the user's switch instead of parsing the store file
+   * and re-deriving the rule.
+   *
+   * Pure read, and it never throws: an unreadable selection reads as `native`. It costs ONE
+   * persisted-selection read per call — exactly what one render pass already pays (`./tool-design-wiring.ts`),
+   * so a caller may ask on every frame for the tool it is painting. Asking for every tool on every
+   * frame multiplies that count, and nothing here caches the answer for you.
+   *
+   * Optional for the same reason as `registerCardStyle`: the slot is first-wins, so a mixed-copy
+   * process can hand back an object published before this member existed. A plugin that needs it
+   * checks `typeof api.resolveToolDesignSelection === "function"` first.
+   */
+  readonly resolveToolDesignSelection?: typeof resolveToolDesignSelection;
   /**
    * A keymapped action for the host's Keymaps page (S1): the plugin's own action, editable with the
    * same gestures as a native one (Enter assigns, ⌫ disables, r restores the default) and
@@ -297,6 +315,7 @@ const LOCAL_API: BridgeApi = Object.freeze({
   registerTransform,
   requestRepaint,
   registerToolDesign,
+  resolveToolDesignSelection,
   registerKeymap,
   registerCommands,
   resolveKeymap,

@@ -324,6 +324,7 @@ test("the public entry exports exactly the contract surface and no test seams", 
     "registerToolDesign",
     "registerTransform",
     "resolveKeymap",
+    "resolveToolDesignSelection",
   ]);
   for (const seam of [
     "installCardStyleTransform",
@@ -364,6 +365,10 @@ test("the public entry exports exactly the contract surface and no test seams", 
     "applyTransforms",
     "getTransformFrameOutcomes",
     "resetTransformPipelineForTests",
+    "getToolDesignLineSelection",
+    "setToolDesignLineSelection",
+    "getToolDesignSelectionReads",
+    "resetToolDesignSelectionReads",
   ]) {
     assert.equal(seam in publicApi, false, `${seam} must not be public`);
   }
@@ -439,5 +444,5 @@ test("the documented values and types are reachable from the public entry", () =
   assert.equal(section.title, "API");
   assert.equal(section.lines(context).length, 1);
   assert.deepEqual(transform.transform(["a"], { width: 3 }), ["a", "3"]);
-  assert.equal(VERSION, "0.6.0");
+  assert.equal(VERSION, "0.7.0");
 });

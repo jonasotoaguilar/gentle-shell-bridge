@@ -13,7 +13,7 @@ When working on this project, load the relevant skill(s) BEFORE doing the work t
 
 | Skill | Trigger | Version | Path |
 | --- | --- | --- | --- |
-| `gentle-shell-bridge-plugins` | Authoring or extending a Pi plugin that contributes a `/gentle:customize` row or page, a sidebar section, a card style, a transcript transform, a per-tool card design, a keymapped action, palette items or persisted state through this bridge. | `1.0` | [`skills/gentle-shell-bridge-plugins/SKILL.md`](skills/gentle-shell-bridge-plugins/SKILL.md) |
+| `gentle-shell-bridge-plugins` | Authoring or extending a Pi plugin that contributes a `/gentle:customize` row or page, a sidebar section, a card style, a transcript transform, a per-tool card design, a keymapped action, palette items or persisted state through this bridge. | `1.1` | [`skills/gentle-shell-bridge-plugins/SKILL.md`](skills/gentle-shell-bridge-plugins/SKILL.md) |
 
 ## Relevant Documentation
 

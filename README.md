@@ -21,11 +21,22 @@ disappearing.
 
 ## Quick Start
 
-Add the published package next to gentle-shell and restart Pi:
+Add the published package next to gentle-shell and restart Pi. Inside an existing Pi:
 
 ```bash
 pi install npm:gentle-shell-bridge
 ```
+
+The standalone `gentle-shell` launcher keeps its own home and its own package list, so install
+it there too when that is the shell you open:
+
+```bash
+gentle-shell install npm:gentle-shell-bridge
+```
+
+A launcher flag goes before the subcommand: `gentle-shell --link install npm:gentle-shell-bridge`
+installs into `~/.pi/agent` instead of the isolated home — the same list `pi` writes when you
+run `--link` as your default.
 
 Pi reads the `pi` manifest and loads `src/extension.ts`. The shipped artifact is the TypeScript
 source — Pi loads it through jiti, so there is no build step and no `dist/`.

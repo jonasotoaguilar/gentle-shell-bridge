@@ -330,8 +330,8 @@ diagnostics stop reporting `hook`.
 
 | Module | Owns |
 | --- | --- |
-| `src/index.ts` | the plugin-facing API: `registerRows`, `registerSection`, `registerCardStyle`, `registerTransform`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, `bridgeApi`, `isBridgeApi`, types; importing it also publishes the handshake through `./api.ts` |
-| `src/api.ts` | the runtime handshake: the one `Symbol.for` slot, the frozen published object, the shape gate, `bridgeApi()` and publication |
+| `src/index.ts` | the plugin-facing API: `registerRows`, `registerSection`, `registerCardStyle`, `registerTransform`, `registerToolDesign`, `registerKeymap`, `registerCommands`, `resolveKeymap`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, `bridgeApi`, `isBridgeApi`, `onBridgeApi`, `KEYMAP_RESOLVER_KEY`, `PLUGIN_SURFACE_KEY`, `BRIDGE_READY_EVENT`, types; importing it also publishes the handshake through `./api.ts` |
+| `src/api.ts` | the runtime handshake: the one `Symbol.for` slot, the frozen published object, the shape gate, `bridgeApi()`, `onBridgeApi` and the `gentle-shell-bridge:ready` announcement |
 | `src/extension.ts` | the Pi entry from `pi.extensions`: `session_start` arming (rows + sidebar widget), the `Sections` provider, and the `/bridge-status` command |
 | `src/arm.ts` | backend selection and the arm result |
 | `src/capture.ts` | the single `Array.prototype.map` patch and the captured array |
@@ -348,6 +348,15 @@ diagnostics stop reporting `hook`.
 | `src/status.ts` | the `/bridge-status` text |
 | `src/transform-pipeline.ts` | the ordered per-frame transform pass: width clipping, throw isolation and the last frame's outcomes |
 | `src/config.ts`, `src/types.ts` | config-home resolution; the row, provider and context types |
+
+The table lists the spine. The families below are described where they are owned: the
+card-style modules (`src/card-style-*.ts`, `src/repaint.ts`) in §14, the transform pipeline
+(`src/transform-pipeline.ts`) in §15, and the tool-design bus (`src/tool-design-*.ts`,
+`src/plugin-lines.ts`, `src/row-origin.ts`) in §16. The remaining seams are documented against the
+surface they serve: the keymap and palette slots (`src/plugin-surface.ts`) in
+[contract.md](contract.md) §15, the section preview patch (`src/sections-preview.ts`) in
+[contract.md](contract.md) §11, and the required-host check with its notices (`src/presence.ts`,
+`src/notices.ts`) in [contract.md](contract.md) §8.
 
 Because both backends call `src/rows.ts`, a plugin sees the same `registerRows` semantics on
 either one. Because the arming markers live on the target objects and the state slots live on

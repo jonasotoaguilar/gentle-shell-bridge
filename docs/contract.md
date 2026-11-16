@@ -18,10 +18,14 @@ registration instead of stacking rows.
 Registration does **not** open the menu. Rows are built when a menu is actually
 constructed.
 
-The package's public entry exports exactly `registerRows`, `registerSection`, `createStore`,
-`STORE_SCHEMA_VERSION`, `VERSION`, the runtime helpers `bridgeApi`, `isBridgeApi`, `onBridgeApi`,
-the announcement channel `BRIDGE_READY_EVENT` (§9), and
-the row/provider/section/store/API types. `snapshotProviders`, `snapshotSections`,
+The package's public entry exports exactly `registerRows`, `registerSection`,
+`registerCardStyle`, `registerTransform`, `registerToolDesign`, `registerKeymap`,
+`registerCommands`, `resolveKeymap`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, the
+runtime helpers `bridgeApi`, `isBridgeApi`, `onBridgeApi`, the two host slots
+`KEYMAP_RESOLVER_KEY` and `PLUGIN_SURFACE_KEY`, the announcement channel
+`BRIDGE_READY_EVENT` (§9), and the row/provider/section/store/keymap/API types.
+`test/e2e.test.ts` pins that exact set. `requestRepaint` is the one contract member with no named
+export: a plugin reaches it through the published object (`api.requestRepaint`, §9). `snapshotProviders`, `snapshotSections`,
 `publishBridgeApi`, `announceBridgeReady` and every `…ForTests` seam are **internal**: they exist so
 the bridge's own backends and tests can drive one process, and they are not part of this
 contract.
@@ -241,6 +245,7 @@ One command, `/bridge-status`, reporting:
 
 | Field | Meaning |
 | --- | --- |
+| Gentle-pi | `gentle-pi: present`, or `gentle-pi: missing — <reason>` followed by `bridge: disabled — gentle-pi is required; …`. The required host package is checked through `pi.getCommands()`; when it is missing, every per-surface block below is omitted (nothing was armed) and the report keeps the buffered notices (`src/presence.ts`, `src/status.ts`) |
 | Providers | every registered provider, `id` and `category`, in subscription order |
 | Backend | which interception backend is active: `hook` or `capture` |
 | Last capture | outcome of the most recent menu build, with the number of rows injected |
@@ -375,17 +380,21 @@ Object.freeze({
   registerTransform,                 // since 0.3.0; optional on an older published object
   registerToolDesign,                // since 0.3.0; optional on an older published object
   requestRepaint,                    // since 0.3.0; optional on an older published object
+  registerKeymap,                    // optional on an older published object
+  registerCommands,                  // optional on an older published object
+  resolveKeymap,                     // optional on an older published object
   createStore,
 });
 ```
 
 Publication is **first wins**: a compatible object already in the slot is kept and never replaced,
 and the slot is never reset. A consumer gates on the schema string, `version === 1` and the three
-callable members below — `registerCardStyle`, `registerTransform`, `registerToolDesign` and
-`requestRepaint` are NOT part of the gate, so an object published by an older copy is still a usable
+callable members below — `registerCardStyle`, `registerTransform`, `registerToolDesign`,
+`requestRepaint`, `registerKeymap`, `registerCommands` and `resolveKeymap` are NOT part of the
+gate, so an object published by an older copy is still a usable
 bridge for rows, sections and the store; a plugin that needs a later surface checks
-`typeof api.registerCardStyle === "function"` (or `registerTransform`, `registerToolDesign`,
-`requestRepaint`) before calling it. Anything else — another library's
+`typeof api.registerCardStyle === "function"` (or the same test on any later member) before
+calling it. Anything else — another library's
 payload, another major, a partial object — is
 **absent**, never an error: the object is not used, the slot is left exactly as it is (never
 overwritten, deleted or reset), and one notice per process names the mismatch. `v1` in the key is
@@ -1612,10 +1621,11 @@ running. The Keymaps page says so, and its last row offers the reload.
 - Card styles are proven against a fake conversation component that reproduces gentle-shell's
   `float` output, never in a running Pi TUI; the downstream-override conflict above is a property of
   a real session the fake cannot reproduce.
-- `registerCardStyle`, `registerTransform`, `registerToolDesign` and `requestRepaint` are optional
+- `registerCardStyle`, `registerTransform`, `registerToolDesign`, `requestRepaint`,
+  `registerKeymap`, `registerCommands` and `resolveKeymap` are optional
   on the published object: an object published by a copy older than that surface passes the gate but
-  lacks it, so a plugin that needs one checks `typeof api.registerCardStyle === "function"` (or
-  `registerTransform`, `registerToolDesign`, `requestRepaint`) first.
+  lacks it, so a plugin that needs one checks `typeof api.registerCardStyle === "function"` (or the
+  same test on any later member) first.
 - A design receives ROWS, a width and the PART it is drawing (`call` or `result`), never a renderer
   object and never the theme's shape. `part` is one of two literals; a design that ignores it is
   byte-identical to one written before the field existed, and a context produced by an older copy of

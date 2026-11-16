@@ -256,7 +256,7 @@ One command, `/bridge-status`, reporting:
 | Card style surfaces | per surface (`conversation`, `rail`): whether the selected style reached it and what its last frame did there (`transformed N cards`, `pass-through (native / missing / no card)`, `failed` with the style and message); `not reached` carries the attach outcome (`no-layout-root`, `no-sidebar`, `no-rail`, …). Emitted with the card-style block |
 | Last repaint | the most recent repaint a bridge-owned write requested: the surfaces, the cause (`section "loon.music" → hidden`, `card style → loon.cute`) and `repainted` or `unavailable` with the reason. Omitted until such a write happens |
 | Row name rejections | every line name and row label the bridge refused (`rows`, `section` or `card style`), with the surface, the registration `id`, the field (`line name`/`row label`), the offending string VERBATIM and the rule it broke; omitted when nothing was rejected |
-| Tool designs | every tool with designs: the selection in force (`native` or a design id, `<id> (missing: not registered)` when it no longer exists), whether the one resolver has mounted a card for it (`wrapper mounted on 2 cards` / `wrapper not mounted`), how many cards the post-construction adoption pass reached for it (`adopted 1 card`, S10), each registered design's id, label and description; then the resolver's last outcome and how many designs it registered, and any conflicts or failures. Omitted when the process registered no design |
+| Tool designs | every tool with designs: the selection in force (`native` or a design id, `<id> (missing: not registered)` when it no longer exists, `<id> (not covered: …)` when the selected value does not paint that tool), the line that owns a grouped tool (`line "tools"`), whether the one resolver has mounted a card for it (`wrapper mounted on 2 cards` / `wrapper not mounted`), how many cards the post-construction adoption pass reached for it (`adopted 1 card`, S10), each registered design's id, label and description; then a line report for grouped lines (the line, the row name the menu shows, its tools, and each value's coverage, `default` included); then the resolver's last outcome and how many designs it registered, and any conflicts or failures. Omitted when the process registered no design; an ungrouped session prints exactly what it printed before lines existed |
 | Plugin lines | one entry per plugin that registered (`rows`, `section`, `card style`, `transform` or `tool design`): its row name and whether it was `derived from package "@acme/loon-kit"` or an `explicit name`, the registrations `accepted` and `rejected`, any later `name conflict` that declared a different name for the same plugin (with the name kept), and whether the line is `set` or, with the reason, `no line set`. The header also says when the host's `setStatus` was unavailable. Omitted when no plugin registered so far |
 
 A menu that opened without the bridge's rows must show up here — armed-but-uncaptured,
@@ -1251,6 +1251,29 @@ api.registerToolDesign({
 });
 ```
 
+A registration is either **ungrouped** (`tool`) or **grouped** (`line` + `tools`), never both:
+
+```ts
+// ONE line, several tools: /gentle:customize draws a single `Card tools  default | activity`.
+api.registerToolDesign({
+  line: "tools",
+  tools: ["bash", "grep", "find"],
+  id: "loon.tools-activity",
+  label: "activity",
+  apply(lines, ctx) { /* ctx.tool says which tool produced these rows */ },
+});
+```
+
+Exactly one of `tool` / (`line` + `tools`) is required; mixing them is refused. `tools` must be
+non-empty, deduplicated, and each entry a valid tool name. Several registrations naming the same
+`line` — from one plugin or two — join ONE line (S3): `default` is added by the bridge once, first,
+never registered by a plugin, and the line's tool set is the union of its designs' `tools`. A tool
+belongs to at most ONE line (S5/D1): a registration that would put it in a second line, or add a
+legacy `Card <tool>` registration to a tool that is already in one, is refused whole and reported as
+a `line` conflict in `/bridge-status`; nothing is half-registered. An array registration may mix both
+shapes and stays all-or-nothing. `(line, id)` is the value identity: a second registration of the same
+pair replaces the earlier one in place, is reported, and its `tools` set is the later one's (D2).
+
 ### The convention: lines in, lines out
 
 `apply(lines, ctx)` receives the rows the HOST's own card produced — ANSI sequences, padding, the
@@ -1321,6 +1344,19 @@ keeps one registry per name, no name is special-cased, and a design declared for
 card yet applies as soon as Pi builds one: Pi resolves renderers when the card is CONSTRUCTED, and the
 bridge's one resolver is installed for the whole session.
 
+A grouped registration (`line` + `tools`) is still declared by tool name: the line's tool set is the
+union of its designs' `tools`, and the resolver looks a tool up to find the line that owns it. From a
+tool's point of view nothing changes — the bridge reads the line's selection on every pass and hands
+the design the rows of whatever tool it wraps, with `ctx.tool` naming that tool.
+
+### One line over several tools (S1–S3, S8)
+
+The customize menu names each line after its owner. An ungrouped design keeps its implicit tool line,
+`Card bash`. A grouped registration names the line: `Card tools`, `Card status`. Both go through the
+same row-name rule (`src/row-names.ts`): one to three plain words, and one shared ordinal space, so a
+line and a tool that derive the same name are told apart deterministically (`Card tools`,
+`Card tools 2`). The line's values are `default` first, then its designs in registration order.
+
 ### When the bridge is not first in the chain (S10)
 
 Pi composes tool-renderer resolvers in **extension load order** (`runner.js:550-553`) and exposes no
@@ -1348,28 +1384,45 @@ which path ran.
 
 ### Selection, and the default
 
-The selected design per tool is a row in `/gentle:customize` → `Cards`: one line per tool, named from
-the TOOL (never from the plugin or the id) and prefixed with the category's own word, whose values are
+The selected design per line is a row in `/gentle:customize` → `Cards`: a line named `Card <tool>` for
+an ungrouped registration, or `Card <line>` for a grouped one (never from the plugin or the id),
+whose values are
 
 1. `default` — **the host's own card, always first and the default**. It is what the line SHOWS; the stored
    value stays `native`, because the selection is identity and a saved choice must survive the wording; and
-2. every design registered for that tool, in registration order, each shown by its `label`.
+2. every design of that line, in registration order, each shown by its `label`.
 
-**The line name is `Card <tool>`**, the vocabulary the `Cards` category already uses for `Card style`
-and `Card content`: `Card bash`, `Card lsp navigation`, `Card mem save`. A row name is one to three
-plain words (`src/row-names.ts`), so the prefix leaves room for at most two tool words; a longer tool
-name keeps its TAIL (`mcp__engram__mem_save` → `Card mem save`, never `Card mcp engram`), a name that
-derives to no words reads `Card tool`, and two tools that read the same after that clamp are told
-apart with an ordinal (`Card mem save`, `Card mem 2`) that keeps the shape rule. The line's name is
-not persisted and is not identity: the store is keyed by the TOOL name (`bridge-tool-designs` →
-`selections` → `{ "bash": … }`) and a value is the design's `id`, so renaming the line moves nothing
-but the text the user reads.
+**The line name is `Card <tool>`** for ungrouped designs, the vocabulary the `Cards` category already
+uses for `Card style` and `Card content`: `Card bash`, `Card lsp navigation`, `Card mem save`. A row
+name is one to three plain words (`src/row-names.ts`), so the prefix leaves room for at most two tool
+words; a longer tool name keeps its TAIL (`mcp__engram__mem_save` → `Card mem save`, never `Card mcp
+engram`), a name that derives to no words reads `Card tool`, and two sources that read the same after
+that clamp are told apart with an ordinal (`Card mem save`, `Card mem 2`) that keeps the shape rule. A
+grouped line derives the same way from its `line` id (`Card tools`). The line's name is not persisted
+and is not identity: the store is keyed by the TOOL name or the line id (`bridge-tool-designs` →
+`selections`) and a value is the design's `id`, so renaming the line moves nothing but the text the
+user reads.
 
-The stored value is the design's `id`, so renaming a label never loses a user's choice. Changing the
-value repaints the cards already on screen: the wrapper reads the live selection on every render pass,
-so a design chosen after a card was drawn changes that same card. A selection naming a design that is
-no longer registered degrades to the host's own card and is reported as `missing` in
-`/bridge-status`.
+**Where the value is stored (S7/D3).** Ungrouped lines keep the historical per-tool map, flat:
+`selections: { "bash": "<id>" }`, byte for byte what a session without lines already has. A grouped
+line's value lives in the SAME document under a reserved key, so ONE `store.get` serves both and a frame
+reads the file once (S9/D6): `selections: { "bash": "<id>", "$lines": { "tools": "<id>" } }`. `$lines`
+is written only once a line has a value, so a session that never groups a line gains nothing, and a tool
+can never be named `$lines`, so it cannot shadow a line. Migration happens ONCE, at REGISTRATION time,
+never in the render path: when a tool joins a line that has no stored value, the line inherits that
+tool's legacy per-tool value if it names a design of the line, and writes it then; otherwise the line
+stays `default`. A migration that cannot be written is reported and never fails the registration.
+
+**Coverage (S6/D4).** A grouped line can cover a tool that the selected value does not paint. That
+tool still gets a switch (the wrapper is installed for every tool of the line) but draws `default`,
+the host's own card, and `/bridge-status` reports it as `not covered` — distinct from `missing`, which
+means the selected design left the line entirely. The line report lists every value's coverage.
+
+A selection naming a design that is no longer registered degrades to the host's own card and is
+reported as `missing` in `/bridge-status`.
+
+**A preview is ONE row (D5).** Whatever a design's `preview()` returns, a Cards value draws only the
+first line of its `sample`. A plugin that wants a multi-row picture cannot have it on a Cards value.
 
 ### What a switch costs (S13)
 

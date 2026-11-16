@@ -52,6 +52,7 @@ import {
   getToolDesignFailures,
   registerToolDesign,
   resetToolDesignsForTests,
+  setToolDesignLineSelection,
   setToolDesignSelection,
 } from "../src/tool-designs.ts";
 import {
@@ -481,3 +482,26 @@ test("S10/T16: with no design registered the report is unchanged — no tool-des
   const report = formatStatus(collectStatus()).join("\n");
   assert.doesNotMatch(report, /tool design/u);
 });
+
+test("S10: a grouped design is adopted onto a card of any tool its line covers", () => {
+  registerToolDesign({
+    line: "tools",
+    tools: ["bash"],
+    id: "loon.tools-activity",
+    label: "activity",
+    apply: (lines: readonly string[], ctx: ToolDesignContext): string[] => {
+      assert.equal(ctx.tool, "bash");
+      return lines.map((line) => (line.includes("$ ") ? line.replace("$ ", "bash ") : line));
+    },
+  });
+  setToolDesignLineSelection("line", "tools", "loon.tools-activity");
+
+  const card = mountCard({ toolName: "bash", toolDefinition: bashRenderers() });
+  assert.equal(
+    adoptToolCards({ children: [card] }).adopted,
+    1,
+    "adoption reaches a tool that has a design through its line",
+  );
+  assert.deepEqual(card.render(80), DESIGNED_BASH_CARD);
+});
+

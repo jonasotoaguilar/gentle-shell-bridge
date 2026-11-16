@@ -1,36 +1,28 @@
 /**
- * The customize rows for tool designs (S6, T9): one line per tool that HAS designs, in `Cards`.
+ * The customize rows for tool designs (S1–S8): ONE line per LINE that has designs, in `Cards`.
  *
- * ## One line per tool, one value per design
+ * ## One line per line, one value per design
  *
- * The values of a tool's line are the tool's own card — shown as `default` (stored as `native`, the
- * reserved identity) — followed by
- * every design registered for that tool, in registration order. The host coalesces consecutive rows
- * that share a `choice.setting` into one rendered line (`lib/visual-customize-view.ts:395-402,583-595`),
- * so all of one tool's values share that tool's setting and two tools can never share a line.
+ * The values are the line's own card — shown as `default` (stored as `native`, the reserved
+ * identity) — followed by every design of that line, in registration order. The host coalesces
+ * consecutive rows that share a `choice.setting` into one rendered line
+ * (`lib/visual-customize-view.ts:395-402,583-595`), so all of one line's values share that line's
+ * setting and the card menus of a grouped line never split into one line per tool.
  *
- * ## The names: `Card <tool>`, like `Card style` and `Card content`
+ * ## The names: `Card <tool>` or `Card <line>`, like `Card style` and `Card content`
  *
  * A row name is what a human reads (`./row-names.ts`), and the `Cards` category already names its
- * lines `Card <what>`: `Card style`, `Card content`. A design line follows that vocabulary, so the
- * bash tool's line reads `Card bash` — never the bare tool name, which reads like a category of its
- * own. The readable words come from the TOOL (`deriveRowLabel`), never from the plugin or the id, and
- * the bridge's name rule is one to three plain words (`MAX_ROW_NAME_WORDS`), so `Card` plus at most
- * two tool words:
- *
- * - `bash` → `Card bash`;
- * - `lsp_navigation` → `Card lsp navigation`;
- * - `mcp__engram__mem_save` → the TAIL is the specific part, so the leading words go:
- *   `Card mem save` (not `Card mcp engram`, which says nothing about the tool);
- * - a tool name with no words at all keeps the fallback word: `Card tool`;
- * - two tools that read the same after that clamp are told apart deterministically with an ordinal —
- *   `Card mem save`, `Card mem 2` — replacing the last word so the result still passes the shape
- *   rule, exactly the way sections and card styles are told apart (`sectionRowLabels`).
+ * lines `Card <what>`. An UNGROUPED design keeps the implicit tool line: `Card bash`, `Card lsp
+ * navigation`, `Card mem save` (a long name keeps its TAIL, because the last words are the specific
+ * part). A GROUPED registration names its line: `Card tools`, `Card status`, derived from the line id
+ * through the same rule. Both share ONE ordinal space, so a line and a tool that derive the same name
+ * are told apart deterministically (`Card tools`, `Card tools 2`), replacing the last word so the
+ * result still passes the shape rule, exactly the way sections and card styles are told apart.
  *
  * The id is never shown: a design's `label` is its value, and the persisted value is the design's id,
- * so renaming a label never loses a user's choice. The line's NAME is not persisted anywhere either —
- * the store is keyed by the tool name (`bridge-tool-designs` → `selections` → `{ "bash": … }`), so
- * renaming the line moves nothing but the text the user reads.
+ * so renaming a label never loses a user's choice. The line's NAME is not persisted either — the
+ * store is keyed by the tool name (`selections`) or the line id (`lines`), so renaming the line moves
+ * nothing but the text the user reads.
  *
  * ## No design, no line
  *
@@ -39,13 +31,12 @@
  * plugin must not gain an empty line. The first design to register appears on the next build with no
  * re-registration.
  *
- * ## A change repaints the cards already drawn (S2)
+ * ## A change repaints the cards already drawn (S2/S10)
  *
  * The action persists FIRST (the host re-reads `current()` when it repaints) and then asks for a
  * frame through `requestRepaint()` (`./repaint.ts`): one differential `requestRender()`, because the
- * wrapper re-reads the live selection on every render pass, so the cards already on screen change too
- * — not only the next one (S13/T23 measured the cache-dropping version as the freeze). A press that
- * changes nothing costs no frame.
+ * wrapper re-reads the live selection on every render pass, so the cards already on screen change too.
+ * A press that changes nothing costs no frame.
  *
  * This module is internal: `src/index.ts` does not re-export it.
  */
@@ -59,43 +50,55 @@ import { isRecord } from "./rows.ts";
 import {
   TOOL_DESIGN_DEFAULT_LABEL,
   TOOL_DESIGN_NATIVE,
-  getToolDesignSelection,
-  setToolDesignSelection,
-  snapshotToolDesigns,
-  toolNamesWithDesigns,
+  getToolDesignLineSelection,
+  setToolDesignLineSelection,
+  toolDesignLines,
+  type ToolDesignLine,
 } from "./tool-designs.ts";
 import type { CustomizeRow, RowPreview, ToolDesignRegistration } from "./types.ts";
 
 /** The rows provider's id; it is the bridge's own registration, never a plugin's. */
 export const TOOL_DESIGN_ROWS_PROVIDER_ID = "bridge.tool-designs";
 
-/** The word every per-tool design line starts with: the `Cards` category's own vocabulary. */
+/** The word every design line starts with: the `Cards` category's own vocabulary. */
 const TOOL_LINE_PREFIX = "Card";
 
 /** The word a tool name that derives to nothing still reads as (`deriveRowLabel` returned ""). */
 const TOOL_NAME_FALLBACK = "tool";
 
+/** The word a line id that derives to nothing still reads as. */
+const LINE_NAME_FALLBACK = "line";
+
 /**
- * The tool's readable words, clamped so `Card` plus them fits the row-name word limit. A long name
- * keeps its TAIL: `mcp__engram__mem_save` reads `mem save`, because the last words are the specific
- * part and the leading ones (`mcp`, `engram`) are the same for every tool of that server.
+ * A line source's readable words, clamped so `Card` plus them fits the row-name word limit. A long
+ * name keeps its TAIL: `mcp__engram__mem_save` reads `mem save`, because the last words are the
+ * specific part and the leading ones (`mcp`, `engram`) are the same for every tool of that server.
  */
-function toolWords(tool: string): string[] {
-  const derived = deriveRowLabel(tool);
-  const words = derived === "" ? [TOOL_NAME_FALLBACK] : derived.split(" ").filter((word) => word !== "");
+function sourceWords(scope: "tool" | "line", source: string): string[] {
+  const derived = deriveRowLabel(source);
+  const fallback = scope === "tool" ? TOOL_NAME_FALLBACK : LINE_NAME_FALLBACK;
+  const words = derived === "" ? [fallback] : derived.split(" ").filter((word) => word !== "");
   const budget = Math.max(1, MAX_ROW_NAME_WORDS - 1);
   return words.length > budget ? words.slice(words.length - budget) : words;
 }
 
+/** One line with the name the menu shows for it. */
+export interface ToolDesignLineName {
+  scope: "tool" | "line";
+  line: string;
+  name: string;
+  tools: string[];
+}
+
 /**
- * The line name of every tool that has designs, in registration order: `Card <tool words>`, made
- * unique the way sections are — the readable name, then the lowest free ordinal (replacing the last
- * word when the base already uses the full word limit, so the result still passes the shape rule).
+ * The line name of every line that has designs, in creation order: `Card <words>`, made unique the
+ * way sections are — the readable name, then the lowest free ordinal (replacing the last word when
+ * the base already uses the full word limit, so the result still passes the shape rule).
  */
-function toolLineNames(tools: readonly string[]): Array<{ tool: string; name: string }> {
+export function toolDesignLineNames(): ToolDesignLineName[] {
   const taken = new Set<string>();
-  return tools.map((tool) => {
-    const base = [TOOL_LINE_PREFIX, ...toolWords(tool)].join(" ");
+  return toolDesignLines().map((line) => {
+    const base = [TOOL_LINE_PREFIX, ...sourceWords(line.scope, line.line)].join(" ");
     let name = base;
     let suffix = 2;
     while (taken.has(name)) {
@@ -104,33 +107,44 @@ function toolLineNames(tools: readonly string[]): Array<{ tool: string; name: st
       name = `${kept.join(" ")} ${suffix++}`;
     }
     taken.add(name);
-    return { tool, name };
+    return { scope: line.scope, line: line.line, name, tools: [...line.tools] };
   });
 }
 
 /**
- * Persist one tool's value and repaint the cards already drawn (S2).
+ * Persist one line's value and repaint the cards already drawn (S2/S10).
  *
  * Nothing at all happens when the stored value is already the one picked: a press that changes
  * nothing must not cost a frame.
  */
-function selectDesign(tool: string, id: string): void {
-  if (getToolDesignSelection(tool) === id) return;
-  setToolDesignSelection(tool, id);
+function selectDesign(scope: "tool" | "line", line: string, id: string): void {
+  if (getToolDesignLineSelection(scope, line) === id) return;
+  setToolDesignLineSelection(scope, line, id);
   requestRepaint();
+}
+
+/** The first row of a sample: a Cards value draws ONE row (D5), so only its first line is used. */
+function firstSampleRow(sample: string): string {
+  return sample.split(/\r?\n/u)[0] ?? sample;
+}
+
+/** What a design's fallback preview says it paints. */
+function designTarget(tools: readonly string[]): string {
+  return tools.length === 1 ? `${tools[0]}'s own card` : `the ${tools.join(", ")} cards`;
 }
 
 /**
  * A design's own preview when it has one, otherwise a literal depiction of the value. A preview runs
  * while the menu is rendered, so it must not be able to break it: a throwing (or malformed) plugin
- * preview loses its own picture and nothing else.
+ * preview loses its own picture and nothing else. Whatever it returns, a Cards value draws ONE row:
+ * the sample's first line (D5).
  */
-function previewFor(design: ToolDesignRegistration): RowPreview {
+function previewFor(design: ToolDesignRegistration, tools: readonly string[]): RowPreview {
   if (design.preview !== undefined) {
     try {
       const shown: unknown = design.preview();
       if (isRecord(shown) && typeof shown.title === "string" && typeof shown.sample === "string") {
-        return { title: shown.title, sample: shown.sample };
+        return { title: shown.title, sample: firstSampleRow(shown.sample) };
       }
     } catch {
       // Fall through to the literal sample below.
@@ -138,9 +152,11 @@ function previewFor(design: ToolDesignRegistration): RowPreview {
   }
   return {
     title: `Cards · ${design.label}`,
-    sample:
-      design.description ??
-      `${design.label}: this design rewrites the rows ${design.tool}'s own card produced`,
+    // One row (D5), and it says what the value paints: on a grouped line a value covers a SUBSET, and
+    // the menu is the only place the user can see which (S6).
+    sample: firstSampleRow(
+      design.description ?? `${design.label}: rewrites the rows ${designTarget(tools)} produced`,
+    ),
   };
 }
 
@@ -148,45 +164,61 @@ function previewFor(design: ToolDesignRegistration): RowPreview {
  * The host's own card, untouched. It SHOWS `default` (the word the user reads) while the stored value
  * stays `native`: the selection is identity, so a saved choice survives the rename.
  */
-function nativeRow(tool: string, setting: string): CustomizeRow {
+function nativeRow(line: ToolDesignLine, setting: string): CustomizeRow {
+  const subject = line.tools.join(", ");
   return {
     category: HOST_CARD_STYLE_CATEGORY,
     choice: {
       setting,
       value: TOOL_DESIGN_DEFAULT_LABEL,
       // Identity, never the displayed text: a renamed label cannot lose the user's choice.
-      current: () => getToolDesignSelection(tool) === TOOL_DESIGN_NATIVE,
+      current: () => getToolDesignLineSelection(line.scope, line.line) === TOOL_DESIGN_NATIVE,
     },
     preview: () => ({
       title: `Cards · ${setting}`,
-      sample: `${setting}: the host's own card for ${tool}, untouched`,
+      sample: `${setting}: the host's own card for ${subject}, untouched`,
     }),
-    action: () => selectDesign(tool, TOOL_DESIGN_NATIVE),
+    action: () => selectDesign(line.scope, line.line, TOOL_DESIGN_NATIVE),
   };
 }
 
-/** One registered design of one tool. The visible value is its label; the stored value is its id. */
-function designRow(tool: string, setting: string, design: ToolDesignRegistration): CustomizeRow {
+/** One registered design of one line. The visible value is its label; the stored value is its id. */
+function designRow(line: ToolDesignLine, setting: string, design: ToolDesignRegistration): CustomizeRow {
+  const tools = designTools(line, design);
   return {
     category: HOST_CARD_STYLE_CATEGORY,
     choice: {
       setting,
       value: design.label,
-      current: () => getToolDesignSelection(tool) === design.id,
+      current: () => getToolDesignLineSelection(line.scope, line.line) === design.id,
     },
-    preview: () => previewFor(design),
-    action: () => selectDesign(tool, design.id),
+    preview: () => previewFor(design, tools),
+    action: () => selectDesign(line.scope, line.line, design.id),
   };
 }
 
-/** The rows of one menu build: nothing without a design, one line per tool that has one. */
+/**
+ * The tools one design paints, or the whole line when the registration is not found. A design object
+ * is unique per registration, so identity is the lookup key.
+ */
+function designTools(line: ToolDesignLine, design: ToolDesignRegistration): string[] {
+  if (design.line === undefined) return design.tool === undefined ? line.tools : [design.tool];
+  if (Array.isArray(design.tools)) return [...design.tools];
+  return line.tools;
+}
+
+/** The rows of one menu build: nothing without a design, one line per line that has one. */
 function designRows(): CustomizeRow[] {
-  const tools = toolNamesWithDesigns();
-  if (tools.length === 0) return [];
+  const lines = toolDesignLines();
+  if (lines.length === 0) return [];
   const rows: CustomizeRow[] = [];
-  for (const { tool, name } of toolLineNames(tools)) {
-    rows.push(nativeRow(tool, name));
-    for (const design of snapshotToolDesigns(tool)) rows.push(designRow(tool, name, design));
+  for (const named of toolDesignLineNames()) {
+    const line = lines.find(
+      (candidate) => candidate.scope === named.scope && candidate.line === named.line,
+    );
+    if (line === undefined) continue;
+    rows.push(nativeRow(line, named.name));
+    for (const design of line.designs) rows.push(designRow(line, named.name, design));
   }
   return rows;
 }

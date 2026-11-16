@@ -881,18 +881,21 @@ same component on every frame. A card built while the design was unselected must
 follow a later selection, so the wrapper reads the LIVE selection on every pass; with no selection
 (or a selection whose design was disposed) it returns the host's own array instance, byte for byte.
 
-### The `Cards` line is `Card <tool>`
+### The `Cards` line is `Card <tool>` — or `Card <line>`
 
-The per-tool selection is a customize line in `Cards`, and the category already names its lines
+The selection is a customize line in `Cards`, and the category already names its lines
 `Card <what>` (`Card style`, `Card content`), so a design line follows the same vocabulary rather
 than showing a bare tool name, which reads like a category of its own. `src/tool-design-rows.ts`
-builds it: `Card` plus the tool's readable words (`deriveRowLabel`), at most two of them because the
-row-name rule is one to three plain words (`src/row-names.ts`). A long name keeps its TAIL —
-`mcp__engram__mem_save` reads `Card mem save`, because the leading words are the same for every tool
-of that server — a name with no words reads `Card tool`, and two tools that clamp to the same name
-are told apart with an ordinal (`Card mem save`, `Card mem 2`) exactly the way sections are, so the
-result still passes the shape rule. Nothing persisted moves with the name: the store is keyed by the
-tool name and a value is the design's id, so the line can be renamed without losing a choice.
+builds it from the line's owner: an ungrouped design's implicit tool line reads `Card` plus the
+tool's readable words (`deriveRowLabel`), and a grouped registration's line reads `Card` plus the
+`line` id's words. Both are clamped to two words after the prefix because the row-name rule is one
+to three plain words (`src/row-names.ts`). A long name keeps its TAIL — `mcp__engram__mem_save` reads
+`Card mem save`, because the leading words are the same for every tool of that server — a name with
+no words reads `Card tool` (or `Card line` for a grouped line), and two sources that clamp to the
+same name are told apart with one shared ordinal (`Card mem save`, `Card mem 2`, or `Card tools`,
+`Card tools 2`) exactly the way sections are, so the result still passes the shape rule. Nothing
+persisted moves with the name: the store is keyed by the tool name or the line id and a value is the
+design's id, so the line can be renamed without losing a choice.
 
 ### When an earlier resolver answers first (S10)
 
@@ -922,14 +925,23 @@ recorded as an `(adoption)` failure and the host's own card is drawn; a throwing
 recorded once and the wrapped definition still applies on the next frame. The pass never throws into
 Pi's render loop.
 
-### Per tool name, never per bash
+### Per tool name, never per bash — joined into lines
 
-`src/tool-designs.ts` keeps one registry per tool name and nothing else: no known-tool list, no
-branch on a name. `src/tool-design-rows.ts` turns each tool with designs into one `Cards` line —
-the host's own card (shown `default`, stored `native`) plus one value per design, in registration order — and persists the
-selection per tool in the bridge's own `bridge-tool-designs` store, never in the host's config. The
-stored value is the design's `id`, so renaming a label never moves the bullet; a selection whose
-design was disposed resolves to `missing` and draws the host's card.
+`src/tool-designs.ts` keeps one registry per line: an UNGROUPED design gets an implicit line keyed by
+its tool name, a GROUPED one names its line (`line` + `tools`) and several registrations naming the
+same line join it, with the line's tool set the union of their `tools`. Nothing else is special-cased:
+no known-tool list, no branch on a name. A tool belongs to at most one line: a registration that
+would put it in a second line — or add a legacy `Card <tool>` registration to a tool already in one —
+is refused whole and reported. `src/tool-design-rows.ts` turns each line into one `Cards` line — the
+host's own card (shown `default`, stored `native`) plus one value per design, in registration order —
+and persists the selection per line in the bridge's own `bridge-tool-designs` store, never in the
+host's config: ungrouped lines keep the historical flat `selections` map, and a grouped line's value
+travels in the same document under the reserved `$lines` key, so one `store.get` per card per frame
+serves both (`src/store.ts` reads the file on every `get`). Migration runs once, at registration: a tool joining a line with no stored value lends it its
+legacy per-tool value when that value names a design of the line. The stored value is the design's
+`id`, so renaming a label never moves the bullet; a selection whose design left the line resolves to
+`missing` and draws the host's card, and a tool the selected value does not paint resolves to
+`not-covered` and also draws the host's card (S6/D4).
 
 Registration goes through the same attribution as every other surface (`src/plugin-lines.ts`,
 `PluginSurface` includes `"tool design"`), so a plugin that contributes ONLY designs still gets its
@@ -937,12 +949,15 @@ one INTEGRATIONS line and the same accepted/rejected counts.
 
 ### What it reports
 
-`/bridge-status` lists every tool with designs, its live selection, whether the wrapper has mounted
-a card for it (`wrapper mounted on 2 cards` — the answer to "is this card even wrapped?" via the
-resolver), how many cards the adoption pass reached (`adopted 1 card` — the answer when a resolver
-ahead of the bridge answered first), the conflicts a replacement or a duplicate label produced, and
-the designs that threw. Failures are deduplicated by (tool, id, message): a design that throws on
-every frame is one fact, not one line per frame.
+`/bridge-status` lists every tool with designs, its live selection, the line that owns a grouped tool,
+whether the wrapper has mounted a card for it (`wrapper mounted on 2 cards` — the answer to "is this
+card even wrapped?" via the resolver), how many cards the adoption pass reached (`adopted 1 card` —
+the answer when a resolver ahead of the bridge answered first), the conflicts a replacement, a
+duplicate label or a second-line ownership produced, and the designs that threw. A grouped line also
+gets a line report: the line, its row name, its tools and each value's coverage, so "this tool draws
+default while `activity` is selected" is answered as `not covered` instead of being mistaken for
+`missing`. Failures are deduplicated by (tool, id, message): a design that throws on every frame is
+one fact, not one line per frame.
 
 ## Limits
 

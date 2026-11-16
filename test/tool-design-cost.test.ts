@@ -48,6 +48,7 @@ import {
   registerToolDesign,
   resetToolDesignSelectionReads,
   resetToolDesignsForTests,
+  setToolDesignLineSelection,
   setToolDesignSelection,
 } from "../src/tool-designs.ts";
 import {
@@ -472,3 +473,25 @@ test("T36/S19: the bridge-owned surface repaint is one differential frame too", 
 // Keep the compiler honest about the design type used above.
 const _contextProbe: ToolDesignContext = { width: WIDTH, tool: "bash", theme: THEME, part: "call" };
 void _contextProbe;
+
+test("S9/D6: a grouped line costs the same ONE selection read per card per frame", () => {
+  registerToolDesign({
+    line: "tools",
+    tools: ["bash", "write"],
+    id: "loon.tools-activity",
+    label: BASH_HEADING,
+    apply: (lines: readonly string[]) => [...lines],
+  });
+  setToolDesignLineSelection("line", "tools", "loon.tools-activity");
+
+  const world = transcript({ children: 6, markdown: 3 });
+  world.drawFrame();
+
+  resetToolDesignSelectionReads();
+  world.drawFrame();
+  assert.equal(
+    getToolDesignSelectionReads(),
+    3,
+    "one persisted-selection read per card, exactly like an ungrouped line",
+  );
+});

@@ -23,7 +23,7 @@ Read `src/index.ts`, `docs/contract.md` and `examples/bash-card.ts` before editi
 - **`Keymaps` is RESERVED for row providers** — refused and reported. A keymapped action is `registerKeymap` + `resolveKeymap` + your own `pi.registerShortcut`; the bridge never binds.
 - **A card style repaints the host's frame** from measured pieces: `top({width, title, hint})`, `line({text, width, first})`, `bottom({width})`. Never parse a card back.
 - **A transform** takes the rows plus `ctx.width` and returns rows. Honour the width; report COUNTS ONLY (`ctx.report?.({candidates, recognised, rewritten})`), never card text.
-- **A tool design** transforms rows the HOST's card produced, per tool name. The bridge owns Pi's single `registerToolRenderer`: never call it yourself, never draw a second grammar, keep every byte you do not change, never label a design `default` or `native` (reserved). `ctx.render` (`args`, `isPartial`, `isError`, `durationMs`, `toolCallId`, `expanded`) is optional: draw your old output without it. `registerToolDesign([a, b])` registers several.
+- **A tool design** transforms rows the HOST's card produced, per tool name. The bridge owns Pi's single `registerToolRenderer`: never call it yourself, never draw a second grammar, keep every byte you do not change, never label a design `default` or `native` (reserved). `ctx.render` (`args`, `isPartial`, `isError`, `durationMs`, `toolCallId`, `expanded`) is optional: draw your old output without it. `registerToolDesign([a, b])` registers several. A grouped registration `{ line, tools, id, label, apply }` paints several tools from ONE `Card <line>` switch; a tool belongs to at most ONE line, so a registration that would put it in a second line is refused whole and reported. A preview is drawn as ONE row: only the first line of `sample` is used.
 - **Plugin state stays the plugin's**: `createStore(pluginId)`. Bridge-owned store ids (`bridge-card-style`, `bridge-tool-designs`) are read-only.
 
 ## Decision Gates
@@ -36,6 +36,7 @@ Read `src/index.ts`, `docs/contract.md` and `examples/bash-card.ts` before editi
 | Card chrome, conversation and rail | `registerCardStyle({id, label, frame})` |
 | A choice that must reach cards already on screen | `registerTransform` |
 | One tool's card | `registerToolDesign({tool, id, label, apply})` |
+| Several tools behind ONE switch | `registerToolDesign({line, tools, id, label, apply})` |
 | Rebindable action | `registerKeymap` + `resolveKeymap` + own shortcut |
 | Palette item, listed only while its command is registered | `registerCommands` |
 | Persistence / repaint after a bridge-owned write | `createStore` / `requestRepaint()` |

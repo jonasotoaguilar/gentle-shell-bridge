@@ -1,13 +1,14 @@
 # ADR 0001 — Stateless composition, with an optional per-plugin store
 
 - **Status:** accepted for the extraction; implemented in `src/store.ts` and exercised by the
-  test suite. **Amended** by decision 4: a registered sidebar section's visibility is the one
+  test suite. **Amended** by decision 4: a registered sidebar section's visibility is the first
   piece of state the bridge itself owns. **Amended** by decision 5: plugins reach the bridge
   through a published, versioned `globalThis` slot instead of a path or an environment variable.
   **Amended** by decision 6: the selected card style is bridge-owned state, and the conversation
   frames are repainted opt-in, degrading to native. **Amended** by decision 7: the repaint wrapper
   became a general, ordered transform pipeline, so a plugin's rendering choice reaches cards already
-  on screen instead of only the next one.
+  on screen instead of only the next one. **Amended** by decision 8: a tool design's selection is
+  bridge-owned as well, one value per tool and per line.
 - **Context:** [contract.md](contract.md), [architecture.md](architecture.md)
 - **Deciders:** package author and gentle-shell maintainers.
 
@@ -97,7 +98,8 @@ at registration produces a stale `●` and the diagnostics command will not dete
 
 ### Bridge-owned section visibility
 
-This is the one place the bridge is not stateless, and the reason is structural: the bridge
+This is one of the places the bridge is not stateless — decision 6 (card style) and decision 8
+(tool designs) are the others — and the reason is structural: the bridge
 generates the toggle, so only the bridge can know which value it points at. The plugin still owns
 nothing — it never sees this file, never picks a key, and its section appears or disappears from
 the same user gesture as a native one.
@@ -108,8 +110,9 @@ the same user gesture as a native one.
   `createStore` already follows for plugin files.
 - A plugin that also keeps its own state is unaffected: this file is keyed by section id and the
   bridge never reads anything else from it.
-- The cost is honest: the bridge now owns one preference. It is a preference about the bridge's
-  own surface, which is why it belongs here and not in a plugin's namespace.
+- The cost is honest: the bridge now owns this preference, and one more per surface only it can
+  resolve (decisions 6, 7 and 8). Each is a preference about the bridge's own surface, which is why
+  they belong here and not in a plugin's namespace.
 
 ### Reads, cost and limits of bridge-owned visibility
 
@@ -230,6 +233,21 @@ width, isolate a throw to the transform that made it, return the same array when
 and reports the last frame's outcome per transform in `/bridge-status`. The alternative (a renderer
 resolver plus a transform, one for new rows and one for history) was rejected because it gives one
 plugin two different pictures of the same card, which is the defect the surface exists to remove.
+
+**I. Chosen: tool-design selections are bridge-owned, one value per tool and per line.** A
+`registerToolDesign` choice is made in a menu the bridge built, about a surface the bridge owns, so
+the bridge persists it in its own namespaced file,
+`<gentle config home>/gentle-shell-bridge/bridge-tool-designs.json`, as
+`{ "schemaVersion": 1, "values": { "selections": { "<tool>": "<id>" } } }`. A design registered as
+part of a LINE keeps its value in the same document under the reserved `$lines` key
+(`"$lines": { "<line>": "<id>" }`), because one `store.get` must serve every line in a frame; a tool
+name can never be `$lines`, so the two maps cannot collide, and the per-tool map stays byte-identical
+to what a session without lines already has ([contract.md](contract.md) §14). The alternative — the
+plugin persisting its own choice — was rejected for the reason sections, card styles and transforms
+were: the plugin never sees the row, so it can neither read nor write the value the row means. Costs
+accepted: a value whose design is gone degrades to `default` and is reported as `missing`, the same
+way a disposed card style resolves to `native`, and the one-time migration from a tool's legacy value
+happens at registration, never in the render path.
 
 ## Open questions
 

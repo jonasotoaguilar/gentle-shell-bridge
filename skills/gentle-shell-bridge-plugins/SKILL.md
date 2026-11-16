@@ -4,12 +4,15 @@ description: "Trigger: build or extend a Pi plugin adding a /gentle:customize ro
 license: Apache-2.0
 metadata:
   author: gentleman-programming
-  version: "1.0"
+  version: "1.1"
 ---
 
 ## Activation Contract
 
 Read `src/index.ts`, `docs/contract.md` and `examples/bash-card.ts` before editing; never work from memory.
+
+Not for: a plugin that only touches Pi-native surfaces (its own tools, commands, shortcuts or
+renderers) or a plain host theme change — nothing there registers through the bridge.
 
 - Reach it from the package root: `onBridgeApi(handler, pi.events)` in `session_start` — runs at once when the object is already published, otherwise once on `gentle-shell-bridge:ready` (`src/api.ts`).
 - `bridgeApi()` tells you only what is true now: `undefined` means absent right now — not installed, or not yet published.
@@ -23,15 +26,15 @@ Read `src/index.ts`, `docs/contract.md` and `examples/bash-card.ts` before editi
 - **`Keymaps` is RESERVED for row providers** — refused and reported. A keymapped action is `registerKeymap` + `resolveKeymap` + your own `pi.registerShortcut`; the bridge never binds.
 - **A card style repaints the host's frame** from measured pieces: `top({width, title, hint})`, `line({text, width, first})`, `bottom({width})`. Never parse a card back.
 - **A transform** takes the rows plus `ctx.width` and returns rows. Honour the width; report COUNTS ONLY (`ctx.report?.({candidates, recognised, rewritten})`), never card text.
-- **A tool design** transforms rows the HOST's card produced, per tool name. The bridge owns Pi's single `registerToolRenderer`: never call it yourself, never draw a second grammar, keep every byte you do not change, never label a design `default` or `native` (reserved). `ctx.render` (`args`, `isPartial`, `isError`, `durationMs`, `toolCallId`, `expanded`) is optional: draw your old output without it. `registerToolDesign([a, b])` registers several. A grouped registration `{ line, tools, id, label, apply }` paints several tools from ONE `Card <line>` switch; a tool belongs to at most ONE line, so a registration that would put it in a second line is refused whole and reported. A preview is drawn as ONE row: only the first line of `sample` is used.
-- **Plugin state stays the plugin's**: `createStore(pluginId)`. Bridge-owned store ids (`bridge-card-style`, `bridge-tool-designs`) are read-only.
+- **A tool design** transforms rows the HOST's card produced, by tool name. The bridge owns Pi's single `registerToolRenderer`: never call it yourself, never draw a second grammar, keep every byte you do not change, never label a design `default` or `native` (reserved). `ctx.render` is optional: draw your output without it. `registerToolDesign([a, b])` registers several. A grouped `{ line, tools, id, label, apply }` paints several tools from ONE `Card <line>` switch; a tool in two lines is refused whole and reported. Fields, lines and the one-row preview rule: `docs/contract.md` §14.
+- **Plugin state stays the plugin's**: `createStore(pluginId)`. `createStore` reserves nothing, so never take a bridge id — `bridge-card-style` and `bridge-tool-designs` are the bridge's own files.
 
 ## Decision Gates
 
 | Need | Call |
 | --- | --- |
 | Rows in a host category, or a page of your own | `registerRows({id, category, rows})` |
-| Toggle vs button row | consecutive rows sharing one `choice.setting` vs `action` with no `choice`; names: one to three plain words, no arrow/colon/dot/pipe/slash/bracket |
+| Toggle vs button row | consecutive rows sharing one `choice.setting` vs `action` with no `choice`; names: one to three plain words, none of `→ ← ↑ ↓ : . \| / \ [ ] ( ) { }` |
 | Sidebar card (bridge adds its `Sections` toggle) | `registerSection({id, title, lines, meta?})` |
 | Card chrome, conversation and rail | `registerCardStyle({id, label, frame})` |
 | A choice that must reach cards already on screen | `registerTransform` |
@@ -41,7 +44,7 @@ Read `src/index.ts`, `docs/contract.md` and `examples/bash-card.ts` before editi
 | Palette item, listed only while its command is registered | `registerCommands` |
 | Persistence / repaint after a bridge-owned write | `createStore` / `requestRepaint()` |
 
-These members are OPTIONAL on an older object: `registerCardStyle`, `registerTransform`, `registerToolDesign`, `requestRepaint`, `registerKeymap`, `registerCommands` — gate with `typeof api.x === "function"`.
+These members are OPTIONAL on an older object: `registerCardStyle`, `registerTransform`, `registerToolDesign`, `requestRepaint`, `registerKeymap`, `registerCommands`, `resolveKeymap` — gate with `typeof api.x === "function"`.
 
 ## Execution Steps
 

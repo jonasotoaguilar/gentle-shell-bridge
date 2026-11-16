@@ -1,6 +1,6 @@
 ---
 name: gentle-shell-bridge-plugins
-description: "Trigger: build or extend a Pi plugin adding a /gentle:customize row or page, sidebar section, card style, transcript transform, per-tool card design, keymapped action, palette item or persisted state to gentle-shell through gentle-shell-bridge."
+description: "Trigger: build or extend a Pi plugin adding a /gentle:customize row or page, sidebar section, card style, transcript transform, per-tool card design or persisted state to gentle-shell through gentle-shell-bridge."
 license: Apache-2.0
 metadata:
   author: gentleman-programming
@@ -23,7 +23,7 @@ renderers) or a plain host theme change — nothing there registers through the 
 - **Keep every disposer**, call it on `session_shutdown`: each `register*` returns one; a stable namespaced `id` replaces in place on reload.
 - **Registrations are evaluated when the host builds the surface**, not when they are made: read live state in `current()`, persist in `action()`.
 - **Failures are reported, never thrown at the menu.** An invalid registration throws at the call site and lands in the plugin's INTEGRATIONS line; a throw while building loses only its own surface.
-- **`Keymaps` is RESERVED for row providers** — refused and reported. A keymapped action is `registerKeymap` + `resolveKeymap` + your own `pi.registerShortcut`; the bridge never binds.
+- **`Keymaps` is RESERVED for row providers** — refused and reported: that page captures keys and claims a footer, so a plain row there could never honour them.
 - **A card style repaints the host's frame** from measured pieces: `top({width, title, hint})`, `line({text, width, first})`, `bottom({width})`. Never parse a card back.
 - **A transform** takes the rows plus `ctx.width` and returns rows. Honour the width; report COUNTS ONLY (`ctx.report?.({candidates, recognised, rewritten})`), never card text.
 - **A tool design** transforms rows the HOST's card produced, by tool name. The bridge owns Pi's single `registerToolRenderer`: never call it yourself, never draw a second grammar, keep every byte you do not change, never label a design `default` or `native` (reserved). `ctx.render` is optional: draw your output without it. `registerToolDesign([a, b])` registers several. A grouped `{ line, tools, id, label, apply }` paints several tools from ONE `Card <line>` switch; a tool in two lines is refused whole and reported. Fields, lines and the one-row preview rule: `docs/contract.md` §14.
@@ -41,11 +41,9 @@ renderers) or a plain host theme change — nothing there registers through the 
 | One tool's card | `registerToolDesign({tool, id, label, apply})` |
 | Several tools behind ONE switch | `registerToolDesign({line, tools, id, label, apply})` |
 | What a tool draws right now | `resolveToolDesignSelection(tool)` |
-| Rebindable action | `registerKeymap` + `resolveKeymap` + own shortcut |
-| Palette item, listed only while its command is registered | `registerCommands` |
 | Persistence / repaint after a bridge-owned write | `createStore` / `requestRepaint()` |
 
-These members are OPTIONAL on an older object: `registerCardStyle`, `registerTransform`, `registerToolDesign`, `resolveToolDesignSelection`, `requestRepaint`, `registerKeymap`, `registerCommands`, `resolveKeymap` — gate with `typeof api.x === "function"`.
+These members are OPTIONAL on an older object: `registerCardStyle`, `registerTransform`, `registerToolDesign`, `resolveToolDesignSelection`, `requestRepaint` — gate with `typeof api.x === "function"`.
 
 ## Execution Steps
 
@@ -82,6 +80,6 @@ Return a plugin module that registers only what was asked, from `session_start`,
 ## References
 
 - `../../docs/contract.md` — every call, argument and guarantee.
-- `../../examples/bash-card.ts` — canonical worked example: design, style, section, rows, keymap, palette, store.
+- `../../examples/bash-card.ts` — canonical worked example: design, style, section, rows, store.
 - `../../docs/architecture.md` — why the interception exists.
 - `../../README.md` — purpose, quick start, limits.

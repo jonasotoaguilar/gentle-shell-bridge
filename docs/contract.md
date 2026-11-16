@@ -1,4 +1,4 @@
-# Contract — rows, sections, the store, card styles, transforms, tool designs, keymaps, palette items and diagnostics
+# Contract — rows, sections, the store, card styles, transforms, tool designs and diagnostics
 
 What a plugin can rely on. The mechanism behind it is in
 [architecture.md](architecture.md); the persistence decision in [state.md](state.md).
@@ -20,10 +20,9 @@ constructed.
 
 The package's public entry exports exactly `registerRows`, `registerSection`,
 `registerCardStyle`, `registerTransform`, `registerToolDesign`, `resolveToolDesignSelection`,
-`registerKeymap`, `registerCommands`, `resolveKeymap`, `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, the
-runtime helpers `bridgeApi`, `isBridgeApi`, `onBridgeApi`, the two host slots
-`KEYMAP_RESOLVER_KEY` and `PLUGIN_SURFACE_KEY`, the announcement channel
-`BRIDGE_READY_EVENT` (§9), and the row/provider/section/store/keymap/API types.
+`createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, the runtime helpers `bridgeApi`, `isBridgeApi`,
+`onBridgeApi`, the announcement channel `BRIDGE_READY_EVENT` (§9), and the
+row/provider/section/store/API types.
 `test/e2e.test.ts` pins that exact set. `requestRepaint` is the one contract member with no named
 export: a plugin reaches it through the published object (`api.requestRepaint`, §9). `snapshotProviders`, `snapshotSections`,
 `publishBridgeApi`, `announceBridgeReady` and every `…ForTests` seam are **internal**: they exist so
@@ -340,8 +339,7 @@ What that buffer does with a repeated failure:
   `:1019-1031`), so a message the user scrolled past is still readable.
 
 What the bridge itself puts in that channel today: an incompatible API slot, once per process
-(`src/api.ts:257-272`); a keymap or palette id registered twice
-(`src/plugin-surface.ts:143,177`); a host `Card style` setter that threw
+(`src/api.ts:257-272`); a host `Card style` setter that threw
 (`src/card-style-rows.ts:292-298`); and a button row's `action` that threw or rejected, at level
 `error`, wrapped so the menu stays open (`src/rows.ts:143-159`).
 
@@ -381,9 +379,6 @@ Object.freeze({
   registerToolDesign,                // since 0.3.0; optional on an older published object
   resolveToolDesignSelection,        // since 0.7.0; optional on an older published object
   requestRepaint,                    // since 0.3.0; optional on an older published object
-  registerKeymap,                    // optional on an older published object
-  registerCommands,                  // optional on an older published object
-  resolveKeymap,                     // optional on an older published object
   createStore,
 });
 ```
@@ -391,9 +386,9 @@ Object.freeze({
 Publication is **first wins**: a compatible object already in the slot is kept and never replaced,
 and the slot is never reset. A consumer gates on the schema string, `version === 1` and the three
 callable members below — `registerCardStyle`, `registerTransform`, `registerToolDesign`,
-`requestRepaint`, `registerKeymap`, `registerCommands`, `resolveToolDesignSelection` and
-`resolveKeymap` are NOT part of the gate, so an object published by an older copy is still a usable
-bridge for rows, sections and the store; a plugin that needs a later surface checks
+`requestRepaint` and `resolveToolDesignSelection` are NOT part of the gate, so an object published
+by an older copy is still a usable bridge for rows, sections and the store; a plugin that needs a
+later surface checks
 `typeof api.registerCardStyle === "function"` (or the same test on any later member) before
 calling it. Anything else — another library's
 payload, another major, a partial object — is
@@ -1544,66 +1539,10 @@ The bridge registers exactly ONE `pi.registerToolRenderer` resolver for the whol
 out to these designs. That is why two plugins contributing designs for the same tool do not stack
 wrappers, and why a plugin must never call `pi.registerToolRenderer` itself for a design.
 
-## 15. Plugin keymaps and the command palette
-
-The bridge publishes what plugins contributed; the **host reads it per build**. The direction is the
-design: there is no registration handshake, no startup cache and no lifecycle in the host, so a
-registration made during `session_start` is visible at the next menu or palette open, in any load
-order.
-
-```text
-Symbol.for("gentle-shell-bridge/plugin-surface/v1") → { schema: 1, keymaps(), commands() }
-```
-
-Both getters answer with a **copy**, never the live array, so a host that keeps one cannot mutate
-what the bridge owns.
-
-### `registerKeymap(registration): () => void`
-
-One action for the host's Keymaps page: `{ id, label, env?, defaultKey?, command? }`.
-
-- `id` and `label` must be non-empty strings; `env`, `defaultKey` and `command` are optional but,
-  when present, must be non-empty strings too. Validation happens here, where the plugin author sees
-  the error.
-- An `id` starting with `command:` is refused: those name palette command bindings, not plugin
-  actions.
-- The same `id` registered twice **replaces in place and is reported**, like every other
-  registration in this package. A silent takeover would be one plugin stealing another's row.
-- The disposer removes exactly the entry it created. A replaced entry is a different object, so
-  disposing the old registration never deletes its successor.
-- A contributed id can never shadow a built-in action or a `command:<name>` binding: the host keeps
-  its own ids.
-
-### `registerCommands(contribution | contribution[]): () => void`
-
-One palette item, or several: `{ id, label, command, section? }`.
-
-- An item joins the section it names, after that section's own entries, or opens a section of its
-  own after the host's catalog. Without `section` it lands in the shared `Plugins` page.
-- The host lists an item only while its command is registered, so a missing extension leaves no
-  dead row, and an own section that would be left empty does not appear at all.
-- An `id` twice **in one call** is refused whole: the batch would silently keep only the last one.
-  Across calls it replaces in place and is reported, exactly like keymaps.
-
-### `resolveKeymap(id): { key?; unavailable? }`
-
-The key an id currently uses, answered by the shell that owns the file, the environment override
-and the defaults — environment variable, then saved binding, then default. It never throws: no
-shell, an older shell or a throwing getter is an `unavailable` reason the caller reports.
-
-The plugin then binds the key itself with `pi.registerShortcut`. The bridge never binds for a
-plugin, and the shell never binds a plugin's key. That split is what keeps one implementation of the
-precedence: the row and the real binding cannot disagree.
-
-**A keymap change applies after `/reload`.** Pi reads extension shortcuts at startup and on reload,
-for native actions and contributed ones alike, and it exposes no way to re-register a shortcut while
-running. The Keymaps page says so, and its last row offers the reload.
-
 ## Limits
 
 - `registerRows`, `registerSection`, `registerCardStyle`, `registerTransform`,
-  `registerToolDesign`, `resolveToolDesignSelection`,
-  `registerKeymap`, `registerCommands`, `resolveKeymap`, `requestRepaint`,
+  `registerToolDesign`, `resolveToolDesignSelection`, `requestRepaint`,
   `createStore`, `bridgeApi`, `isBridgeApi`, `onBridgeApi`
   and the `gentle-shell-bridge:ready` event are the contract; anything a plugin does inside `action()` beyond
   calling inline helpers is the plugin's own business.
@@ -1615,8 +1554,8 @@ running. The Keymaps page says so, and its last row offers the reload.
   `Key maps` are ordinary categories. `Profiles` and `Reset` are not reserved: a plugin row there renders
   as an ordinary line. A refusal of one row is listed under `row rejections` but is not counted in the
   plugin's INTEGRATIONS line (a build cannot reach it; only the registration refusal does). The reason
-  is unchanged and now has a supported alternative: that page captures keys and claims a footer, so a
-  plain row would be advertised as assignable and could never honour it — a plugin uses §15 instead.
+  is unchanged: that page captures keys and claims a footer, so a plain row would be advertised as
+  assignable and could never honour it.
 - **A new category becomes a page.** The host computes its page list once, in the view's constructor
   (`lib/visual-customize-view.ts:387`), so the rows must be in the array before that `map` runs; see
   [architecture.md](architecture.md) "A brand-new page". The cost is stated there. The one residual
@@ -1653,12 +1592,10 @@ running. The Keymaps page says so, and its last row offers the reload.
 - Card styles are proven against a fake conversation component that reproduces gentle-shell's
   `float` output, never in a running Pi TUI; the downstream-override conflict above is a property of
   a real session the fake cannot reproduce.
-- `registerCardStyle`, `registerTransform`, `registerToolDesign`, `resolveToolDesignSelection`,
-  `requestRepaint`,
-  `registerKeymap`, `registerCommands` and `resolveKeymap` are optional
-  on the published object: an object published by a copy older than that surface passes the gate but
-  lacks it, so a plugin that needs one checks `typeof api.registerCardStyle === "function"` (or the
-  same test on any later member) first.
+- `registerCardStyle`, `registerTransform`, `registerToolDesign`, `resolveToolDesignSelection` and
+  `requestRepaint` are optional on the published object: an object published by a copy older than
+  that surface passes the gate but lacks it, so a plugin that needs one checks
+  `typeof api.registerCardStyle === "function"` (or the same test on any later member) first.
 - A design receives ROWS, a width and the PART it is drawing (`call` or `result`), never a renderer
   object and never the theme's shape. `part` is one of two literals; a design that ignores it is
   byte-identical to one written before the field existed, and a context produced by an older copy of

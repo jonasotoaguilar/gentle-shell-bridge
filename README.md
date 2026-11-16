@@ -11,9 +11,9 @@ it, and hopefully survive the next release. Two plugins doing that do not compos
 wrapper wins the capture, the outer one gets nothing, and the menu silently loses a plugin's rows.
 
 This package owns that interception exactly once. A plugin registers what it contributes — settings
-rows, a sidebar section, a card style, a transcript transform, a card design for one tool, a keymap
-action, palette items — and the bridge turns those registrations into what the host draws. The
-plugin keeps its own state; the bridge keeps the only wrapper.
+rows, a sidebar section, a card style, a transcript transform, a card design for one tool — and the
+bridge turns those registrations into what the host draws. The plugin keeps its own state; the
+bridge keeps the only wrapper.
 
 What changes for a user: every installed plugin's settings appear in the one menu they already
 open, and a plugin whose surface cannot be reached says why in `/bridge-status` instead of
@@ -41,10 +41,6 @@ run `--link` as your default.
 Pi reads the `pi` manifest and loads `src/extension.ts`. The shipped artifact is the TypeScript
 source — Pi loads it through jiti, so there is no build step and no `dist/`.
 
-Two surfaces need a host that reads them: **keymaps** and **command palette**. They land only in a
-gentle-shell that includes the consumer side; the bridge publishes the contributions either way, and
-`resolveKeymap` reports the missing host instead of failing.
-
 Working from a checkout instead? Point Pi's package list at the directory; nothing else changes.
 
 ## Core Workflow
@@ -57,9 +53,7 @@ A registration is evaluated when a menu is built, not when it is made, so rows a
 state. Anything a registration throws is isolated to that registration and reported: one broken
 plugin costs its own rows, never the menu.
 
-Every call, its arguments and its guarantees live in the contract, linked below. The two newest
-surfaces — a plugin's keymapped action, and its items in the command palette — are the ones worth
-reading first, because they are what a plugin could not do at all before.
+Every call, its arguments and its guarantees live in the contract, linked below.
 
 ## Key Features You Should Know About
 
@@ -72,11 +66,6 @@ reading first, because they are what a plugin could not do at all before.
   so the rest of the visual system stays the host's.
 - **Card designs per tool name**, behind one `pi.registerToolRenderer` resolver for the whole
   process, so two plugins cannot stack wrappers on the same tool.
-- **Keymaps.** A plugin's action appears on the host's Keymaps page, is reassigned there with the
-  native gestures, and takes part in the same reserved-key and duplicate-key checks. The plugin
-  binds the shortcut itself and asks the shell which key to bind, so the row and the binding cannot
-  disagree. Like every native keymap, a change applies after `/reload`.
-- **Command palette items**, into a section the host already has or one of the plugin's own.
 - **A namespaced store** for whatever a plugin wants to persist, with the bridge's own files kept
   apart from the host's.
 
@@ -101,8 +90,7 @@ reading first, because they are what a plugin could not do at all before.
   and the `Array.prototype.map` patch is restored in a `finally`. A menu built differently produces
   no capture, and `/bridge-status` reports that instead of passing silently.
 - **`Keymaps` stays reserved for row providers.** The host's keymap page captures keys and claims a
-  footer, so rows there would be advertised as assignable and could never honour it. The supported
-  path is the explicit keymap registration, which the host owns end to end.
+  footer, so rows there would be advertised as assignable and could never honour it.
 - **Card styles and transforms are repaints, not host features.** They depend on the host's frame
   grammar, and a downstream post-processor that re-frames the conversation can still override the
   result.
@@ -122,6 +110,3 @@ with the next version.
 
 - Read the contract's first section, then register a row against the fake host in a scratch
   extension before touching a real one.
-- If your plugin ships a keymap or palette items, check `/bridge-status` on a host without support
-  first: it tells you exactly which surface is missing, and that is the state you want to degrade
-  in gracefully.

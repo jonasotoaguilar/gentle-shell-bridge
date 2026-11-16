@@ -61,7 +61,6 @@
 
 import { registerCardStyle, registerRows, registerSection, registerTransform } from "./bus.ts";
 import { recordNotice } from "./notices.ts";
-import { registerCommands, registerKeymap, resolveKeymap } from "./plugin-surface.ts";
 import { requestRepaint } from "./repaint.ts";
 import { createStore } from "./store.ts";
 import { registerToolDesign, resolveToolDesignSelection } from "./tool-designs.ts";
@@ -194,33 +193,6 @@ export interface BridgeApi {
    * checks `typeof api.resolveToolDesignSelection === "function"` first.
    */
   readonly resolveToolDesignSelection?: typeof resolveToolDesignSelection;
-  /**
-   * A keymapped action for the host's Keymaps page (S1): the plugin's own action, editable with the
-   * same gestures as a native one (Enter assigns, ⌫ disables, r restores the default) and
-   * participating in the host's reserved-key and duplicate-key checks.
-   *
-   * The bridge publishes the entry; the host reads it while it builds the page. The plugin binds
-   * the key itself — Pi reads extension shortcuts at startup and on `/reload` — and asks
-   * `resolveKeymap` which key to bind, so the answer comes from the host's own precedence.
-   *
-   * Optional for the same reason as `registerCardStyle`: the slot is first-wins, so a mixed-copy
-   * process can hand back an object published before this member existed.
-   */
-  readonly registerKeymap?: typeof registerKeymap;
-  /**
-   * Items for the host's command palette (S1): one entry, or several, into a section the host
-   * already has or a section of its own. An item whose command is not registered is not listed.
-   *
-   * Optional for the same reason as `registerKeymap`.
-   */
-  readonly registerCommands?: typeof registerCommands;
-  /**
-   * The key an id currently uses, as the shell resolves it: environment variable, then saved
-   * binding, then default. Never throws; `unavailable` carries the reason when no shell answers.
-   *
-   * Optional for the same reason as `registerKeymap`.
-   */
-  readonly resolveKeymap?: typeof resolveKeymap;
   readonly createStore: typeof createStore;
 }
 
@@ -316,9 +288,6 @@ const LOCAL_API: BridgeApi = Object.freeze({
   requestRepaint,
   registerToolDesign,
   resolveToolDesignSelection,
-  registerKeymap,
-  registerCommands,
-  resolveKeymap,
   createStore,
 });
 

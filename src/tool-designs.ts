@@ -478,8 +478,8 @@ export function registerToolDesign(
   design: ToolDesignRegistration | readonly ToolDesignRegistration[],
 ): () => void {
   if (!Array.isArray(design)) return registerOneToolDesign(design as ToolDesignRegistration);
-  // A batch is all-or-nothing, like `registerCommands`: a refused design never leaves the ones before
-  // it registered, and the single disposer removes exactly the designs this call stored.
+  // A batch is all-or-nothing: a refused design never leaves the ones before it registered, and the
+  // single disposer removes exactly the designs this call stored.
   const state = designState();
   const before = [...state.entries];
   const disposers: Array<() => void> = [];

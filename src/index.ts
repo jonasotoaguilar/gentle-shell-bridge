@@ -64,6 +64,7 @@ export type {
   SidebarSection,
   Tone,
   ToolDesignContext,
+  ToolDesignRender,
   ToolDesignRegistration,
   TransformContext,
   TransformCounts,

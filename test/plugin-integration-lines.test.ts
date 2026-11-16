@@ -909,7 +909,7 @@ test("T42: the example's `demo presses` row is clickable, prints once, and hover
       const section = snapshotSections().find((candidate) => candidate.id === "bash-card.status");
       assert.ok(section !== undefined, "the example registered its section through the real entry");
       const ctx = { theme: undefined, configHome };
-      assert.equal(section.meta?.(ctx), "native", "the header meta is the live selection");
+      assert.equal(section.meta?.(ctx), "default", "the header meta is the live selection");
       assert.equal(
         section
           .lines(ctx)

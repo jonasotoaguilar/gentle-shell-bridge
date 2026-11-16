@@ -369,6 +369,37 @@ export interface ToolDesignContext {
   readonly theme?: unknown;
   /** The renderer this pass came from: `renderCall` or `renderResult`. */
   readonly part: "call" | "result";
+  /**
+   * What Pi's render context says about THIS tool call, read at this pass: the call's arguments and
+   * whether it is running, failed or finished, and how long it took. Optional because a host that
+   * hands no render context (or an older bridge) leaves it out; a design that needs it must work
+   * without it.
+   */
+  readonly render?: ToolDesignRender;
+}
+
+/**
+ * The fields of the host's render context a design may read, copied by value so a design cannot
+ * reach the host's live context. Every field is optional: the bridge forwards only what the host
+ * actually provided, with the type it has.
+ */
+export interface ToolDesignRender {
+  /** Stable across the call's and the result's passes: the key that ties the two halves of a card. */
+  readonly toolCallId?: string;
+  /**
+   * The call's arguments exactly as Pi holds them (for `bash`, `{ command, timeout? }`): the HOST's own
+   * object, forwarded by reference and never cloned or frozen. Treat it as read-only; mutating it is
+   * unsupported (Pi keeps updating it while the call streams).
+   */
+  readonly args?: unknown;
+  /** The result is partial or streaming: the call is still running. */
+  readonly isPartial?: boolean;
+  /** The finished call reported an error. */
+  readonly isError?: boolean;
+  /** Milliseconds the execution took; undefined while it runs or when none was recorded. */
+  readonly durationMs?: number;
+  /** The row is expanded. */
+  readonly expanded?: boolean;
 }
 
 /**

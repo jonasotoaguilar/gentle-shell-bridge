@@ -1255,9 +1255,10 @@ api.registerToolDesign({
 
 `apply(lines, ctx)` receives the rows the HOST's own card produced — ANSI sequences, padding, the
 right-aligned hint, the frame's rails, everything — and returns the rows to draw. `ctx` is
-`{ width, tool, theme, part }`: the width the host asked its own component to render at, the tool name
-the design was declared for, the host's opaque theme object, and which half of the card this pass is
-drawing (`"call"` for `renderCall`, `"result"` for `renderResult`).
+`{ width, tool, theme, part, render? }`: the width the host asked its own component to render at, the tool
+name the design was declared for, the host's opaque theme object, which half of the card this pass is
+drawing (`"call"` for `renderCall`, `"result"` for `renderResult`), and what the host knows about THIS
+call (`render`, below).
 
 **`part` is what tells the call from the result.** A card has two components and the host draws both
 with the same chrome, so the rows alone cannot distinguish a heading from output: under the `float`
@@ -1265,6 +1266,37 @@ style a result body row that begins with `$ ` (a script echoing its commands) si
 heading sits. The bridge wraps the two renderers separately and sets `part` per renderer, so a design
 that must not touch the result returns it unchanged when `ctx.part === "result"` instead of guessing
 from drawn text. The field is additive: a design that never reads it behaves exactly as before.
+
+**`render` is what tells a design about the CALL, not the drawing.** The rows alone cannot say what the
+command was (the host truncates a long heading with `…`), whether the call is still running, whether it
+failed, or how long it took. `ctx.render` carries those, copied by value from Pi's render context on
+EVERY pass (the context is live: `durationMs` arrives with the result):
+
+```ts
+interface ToolDesignRender {
+  toolCallId?: string;   // stable across the call's and the result's passes: ties the two halves
+  args?: unknown;        // the call's arguments as Pi holds them (bash: { command, timeout? })
+  isPartial?: boolean;   // the call is still running
+  isError?: boolean;     // the finished call reported an error
+  durationMs?: number;   // milliseconds the execution took; absent while it runs
+  expanded?: boolean;    // the row is expanded
+}
+```
+
+- **Every field is optional and typed.** A field is forwarded only when the host provided it with the
+  documented type; a `NaN` duration or a non-boolean flag is dropped, never coerced.
+- **Three states, all valid.** No `ctx.render` at all (an older bridge, or a host that hands no render
+  context), `ctx.render === {}` (a context with nothing usable), or a populated one. A design must draw
+  its pre-`render` output in the first two.
+- **Nothing else crosses.** `state`, `invalidate`, `lastComponent` and every other host member are not
+  forwarded; a design cannot reach the host's live context. A context whose accessors throw yields no
+  `render`, never a failed frame.
+- **`args` is the host's own object, by reference.** Treat it as read-only: Pi keeps updating it while
+  the call streams, and the bridge neither freezes nor clones it. Mutating it is unsupported.
+- **Key per-call memory by `toolCallId`.** The bridge offers no eviction, so a design that caches per id
+  owns that cache's lifetime.
+- **Per-tool shapes differ.** `args` for `bash` is `{ command }`, for `write` `{ path, content }`: a design
+  shared across tools branches on `ctx.tool`.
 
 **The frame is the host's, so the card style is preserved by construction.** With `Card style` on
 `neon` the card is still neon, with `float` it is still float, because the chrome was drawn before the
@@ -1319,7 +1351,8 @@ which path ran.
 The selected design per tool is a row in `/gentle:customize` → `Cards`: one line per tool, named from
 the TOOL (never from the plugin or the id) and prefixed with the category's own word, whose values are
 
-1. `native` — **the host's own card, always first and the DEFAULT**, and
+1. `default` — **the host's own card, always first and the default**. It is what the line SHOWS; the stored
+   value stays `native`, because the selection is identity and a saved choice must survive the wording; and
 2. every design registered for that tool, in registration order, each shown by its `label`.
 
 **The line name is `Card <tool>`**, the vocabulary the `Cards` category already uses for `Card style`
@@ -1401,7 +1434,11 @@ a model, not the host's own module.
 
 Same rules as every other surface: `tool` and `id` are validated before anything is stored; a second
 registration with the same (`tool`, `id`) replaces in place and is REPORTED (never a silent takeover);
-two designs of one tool cannot share a visible label; `native` is reserved. A design that throws, or
+two designs of one tool cannot share a visible label; `default` and `native` are reserved. One call may
+register several designs — `registerToolDesign([a, b])` — in order, all-or-nothing (a refused design leaves
+none of them registered), with ONE disposer that removes exactly that call's designs. Two designs of one
+tool from one call, or from two plugins, join that tool's ONE line: the tool name is the join key and
+`default` is never duplicated. A design that throws, or
 returns something that is not an array of strings, loses only its own card — the host's rows are drawn
 — and is reported once per (tool, id, message).
 

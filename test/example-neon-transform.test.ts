@@ -276,7 +276,7 @@ test("T10: the host's own card restores the neon rule byte for byte", async () =
   await world.pick("bash heading");
   assert.equal(call.render(60)[0], DESIGNED_NEON_TOP);
 
-  await world.pick("native");
+  await world.pick("default");
   assert.deepEqual(call.render(60), [...BASH_MINIMAL_NEON_CALL]);
 
   world.dispose();

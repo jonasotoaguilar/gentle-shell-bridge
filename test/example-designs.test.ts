@@ -316,14 +316,14 @@ test("the Cards line appears with no extra wiring, and the section reads the liv
   const designLine = rows.filter((row) => isBashDesignSetting(row.choice?.setting));
   assert.deepEqual(
     designLine.map((row) => row.choice?.value),
-    ["native", "bash heading"],
+    ["default", "bash heading"],
     "the tool's own card is the default, the design is the other value",
   );
 
   const section = sectionOf();
   assert.equal(section.title, "CARD BASH");
   assert.equal(section.rowLabel, "card bash");
-  assert.equal(section.meta?.(context()), "native", "the header count is the live selection");
+  assert.equal(section.meta?.(context()), "default", "the header count is the live selection");
 
   const lines = section.lines(context());
   assert.equal(

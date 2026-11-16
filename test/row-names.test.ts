@@ -457,7 +457,7 @@ test("a design's line is named from its tool, and no id reaches a row", () => {
   host.buildMenu();
 
   assert.ok(
-    host.toggleLines().includes("Card bash ● native ○ bash heading"),
+    host.toggleLines().includes("Card bash ● default ○ bash heading"),
     `the design's line is \`Card <tool>\`: ${host.toggleLines().join(" | ")}`,
   );
   for (const line of host.toggleLines()) {

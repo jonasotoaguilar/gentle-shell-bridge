@@ -71,7 +71,7 @@ import {
   snapshotToolDesigns,
   type ToolDesignSelection,
 } from "./tool-designs.ts";
-import type { ToolDesignContext } from "./types.ts";
+import type { ToolDesignContext, ToolDesignRender } from "./types.ts";
 
 /**
  * The renderers Pi hands a resolver, described structurally: the bridge reads `renderCall` and
@@ -135,11 +135,41 @@ export const toolDesignResolver: ToolDesignResolver = (toolName, next) => {
 const WRAPPED_RENDERERS: ReadonlyArray<{
   member: "renderCall" | "renderResult";
   themeIndex: number;
+  /** The argument that carries Pi's render context, always the one after the theme. */
+  contextIndex: number;
   part: "call" | "result";
 }> = [
-  { member: "renderCall", themeIndex: 1, part: "call" },
-  { member: "renderResult", themeIndex: 2, part: "result" },
+  { member: "renderCall", themeIndex: 1, contextIndex: 2, part: "call" },
+  { member: "renderResult", themeIndex: 2, contextIndex: 3, part: "result" },
 ];
+
+/**
+ * A by-value snapshot of the host's render context, or `undefined` when the host handed none. Taken
+ * on every render pass (the context is live: `durationMs` arrives with the result), and limited to
+ * the fields of `ToolDesignRender`, each kept only when it has the documented type.
+ */
+function snapshotRender(context: unknown): ToolDesignRender | undefined {
+  // Inside Pi's render loop: a host object whose accessors throw (a Proxy, a getter) has no context
+  // this module can read, so the design simply draws without `render`. Never a throw into the frame.
+  try {
+    if (!isRecord(context)) return undefined;
+    const render: {
+      -readonly [K in keyof ToolDesignRender]: ToolDesignRender[K];
+    } = {};
+    if (typeof context.toolCallId === "string") render.toolCallId = context.toolCallId;
+    // By REFERENCE: `args` is the host's own object (never frozen or cloned here); a design reads it.
+    if ("args" in context) render.args = context.args;
+    if (typeof context.isPartial === "boolean") render.isPartial = context.isPartial;
+    if (typeof context.isError === "boolean") render.isError = context.isError;
+    if (typeof context.durationMs === "number" && Number.isFinite(context.durationMs)) {
+      render.durationMs = context.durationMs;
+    }
+    if (typeof context.expanded === "boolean") render.expanded = context.expanded;
+    return render;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Own property on a renderers object THIS package wrapped: the resolver path
@@ -171,7 +201,7 @@ export function wrapRenderers(
   if (!wrapCall && !wrapResult) return renderers;
 
   const wrapped: ToolRenderersLike = { ...renderers };
-  for (const { member, themeIndex, part } of WRAPPED_RENDERERS) {
+  for (const { member, themeIndex, contextIndex, part } of WRAPPED_RENDERERS) {
     const original = renderers[member];
     if (typeof original !== "function") continue;
     // SAFETY: `typeof` just proved this member callable. A renderer's arguments (args, options, the
@@ -180,7 +210,7 @@ export function wrapRenderers(
     const hostRenderer = original as (
       ...args: Record<string, unknown>[]
     ) => Record<string, unknown>;
-    wrapped[member] = wrapRenderer(hostRenderer, tool, themeIndex, origin, part);
+    wrapped[member] = wrapRenderer(hostRenderer, tool, themeIndex, contextIndex, origin, part);
   }
   Object.defineProperty(wrapped, TOOL_RENDERERS_WRAPPED, {
     value: true,
@@ -191,20 +221,21 @@ export function wrapRenderers(
 }
 
 /**
- * Wrap one host renderer: call it with the host's own arguments and `this` (a host failure stays the
- * host's), then wrap the component it returned. A non-component answer is returned untouched.
- */
-/**
  * Which path produced a wrapper: the resolver (`./tool-design-wiring.ts`'s own registration) or the
  * post-construction adoption pass (`./tool-design-adoption.ts`). Only the resolver path is counted
  * as "the resolver wrapped this card", so `/bridge-status` can say which path reached what (T16).
  */
 export type ToolRendererWrapperOrigin = "resolver" | "adoption";
 
+/**
+ * Wrap one host renderer: call it with the host's own arguments and `this` (a host failure stays the
+ * host's), then wrap the component it returned. A non-component answer is returned untouched.
+ */
 function wrapRenderer(
   original: (...args: Record<string, unknown>[]) => Record<string, unknown>,
   tool: string,
   themeIndex: number,
+  contextIndex: number,
   origin: ToolRendererWrapperOrigin,
   part: "call" | "result",
 ): (...args: Record<string, unknown>[]) => Record<string, unknown> {
@@ -212,7 +243,7 @@ function wrapRenderer(
     const component = original.apply(this, args);
     // The theme is the host's own opaque object at the documented index of this renderer's arguments
     // (`renderCall`: second, `renderResult`: third); the bridge only forwards it.
-    return wrapComponent(component, tool, args[themeIndex], origin, part);
+    return wrapComponent(component, tool, args[themeIndex], args[contextIndex], origin, part);
   };
 }
 
@@ -227,6 +258,7 @@ function wrapComponent(
   component: Record<string, unknown>,
   tool: string,
   theme: Record<string, unknown> | undefined,
+  hostContext: unknown,
   origin: ToolRendererWrapperOrigin,
   part: "call" | "result",
 ): Record<string, unknown> {
@@ -261,7 +293,9 @@ function wrapComponent(
       }
       // No design selected, or the selected design is gone: the host's bytes, untouched.
       if (selection.kind !== "design") return rows;
-      const ctx: ToolDesignContext = { width, tool, theme, part };
+      const render = snapshotRender(hostContext);
+      const ctx: ToolDesignContext =
+        render === undefined ? { width, tool, theme, part } : { width, tool, theme, part, render };
       const applied = applyToolDesign(selection.design, rows, ctx);
       return applied === undefined ? rows : applied;
     },

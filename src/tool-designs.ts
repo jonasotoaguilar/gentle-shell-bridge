@@ -38,8 +38,17 @@ import { isRecord } from "./rows.ts";
 import { createStore } from "./store.ts";
 import type { ToolDesignContext, ToolDesignRegistration } from "./types.ts";
 
-/** The value meaning "no design: the host draws the card", shared by every tool's line. */
+/**
+ * The STORED value meaning "no design: the host draws the card", shared by every tool's line. It is
+ * identity, so it never changes: a user's saved choice keeps working whatever the line shows.
+ */
 export const TOOL_DESIGN_NATIVE = "native";
+
+/**
+ * What a tool's line SHOWS for the host's own card. Display only: the stored value stays
+ * `TOOL_DESIGN_NATIVE`. A design may not take this word (or `native`) as its label.
+ */
+export const TOOL_DESIGN_DEFAULT_LABEL = "default";
 
 /**
  * The bridge's own plugin id for the selection file. One namespaced file holds every tool's value,
@@ -126,7 +135,7 @@ function assertLabel(tool: string, id: string, label: unknown): void {
         "on the customize line, so keep it short.",
     );
   }
-  if (label === TOOL_DESIGN_NATIVE) {
+  if (label === TOOL_DESIGN_NATIVE || label === TOOL_DESIGN_DEFAULT_LABEL) {
     throw new Error(
       `gentle-shell-bridge: invalid tool design label ${JSON.stringify(label)} for ` +
         `${JSON.stringify(id)}: it is the reserved value meaning "the host's own card", so the line ` +
@@ -184,7 +193,9 @@ function recordConflict(conflict: ToolDesignConflict): void {
 }
 
 /**
- * Register a design for one tool and return a disposer that removes exactly that design.
+ * Register a design for one tool, or an array of designs (each for its own tool, in order), and return
+ * a disposer that removes exactly what this call registered. Two designs of one tool from one call
+ * are the same as two calls: they join that tool's ONE line.
  *
  * Same entry discipline as every other bridge surface, because a plugin author should not have to
  * learn two:
@@ -201,7 +212,27 @@ function recordConflict(conflict: ToolDesignConflict): void {
  *   contributes only designs still gets its one INTEGRATIONS line, its `name` is honoured once for
  *   the identity, and a refused design shows up as a rejection instead of disappearing.
  */
-export function registerToolDesign(design: ToolDesignRegistration): () => void {
+export function registerToolDesign(
+  design: ToolDesignRegistration | readonly ToolDesignRegistration[],
+): () => void {
+  if (!Array.isArray(design)) return registerOneToolDesign(design as ToolDesignRegistration);
+  // A batch is all-or-nothing, like `registerCommands`: a refused design never leaves the ones before
+  // it registered, and the single disposer removes exactly the designs this call stored.
+  const disposers: Array<() => void> = [];
+  try {
+    for (const one of design as readonly ToolDesignRegistration[]) {
+      disposers.push(registerOneToolDesign(one));
+    }
+  } catch (error) {
+    for (const dispose of disposers.reverse()) dispose();
+    throw error;
+  }
+  return () => {
+    for (const dispose of disposers) dispose();
+  };
+}
+
+function registerOneToolDesign(design: ToolDesignRegistration): () => void {
   return attributeRegistration("tool design", design, undefined, () =>
     registerToolDesignStored(design),
   );

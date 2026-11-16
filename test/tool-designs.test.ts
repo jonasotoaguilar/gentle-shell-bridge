@@ -574,12 +574,153 @@ test("T8/T20: the design receives the width the host asked for, its tool, the th
 
   // The two renderers are wrapped SEPARATELY and each says which half of the card it draws (S12): the
   // host draws both with the same chrome, so the rows alone cannot tell a heading from output.
-  assert.deepEqual(seen[0], { width: 72, tool: "bash", theme: THEME, part: "call" });
+  const { render: _callRender, ...callContext } = seen[0];
+  const { render: _resultRender, ...resultContext } = seen[1];
+  assert.deepEqual(callContext, { width: 72, tool: "bash", theme: THEME, part: "call" });
   assert.deepEqual(
-    seen[1],
+    resultContext,
     { width: 41, tool: "bash", theme: THEME, part: "result" },
     "the theme is the host's own, and the part is the renderer's own",
   );
+});
+
+test("S12: the design reads the host's render context by value, live, for both halves of a card", () => {
+  const seen: ToolDesignContext[] = [];
+  registerToolDesign({
+    ...bashHeadingDesign,
+    apply: (lines: readonly string[], ctx: ToolDesignContext): string[] => {
+      seen.push(ctx);
+      return [...lines];
+    },
+  });
+  setToolDesignSelection("bash", "loon.bash-heading");
+  const { renderers } = bashRenderers();
+  const resolved = toolDesignResolver("bash", () => renderers);
+  assert.ok(resolved !== undefined);
+
+  // Pi's context is a live object: `durationMs` and `isPartial` change after the call was built.
+  const hostContext: Record<string, unknown> = {
+    toolCallId: "call-1",
+    args: { command: "ls -la" },
+    isPartial: true,
+    isError: false,
+    durationMs: undefined,
+    expanded: false,
+    invalidate: () => undefined,
+    state: { secret: true },
+  };
+  const call = (resolved.renderCall as (...values: unknown[]) => FakeComponent)({}, THEME, hostContext);
+  const result = (resolved.renderResult as (...values: unknown[]) => FakeComponent)({}, {}, THEME, hostContext);
+  call.render(80);
+  hostContext.isPartial = false;
+  hostContext.durationMs = 142;
+  result.render(80);
+
+  assert.deepEqual(seen[0].render, {
+    toolCallId: "call-1",
+    args: { command: "ls -la" },
+    isPartial: true,
+    isError: false,
+    expanded: false,
+  });
+  assert.deepEqual(seen[1].render, {
+    toolCallId: "call-1",
+    args: { command: "ls -la" },
+    isPartial: false,
+    isError: false,
+    durationMs: 142,
+    expanded: false,
+  });
+  assert.ok(!("state" in (seen[1].render ?? {})), "nothing beyond the documented fields is forwarded");
+  assert.ok(!("invalidate" in (seen[1].render ?? {})), "no host function reaches a design");
+});
+
+test("S12: no render context from the host, no `render` on the design's context", () => {
+  const seen: ToolDesignContext[] = [];
+  registerToolDesign({
+    ...bashHeadingDesign,
+    apply: (lines: readonly string[], ctx: ToolDesignContext): string[] => {
+      seen.push(ctx);
+      return [...lines];
+    },
+  });
+  setToolDesignSelection("bash", "loon.bash-heading");
+  const { renderers } = bashRenderers();
+  const resolved = toolDesignResolver("bash", () => renderers);
+  assert.ok(resolved !== undefined);
+  (resolved.renderCall as (...values: unknown[]) => FakeComponent)({}, THEME).render(80);
+  assert.ok(!("render" in seen[0]));
+  const bad = (resolved.renderCall as (...values: unknown[]) => FakeComponent)({}, THEME, {
+    durationMs: Number.NaN,
+    isPartial: "yes",
+    toolCallId: 7,
+  });
+  bad.render(80);
+  assert.deepEqual(seen[1].render, {}, "a field with the wrong type is dropped, never coerced");
+});
+
+test("S12: a host context whose accessors throw costs the design its `render`, never the frame", () => {
+  const seen: ToolDesignContext[] = [];
+  registerToolDesign({
+    ...bashHeadingDesign,
+    apply: (lines: readonly string[], ctx: ToolDesignContext): string[] => {
+      seen.push(ctx);
+      return [...lines];
+    },
+  });
+  setToolDesignSelection("bash", "loon.bash-heading");
+  const { renderers } = bashRenderers();
+  const resolved = toolDesignResolver("bash", () => renderers);
+  assert.ok(resolved !== undefined);
+  const hostile = new Proxy(
+    {},
+    {
+      has() {
+        throw new Error("no");
+      },
+      get() {
+        throw new Error("no");
+      },
+    },
+  );
+  const call = (resolved.renderCall as (...values: unknown[]) => FakeComponent)({}, THEME, hostile);
+  const rows = call.render(80);
+  assert.ok(Array.isArray(rows), "the frame still draws");
+  assert.equal(seen.length, 1, "the design still ran");
+  assert.ok(!("render" in seen[0]), "without a readable context the design gets no `render`");
+});
+
+test("the line SHOWS `default` for the host's card, so no design may take `default` or `native` as its label", () => {
+  for (const label of ["default", "native"]) {
+    assert.throws(
+      () => registerToolDesign({ ...bashHeadingDesign, id: `loon.${label}`, label }),
+      /reserved value/u,
+      `${label} is refused`,
+    );
+  }
+  assert.deepEqual(snapshotToolDesigns("bash"), [], "a refused design never half-registers");
+  // The stored identity is unchanged: a saved `native` still means the host's own card.
+  assert.equal(getToolDesignSelection("bash"), TOOL_DESIGN_NATIVE);
+});
+
+test("an array registers several designs in order and one disposer removes exactly them", () => {
+  const framed: ToolDesignRegistration = { ...bashHeadingDesign, id: "loon.bash-framed", label: "bash framed" };
+  const dispose = registerToolDesign([bashHeadingDesign, framed, writeBadgeDesign]);
+  assert.deepEqual(
+    snapshotToolDesigns("bash").map((design) => design.id),
+    ["loon.bash-heading", "loon.bash-framed"],
+    "two designs of one tool join that tool's one line, in order",
+  );
+  assert.deepEqual(toolNamesWithDesigns(), ["bash", "write"]);
+  dispose();
+  assert.deepEqual(toolNamesWithDesigns(), []);
+  dispose();
+});
+
+test("an array with one refused design registers none of them", () => {
+  const bad = { ...writeBadgeDesign, label: "default" };
+  assert.throws(() => registerToolDesign([bashHeadingDesign, bad]), /reserved value/u);
+  assert.deepEqual(toolNamesWithDesigns(), [], "the design before the refused one is rolled back");
 });
 
 test("T20/S12: a design that ignores `part` draws exactly the rows it drew before the field existed", () => {

@@ -853,7 +853,7 @@ included, which decides whether the host frames the card itself — is the host'
 wrapper's `render(width)` is:
 
 ```
-hostComponent.render(width) → design.apply(rows, { width, tool, theme, part }) → rows
+hostComponent.render(width) → design.apply(rows, { width, tool, theme, part, render? }) → rows
 ```
 
 so the chrome (`neon`, `float`, whatever the host's Card style is) exists before the design sees
@@ -864,6 +864,16 @@ behaving exactly as the host's did — only the rows can differ.
 `renderResult` (S12). The two members are wrapped SEPARATELY, so the design is told which half of the
 card it is drawing instead of having to infer it from the rows: the host draws both with the same
 chrome, and a float result row that begins with `$ ` is indistinguishable from a float heading.
+
+`render` is the call's own state, snapshotted on every pass from the context Pi hands the renderer
+(`renderCall(args, theme, ctx)` → index 2, `renderResult(result, options, theme, ctx)` → index 3,
+`dist/core/extensions/types.d.ts:536-538`; both resolver and adoption paths wrap through the same
+`wrapRenderers`, so both reach it). Only the six documented fields cross, each by value and type-checked
+(`args` by reference: it is the host's own object), and the snapshot is taken on every pass because
+`durationMs` and `isPartial` change after the card was built. Pi's `state`, `invalidate` and
+`lastComponent` are deliberately left out: they are host internals, and a function crossing the
+boundary could be used to damage the host. A card wrapped by an older copy of this package (the wrapper
+marker is shared) keeps that copy's behaviour, without `render`, until the host rebuilds it.
 
 Wrapping even when nothing is selected is deliberate. Pi resolves the renderers ONCE per card, when
 it constructs it (`interactive-mode.js:1816-1818,2957-2961,3028-3032,3376-3380`), and re-renders that
@@ -916,7 +926,7 @@ Pi's render loop.
 
 `src/tool-designs.ts` keeps one registry per tool name and nothing else: no known-tool list, no
 branch on a name. `src/tool-design-rows.ts` turns each tool with designs into one `Cards` line —
-the host's own card (`native`) plus one value per design, in registration order — and persists the
+the host's own card (shown `default`, stored `native`) plus one value per design, in registration order — and persists the
 selection per tool in the bridge's own `bridge-tool-designs` store, never in the host's config. The
 stored value is the design's `id`, so renaming a label never moves the bullet; a selection whose
 design was disposed resolves to `missing` and draws the host's card.

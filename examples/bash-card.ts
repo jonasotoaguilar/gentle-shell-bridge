@@ -119,7 +119,7 @@ const TOOL_NAME = "bash";
 const DESIGN_ID = "bash-card.bash-heading";
 /**
  * The value the user reads on the `Cards` line. The line's NAME is derived from `bash`, so the menu
- * reads `bash  ○ native  ○ bash heading` — a short value, in the host's own vocabulary.
+ * reads `bash  ○ default  ○ bash heading` — a short value, in the host's own vocabulary.
  */
 const DESIGN_LABEL = "bash heading";
 /**
@@ -307,6 +307,20 @@ interface ToolDesignContextLike {
    * older bridge decorates exactly what it decorated before.
    */
   part?: "call" | "result";
+  /**
+   * What the host's render context says about THIS call (`src/types.ts`, `ToolDesignRender`): its
+   * `args` (read-only, the host's own object), `isPartial` (still running), `isError`, `durationMs`,
+   * `toolCallId`, `expanded`. OPTIONAL: an older bridge, or a host with no render context, leaves it out,
+   * and this file does not read it today. A design that needs it must draw its previous output without.
+   */
+  render?: {
+    toolCallId?: string;
+    args?: unknown;
+    isPartial?: boolean;
+    isError?: boolean;
+    durationMs?: number;
+    expanded?: boolean;
+  };
 }
 
 /**
@@ -1057,11 +1071,11 @@ function readSelection(store: BridgeStoreLike | undefined): string {
 }
 
 /**
- * What a user reads for one stored value. `native` is the host's card; this file's own design is its
+ * What a user reads for one stored value. `native` (read as `default`) is the host's card; this file's own design is its
  * label; a value another plugin owns reads as `other design` — an id is internal and never a row.
  */
 function selectionText(selected: string): string {
-  if (selected === NATIVE_VALUE) return NATIVE_VALUE;
+  if (selected === NATIVE_VALUE) return "default";
   if (selected === DESIGN_ID) return DESIGN_LABEL;
   return "other design";
 }

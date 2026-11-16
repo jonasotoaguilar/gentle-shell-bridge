@@ -42,6 +42,7 @@ import {
 import { buildRows, resetRowBuildStateForTests } from "../src/rows.ts";
 import { resetStoreStateForTests } from "../src/store.ts";
 import {
+  TOOL_DESIGN_DEFAULT_LABEL,
   TOOL_DESIGN_NATIVE,
   getToolDesignSelectionReads,
   registerToolDesign,
@@ -386,7 +387,7 @@ test("T23/S13: a switch asks for ONE differential frame and invalidates nothing"
   assert.equal(getRepaintDiagnostics().lastTrigger?.outcome, "repainted");
 
   // S2's other half: `native` restores the host's exact bytes on the SAME components.
-  await press(TOOL_DESIGN_NATIVE);
+  await press(TOOL_DESIGN_DEFAULT_LABEL);
   assert.deepEqual(
     world.drawFrame().filter((lines) => lines.length === HOST_CARD.length),
     [HOST_CARD, HOST_CARD, HOST_CARD],
@@ -398,7 +399,7 @@ test("T23/S13: a switch asks for ONE differential frame and invalidates nothing"
 
 test("T23/S13: the work of a switch does not grow with the number of Markdown rows", async () => {
   const small = await measureSwitch({ children: 6, markdown: 3 });
-  await press(TOOL_DESIGN_NATIVE);
+  await press(TOOL_DESIGN_DEFAULT_LABEL);
   const large = await measureSwitch({ children: 203, markdown: 200 });
 
   assert.deepEqual(
@@ -432,7 +433,7 @@ test("T23/S13: a switch performs at most one selection read per card per frame",
 
   // A frame with no design still reads the selection once per card: the bound is about the CARD,
   // not about which value is selected.
-  await press(TOOL_DESIGN_NATIVE);
+  await press(TOOL_DESIGN_DEFAULT_LABEL);
   resetToolDesignSelectionReads();
   world.drawFrame();
   assert.equal(getToolDesignSelectionReads(), 4);

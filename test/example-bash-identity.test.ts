@@ -247,11 +247,11 @@ test("T10/S8: the design appears on the `bash` Cards line beside the host's own 
     .rows()
     .filter((row) => isBashDesignSetting(row.choice?.setting))
     .map((row) => row.choice?.value);
-  assert.deepEqual(values, ["native", "bash heading"], "the host's card is the default value");
+  assert.deepEqual(values, ["default", "bash heading"], "the host's card is the default value");
 
   const native = world
     .rows()
-    .find((row) => isBashDesignSetting(row.choice?.setting) && row.choice?.value === "native");
+    .find((row) => isBashDesignSetting(row.choice?.setting) && row.choice?.value === "default");
   assert.equal(native?.choice?.current(), true, "nothing is selected on install");
 
   world.dispose();
@@ -338,7 +338,7 @@ test("T10: picking the host's own card again restores the host's rows", async ()
   await world.pick("bash heading");
   assert.equal(call.render(60)[1], DESIGNED_FLOAT_HEADING);
 
-  await world.pick("native");
+  await world.pick("default");
   assert.deepEqual(call.render(60), [...BASH_MINIMAL_FLOAT_CALL], "the host's card, unchanged");
 
   world.dispose();

@@ -22,6 +22,7 @@ import { getRepaintDiagnostics, resetRepaintForTests, setRepaintHost } from "../
 import { buildRows, resetRowBuildStateForTests } from "../src/rows.ts";
 import { createStore, resetStoreStateForTests } from "../src/store.ts";
 import {
+  TOOL_DESIGN_DEFAULT_LABEL,
   TOOL_DESIGN_NATIVE,
   getToolDesignSelection,
   registerToolDesign,
@@ -153,7 +154,7 @@ test("T9: one Cards line per tool that has designs, in Cards, values are the too
   const lines = toggleLines(rows);
   assert.equal(lines.length, 2, "one line per tool, never one line per design");
   assert.match(lines[0], /^Card bash /u, "the line is named after the Cards category, then the tool");
-  assert.match(lines[0], /● native/u, "the tool's own card is the default selection");
+  assert.match(lines[0], /● default/u, "the tool's own card is the default selection");
   assert.match(lines[0], /○ bash heading/u);
   assert.match(lines[0], /○ bash framed/u);
   assert.match(lines[1], /^Card write /u);
@@ -173,12 +174,12 @@ test("T9: the selection persists PER TOOL and moves the bullet on the next build
   assert.equal(getToolDesignSelection("write"), TOOL_DESIGN_NATIVE, "the other tool did not move");
 
   const after = toggleLines(rowsForBuild());
-  assert.match(after[0], /○ native ● bash heading/u);
-  assert.match(after[1], /● native ○ write badge/u);
+  assert.match(after[0], /○ default ● bash heading/u);
+  assert.match(after[1], /● default ○ write badge/u);
 
   // And the way back to the host's own card.
   const native = rowsForBuild().find(
-    (row) => row.choice?.value === TOOL_DESIGN_NATIVE && row.choice?.setting === "Card bash",
+    (row) => row.choice?.value === TOOL_DESIGN_DEFAULT_LABEL && row.choice?.setting === "Card bash",
   );
   assert.ok(native?.action !== undefined);
   await native.action({ input: async () => undefined, confirm: async () => true, capture: async () => undefined });
@@ -222,7 +223,7 @@ test("T9: a design's own preview is the preview its value shows", () => {
   assert.match(badge.preview().title, /write badge/u);
 
   const native = rows.find(
-    (row) => row.choice?.value === TOOL_DESIGN_NATIVE && row.choice?.setting === "Card bash",
+    (row) => row.choice?.value === TOOL_DESIGN_DEFAULT_LABEL && row.choice?.setting === "Card bash",
   );
   assert.ok(native?.preview !== undefined);
   assert.match(native.preview().sample, /own card|host/u);

@@ -3,7 +3,8 @@
  *
  * ## One line per tool, one value per design
  *
- * The values of a tool's line are the tool's own card — `native`, the reserved value — followed by
+ * The values of a tool's line are the tool's own card — shown as `default` (stored as `native`, the
+ * reserved identity) — followed by
  * every design registered for that tool, in registration order. The host coalesces consecutive rows
  * that share a `choice.setting` into one rendered line (`lib/visual-customize-view.ts:395-402,583-595`),
  * so all of one tool's values share that tool's setting and two tools can never share a line.
@@ -56,6 +57,7 @@ import { deriveRowLabel } from "./row-labels.ts";
 import { MAX_ROW_NAME_WORDS } from "./row-names.ts";
 import { isRecord } from "./rows.ts";
 import {
+  TOOL_DESIGN_DEFAULT_LABEL,
   TOOL_DESIGN_NATIVE,
   getToolDesignSelection,
   setToolDesignSelection,
@@ -142,13 +144,16 @@ function previewFor(design: ToolDesignRegistration): RowPreview {
   };
 }
 
-/** The `native` value: the host's own card, untouched. */
+/**
+ * The host's own card, untouched. It SHOWS `default` (the word the user reads) while the stored value
+ * stays `native`: the selection is identity, so a saved choice survives the rename.
+ */
 function nativeRow(tool: string, setting: string): CustomizeRow {
   return {
     category: HOST_CARD_STYLE_CATEGORY,
     choice: {
       setting,
-      value: TOOL_DESIGN_NATIVE,
+      value: TOOL_DESIGN_DEFAULT_LABEL,
       // Identity, never the displayed text: a renamed label cannot lose the user's choice.
       current: () => getToolDesignSelection(tool) === TOOL_DESIGN_NATIVE,
     },

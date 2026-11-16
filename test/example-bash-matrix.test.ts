@@ -791,7 +791,7 @@ test("T18: the design's heading survives a style ADDED through registerCardStyle
   // very same transform draws the host's heading. The bridge drops the leading glyph before it hands
   // the title to a style (`stripGlyph`, `src/card-style-transform.ts:301-305`), which is why the
   // host's `$` never reaches a registered style and the design's whole word does.
-  await world.pick("native");
+  await world.pick("default");
   style.tops.length = 0;
   const hostCard = [
     ...mount(resolved, "renderCall").render(60),

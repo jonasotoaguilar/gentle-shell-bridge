@@ -1021,7 +1021,7 @@ test("T31 matrix — sections: the bridge's own section and another plugin's, co
     "the rows are painted with the host's roles: tones are part of the section, not the style",
   );
   assert.equal(
-    stripAnsi(expanded.rows[exampleHeader] ?? "").includes("native"),
+    stripAnsi(expanded.rows[exampleHeader] ?? "").includes("default"),
     true,
     "the example's section header carries its live meta",
   );
@@ -1236,7 +1236,7 @@ test("T30: two surfaces, one identity — a section line reports the style as re
     false,
     "the live selection is the header meta only, never a duplicate body row",
   );
-  assert.equal(section.meta?.({ theme: undefined, configHome }), "native");
+  assert.equal(section.meta?.({ theme: undefined, configHome }), "default");
 });
 
 test("T30: no bridge at all adds nothing and reports it once, with the style named as one of the missing surfaces", async () => {

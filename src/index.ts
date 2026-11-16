@@ -36,14 +36,6 @@ export type {
 export { registerCardStyle, registerRows, registerSection, registerTransform } from "./bus.ts";
 export { registerToolDesign, resolveToolDesignSelection } from "./tool-designs.ts";
 export type { ToolDesignSelection } from "./tool-designs.ts";
-export {
-  KEYMAP_RESOLVER_KEY,
-  PLUGIN_SURFACE_KEY,
-  registerCommands,
-  registerKeymap,
-  resolveKeymap,
-} from "./plugin-surface.ts";
-export type { CommandContribution, KeymapRegistration, KeymapResolution } from "./plugin-surface.ts";
 export { createStore, STORE_SCHEMA_VERSION } from "./store.ts";
 export type { Store, StoreProblem, StoreProblemKind } from "./store.ts";
 export type {

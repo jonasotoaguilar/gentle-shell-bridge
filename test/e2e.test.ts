@@ -308,8 +308,6 @@ test("S8 end to end: action persists first and the repaint shows the new bullet"
 test("the public entry exports exactly the contract surface and no test seams", () => {
   assert.deepEqual(Object.keys(publicApi).sort(), [
     "BRIDGE_READY_EVENT",
-    "KEYMAP_RESOLVER_KEY",
-    "PLUGIN_SURFACE_KEY",
     "STORE_SCHEMA_VERSION",
     "VERSION",
     "bridgeApi",
@@ -317,13 +315,10 @@ test("the public entry exports exactly the contract surface and no test seams", 
     "isBridgeApi",
     "onBridgeApi",
     "registerCardStyle",
-    "registerCommands",
-    "registerKeymap",
     "registerRows",
     "registerSection",
     "registerToolDesign",
     "registerTransform",
-    "resolveKeymap",
     "resolveToolDesignSelection",
   ]);
   for (const seam of [
@@ -444,5 +439,5 @@ test("the documented values and types are reachable from the public entry", () =
   assert.equal(section.title, "API");
   assert.equal(section.lines(context).length, 1);
   assert.deepEqual(transform.transform(["a"], { width: 3 }), ["a", "3"]);
-  assert.equal(VERSION, "0.7.0");
+  assert.equal(VERSION, "0.8.0");
 });

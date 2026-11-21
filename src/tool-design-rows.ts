@@ -55,7 +55,7 @@ import {
   toolDesignLines,
   type ToolDesignLine,
 } from "./tool-designs.ts";
-import type { CustomizeRow, RowPreview, ToolDesignRegistration, ToolDesignScope } from "./types.ts";
+import type { CustomizeRow, RowPreview, ToolDesignRegistration } from "./types.ts";
 
 /** The rows provider's id; it is the bridge's own registration, never a plugin's. */
 export const TOOL_DESIGN_ROWS_PROVIDER_ID = "bridge.tool-designs";
@@ -129,16 +129,23 @@ function firstSampleRow(sample: string): string {
 }
 
 /**
- * A scoped line's values say WHICH calls the line owns, inside the SAME preview row (S13): the
- * description joins the preview's first line, so nothing gains a second row, a value or a row kind.
- * An UNSCOPED line's preview is handed back untouched, byte for byte.
+ * A line's scope text, inside the SAME preview row (S13/S19): nothing to say when no claim of the
+ * line is scoped; one scope shared by every scoped claim prints today's ` — scope: <description>`
+ * byte for byte; several DISTINCT scopes print ` — scope: <tool[, tool]>: <description>` per scope,
+ * joined by `; `. Either way it joins the preview's first line, so nothing gains a second row, a
+ * value or a row kind.
  */
-function withScopeDescription(preview: RowPreview, scope: ToolDesignScope | undefined): RowPreview {
-  if (scope === undefined) return preview;
-  return {
-    title: preview.title,
-    sample: `${firstSampleRow(preview.sample)} — scope: ${scope.description}`,
-  };
+function withScopeText(preview: RowPreview, line: ToolDesignLine): RowPreview {
+  const groups = line.scopedClaims;
+  if (groups.length === 0) return preview;
+  const text = groups
+    .map((group) =>
+      groups.length === 1
+        ? `— scope: ${group.scope.description}`
+        : `— scope: ${group.tools.join(", ")}: ${group.scope.description}`,
+    )
+    .join("; ");
+  return { title: preview.title, sample: `${firstSampleRow(preview.sample)} ${text}` };
 }
 
 /** What a design's fallback preview says it paints. */
@@ -188,12 +195,12 @@ function nativeRow(line: ToolDesignLine, setting: string): CustomizeRow {
       current: () => getToolDesignLineSelection(line.scope, line.line) === TOOL_DESIGN_NATIVE,
     },
     preview: () =>
-      withScopeDescription(
+      withScopeText(
         {
           title: `Cards · ${setting}`,
           sample: `${setting}: the host's own card for ${subject}, untouched`,
         },
-        line.designScope,
+        line,
       ),
     action: () => selectDesign(line.scope, line.line, TOOL_DESIGN_NATIVE),
   };
@@ -209,7 +216,7 @@ function designRow(line: ToolDesignLine, setting: string, design: ToolDesignRegi
       value: design.label,
       current: () => getToolDesignLineSelection(line.scope, line.line) === design.id,
     },
-    preview: () => withScopeDescription(previewFor(design, tools), line.designScope),
+    preview: () => withScopeText(previewFor(design, tools), line),
     action: () => selectDesign(line.scope, line.line, design.id),
   };
 }

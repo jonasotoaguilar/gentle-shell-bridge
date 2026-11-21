@@ -473,6 +473,20 @@ export interface ToolDesignRegistration {
    * number of scoped claims may name one tool, beside that one unscoped claim.
    */
   tools?: readonly string[];
+  /**
+   * Optional. The scope of each TOOL's claim (S19): a key is one of THIS registration's `tools`, and
+   * the value is the `ToolDesignScope` that line owns of that tool's calls. A tool with no entry
+   * claims EVERY call of it, exactly as a registration carrying no scope at all does.
+   *
+   * A scope belongs to the (line, tool) CLAIM and not to the line, so one line may own some tools
+   * unconditionally and narrow others — `Card tools` paints bash/grep/find/ls/read for every call
+   * and write/edit only under `skills/` or `odd/` — while another line carries the generic claim on
+   * the same tools. Specific beats generic at paint time: the matching scoped claims answer first and
+   * the one unscoped claim answers last. An invalid map (not an object, empty, a key that is not one
+   * of `tools`, a value that is not a scope) refuses the whole registration. Declared on a GROUPED
+   * registration only, like `scope`.
+   */
+  readonly scopes?: Readonly<Record<string, ToolDesignScope>>;
   /** Unique per line (or per tool when ungrouped): the value the user selects and the key for replacement. */
   id: string;
   /**
@@ -490,14 +504,18 @@ export interface ToolDesignRegistration {
   /** Optional literal depiction of the design, drawn in the customize preview. */
   preview?(): RowPreview;
   /**
-   * Optional. Absent, the line claims EVERY call of its tools, exactly as before (S7/S8). Present,
-   * the line owns only the calls `matches` answers true for, so another line may name the same tool
-   * for the calls this one does not own. A scope is declared on a GROUPED registration ONLY
-   * (`line` + `tools`): an ungrouped registration IS the tool's own `Card <tool>` line, which means
-   * every call of the tool by definition, so `{ tool, scope, … }` is refused whole. Every live
-   * registration of ONE line must share the same scope object: a line is one switch, and a scope per
-   * design would make one switch mean different calls. An invalid scope (no description, no
-   * `matches`) refuses the whole registration.
+   * Optional SHORTHAND for `scopes` (S19): the SAME scope object on every tool of `tools`. Refused
+   * together with `scopes`, because the two spellings of one claim would disagree.
+   *
+   * A claim without a scope claims EVERY call of its tool, exactly as before (S7/S8). A scoped claim
+   * owns only the calls `matches` answers true for, so another line may name the same tool for the
+   * calls this one does not own. A scope is declared on a GROUPED registration ONLY (`line` +
+   * `tools`): an ungrouped registration IS the tool's own `Card <tool>` line, which means every call
+   * of the tool by definition, so `{ tool, scope, … }` is refused whole. Every live registration of
+   * ONE line that names a tool must share the SAME scope object for that tool: a line is one switch
+   * per call of a tool, and a scope per design would make one switch mean different calls. A
+   * registration that does not name the tool does not constrain it. An invalid scope (no
+   * description, no `matches`) refuses the whole registration.
    */
   readonly scope?: ToolDesignScope;
   /**

@@ -560,3 +560,32 @@ test("S11: a frame with scoped claims still performs one read per card", () => {
   world.drawFrame();
   assert.equal(getToolDesignSelectionReads(), 3, "at most one read per card per frame");
 });
+
+test("S19/S11: a line with per-tool scopes still costs ONE selection read per resolve", () => {
+  // ONE line, two tools, each claimed by its own scope: the resolver walks claims, not lines.
+  registerToolDesign({
+    line: "mixed",
+    tools: ["bash", "write"],
+    id: "loon.mixed",
+    label: "mixed card",
+    scopes: {
+      bash: { description: "every bash call", matches: () => true },
+      write: { description: "every write call", matches: () => true },
+    },
+    apply: (lines: readonly string[]) => [...lines],
+  });
+  registerToolDesign(unscopedBash);
+  setToolDesignLineSelection("line", "mixed", "loon.mixed");
+  setToolDesignLineSelection("line", "tools", "loon.tools-activity");
+
+  resetToolDesignSelectionReads();
+  const answer = resolveToolDesignSelection("bash", { command: "ls -la" });
+  assert.ok(answer.kind === "design");
+  assert.equal(answer.design.id, "loon.mixed", "the scoped claim of THAT tool answers");
+  assert.equal(getToolDesignSelectionReads(), 1, "one snapshot serves every (line, tool) claim");
+
+  // The same bound for the tool the SAME registration claims through a different scope.
+  resetToolDesignSelectionReads();
+  resolveToolDesignSelection("write", { path: "odd/a.md" });
+  assert.equal(getToolDesignSelectionReads(), 1, "no args or another tool: still one read");
+});

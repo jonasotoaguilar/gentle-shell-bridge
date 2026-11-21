@@ -31,10 +31,11 @@ import { resetPluginLinesForTests } from "../src/plugin-lines.ts";
 import { resetRepaintForTests } from "../src/repaint.ts";
 import { resetRowBuildStateForTests } from "../src/rows.ts";
 import { collectStatus, formatStatus } from "../src/status.ts";
-import { resetStoreStateForTests } from "../src/store.ts";
+import { createStore, resetStoreStateForTests } from "../src/store.ts";
 import {
   TOOL_DESIGN_NATIVE,
   TOOL_DESIGN_STORE_ID,
+  TOOL_DESIGN_STORE_KEY,
   designsOfTool,
   getToolDesignConflicts,
   getToolDesignFailures,
@@ -2104,4 +2105,562 @@ test("S10/S2: a line keeps its CLAIM order after one of its values is disposed",
     ],
     "each line keeps its own stored value",
   );
+});
+
+// ---------------------------------------------------------------------------------------------
+// S19 — the scope belongs to the (line, tool) CLAIM: one line can mix scoped and unscoped tools
+// ---------------------------------------------------------------------------------------------
+
+/** The consumer's own path rule (`fileCardIdentity`): a path under `skills/` or `odd/`. */
+const CONSUMER_SCOPE: ToolDesignScope = {
+  description: "paths under skills/ or odd/",
+  matches: underSkillsOrOdd,
+};
+
+/** `Card tools`: bash/grep/find/ls/read for EVERY call, write/edit only under skills/ or odd/. */
+const consumerTools = (
+  overrides: Partial<ToolDesignRegistration> = {},
+): ToolDesignRegistration => ({
+  line: "tools",
+  tools: ["bash", "grep", "find", "ls", "read", "write", "edit"],
+  id: "odd-worktree.tools",
+  label: "tools activity",
+  scopes: { write: CONSUMER_SCOPE, edit: CONSUMER_SCOPE },
+  apply: (lines: readonly string[]) => [...lines],
+  ...overrides,
+});
+
+/** `Card diff`: write and edit for EVERY call — the generic claim the specific one wins over. */
+const consumerDiff = (
+  overrides: Partial<ToolDesignRegistration> = {},
+): ToolDesignRegistration => ({
+  line: "diff",
+  tools: ["write", "edit"],
+  id: "odd-worktree.diff",
+  label: "diff card",
+  apply: (lines: readonly string[]) => [...lines],
+  ...overrides,
+});
+
+/** The answer as a person reads it, so the table below is one readable literal per row. */
+const answerOf = (tool: string, args?: unknown): string => {
+  const selection = resolveToolDesignSelection(tool, args);
+  switch (selection.kind) {
+    case "design":
+      return selection.design.id;
+    case "native":
+      return "native";
+    case "missing":
+      return `missing:${selection.id}`;
+    case "not-covered":
+      return `not-covered:${selection.id}`;
+  }
+};
+
+test("S19: the human's own registry resolves per (line, tool) claim", () => {
+  // `Card tools` mixes unscoped tools with two scoped ones; `Card diff` is the generic claim.
+  registerToolDesign(consumerTools());
+  registerToolDesign(consumerDiff());
+  assert.deepEqual(getToolDesignConflicts(), [], "a scoped claim beside an unscoped one is allowed");
+
+  const everyTool = ["write", "edit", "bash", "grep", "find", "ls", "read"];
+
+  // Nothing active: the host's own card for every tool, whatever the call.
+  assert.deepEqual(
+    everyTool.map((tool) => answerOf(tool, { path: "odd/a.md" })),
+    everyTool.map(() => "native"),
+    "no line is active: the answer is the host's own card",
+  );
+  assert.deepEqual(
+    everyTool.map((tool) => answerOf(tool)),
+    everyTool.map(() => "native"),
+    "and the one-argument answer is unchanged",
+  );
+
+  // Only `tools` active: its design owns the specific calls AND every bash-ish call.
+  setToolDesignLineSelection("line", "tools", "odd-worktree.tools");
+  assert.equal(answerOf("write", { path: "odd/a.md" }), "odd-worktree.tools", "under odd/: the specific claim");
+  assert.equal(answerOf("write", { path: "skills/a.md" }), "odd-worktree.tools", "under skills/: it too");
+  assert.equal(answerOf("edit", { path: "odd/a.md" }), "odd-worktree.tools");
+  assert.equal(
+    answerOf("write", { path: "src/a.ts" }),
+    "native",
+    "outside the scope nothing claims the call, so the host draws it",
+  );
+  for (const tool of ["bash", "grep", "find", "ls", "read"]) {
+    assert.equal(answerOf(tool, { command: "ls" }), "odd-worktree.tools", `${tool}: the unscoped claim`);
+    assert.equal(answerOf(tool, { path: "src/a.ts" }), "odd-worktree.tools", `${tool}: whatever the args`);
+    assert.equal(answerOf(tool), "odd-worktree.tools", `${tool}: even with no args`);
+  }
+
+  // Both active: the SPECIFIC claim wins where it matches, the generic one everywhere else.
+  setToolDesignLineSelection("line", "diff", "odd-worktree.diff");
+  assert.equal(answerOf("write", { path: "odd/a.md" }), "odd-worktree.tools", "specific beats generic");
+  assert.equal(answerOf("edit", { path: "skills/a.md" }), "odd-worktree.tools");
+  assert.equal(answerOf("write", { path: "src/a.ts" }), "odd-worktree.diff", "outside: the generic line");
+  assert.equal(answerOf("edit", { path: "src/a.ts" }), "odd-worktree.diff");
+  assert.equal(answerOf("bash", { path: "src/a.ts" }), "odd-worktree.tools", "bash is still the tools line");
+
+  // `tools` back at its default: a scoped claim at `native` DECLINES, so the generic line answers.
+  setToolDesignLineSelection("line", "tools", TOOL_DESIGN_NATIVE);
+  assert.equal(answerOf("write", { path: "odd/a.md" }), "odd-worktree.diff", "a declaring line steps aside");
+  assert.equal(answerOf("edit", { path: "odd/a.md" }), "odd-worktree.diff");
+  assert.equal(answerOf("write", { path: "src/a.ts" }), "odd-worktree.diff");
+});
+
+test("S19: `apply` is never called when the answer is not a design, per claim", () => {
+  let toolsApplied = 0;
+  let diffApplied = 0;
+  registerToolDesign({
+    ...consumerTools(),
+    apply: (lines: readonly string[]) => {
+      toolsApplied += 1;
+      return lines.map((line) => line.replace("✿", "TOOLS"));
+    },
+  });
+  registerToolDesign({
+    ...consumerDiff(),
+    apply: (lines: readonly string[]) => {
+      diffApplied += 1;
+      return lines.map((line) => line.replace("✿", "DIFF"));
+    },
+  });
+  // A second value of the generic line that does not cover `write`: the `not-covered` answer.
+  registerToolDesign(
+    consumerDiff({ id: "odd-worktree.edit-only", label: "edit only", tools: ["edit"] }),
+  );
+
+  const { renderers } = writeRenderers();
+  const resolved = toolDesignResolver("write", () => renderers);
+  assert.ok(resolved !== undefined);
+  const draw = (args: unknown): string[] => {
+    const renderer = resolved.renderCall as (...values: unknown[]) => FakeComponent;
+    return renderer({}, THEME, { toolCallId: "call-1", args }).render(80);
+  };
+
+  // Nothing selected: `native`, and the design's `apply` never runs.
+  assert.deepEqual(draw({ path: "odd/a.md" }), WRITE_CARD, "the host's rows, untouched");
+  assert.deepEqual([toolsApplied, diffApplied], [0, 0], "no design answered, so no apply");
+
+  // The specific claim owns this call: `apply` runs exactly once.
+  setToolDesignLineSelection("line", "tools", "odd-worktree.tools");
+  assert.deepEqual(draw({ path: "odd/a.md" }), ["╭─ TOOLS write ─╮", "│ ✎ src/index.ts", "╰───────────╯"]);
+  assert.deepEqual([toolsApplied, diffApplied], [1, 0]);
+
+  // Outside the scope with the generic line still at `native`: `native`, no apply.
+  assert.deepEqual(draw({ path: "src/index.ts" }), WRITE_CARD);
+  assert.deepEqual([toolsApplied, diffApplied], [1, 0], "`native` is not a design: apply never runs");
+
+  // `missing` on the last candidate: the host's rows, and no apply.
+  setToolDesignLineSelection("line", "diff", "odd-worktree.gone");
+  assert.deepEqual(draw({ path: "src/index.ts" }), WRITE_CARD);
+  assert.deepEqual([toolsApplied, diffApplied], [1, 0], "`missing` is not a design: apply never runs");
+
+  // `not-covered` on the last candidate: the host's rows, and no apply.
+  setToolDesignLineSelection("line", "diff", "odd-worktree.edit-only");
+  assert.deepEqual(draw({ path: "src/index.ts" }), WRITE_CARD);
+  assert.deepEqual([toolsApplied, diffApplied], [1, 0], "`not-covered` is not a design either");
+
+  // The generic design answering its own call runs ITS apply, once.
+  setToolDesignLineSelection("line", "diff", "odd-worktree.diff");
+  assert.deepEqual(draw({ path: "src/index.ts" }), ["╭─ DIFF write ─╮", "│ ✎ src/index.ts", "╰───────────╯"]);
+  assert.deepEqual([toolsApplied, diffApplied], [1, 1]);
+});
+
+test("S19: `scopes` is validated whole, under kind `scope`, and nothing is stored", () => {
+  // A live registry to protect: a refusal must leave it and the store exactly as they were.
+  registerToolDesign(consumerDiff());
+  let stable = true;
+  const unchanged = (): void => {
+    assert.deepEqual(
+      snapshotToolDesigns().map((design) => design.id),
+      ["odd-worktree.diff"],
+      "a refused registration never half-registers",
+    );
+    assert.deepEqual(
+      toolDesignLines().map((line) => line.line),
+      ["diff"],
+      "and never joins a line",
+    );
+  };
+  const store = (): unknown => createStore(TOOL_DESIGN_STORE_ID).get(TOOL_DESIGN_STORE_KEY, {});
+  const before = store();
+  void stable;
+
+  const invalid: Array<[string, unknown]> = [
+    ["a value that is not an object", "paths under odd/"],
+    ["null", null],
+    ["an array", [CONSUMER_SCOPE]],
+    ["an empty map", {}],
+    ["a key that is not one of the tools", { todo: CONSUMER_SCOPE }],
+    ["a value that is not an object", { write: "paths under odd/" }],
+    ["a value with no members", { write: {} }],
+    ["a value with no matches", { write: { description: "paths under odd/" } }],
+    ["a value with a blank description", { write: { description: "   ", matches: underSkillsOrOdd } }],
+    ["a value with a two-line description", { write: { description: "a\nb", matches: underSkillsOrOdd } }],
+  ];
+  for (const [name, scopes] of invalid) {
+    assert.throws(
+      () => registerToolDesign({ ...consumerTools(), scopes } as unknown as ToolDesignRegistration),
+      (error: Error) => {
+        assert.match(error.message, /"odd-worktree\.tools"/u, `${name}: the message names the design id`);
+        assert.match(error.message, /line "tools"/u, `${name}: and the subject`);
+        assert.match(error.message, /scopes/u, `${name}: and the offending member`);
+        return true;
+      },
+      name,
+    );
+    const conflict = getToolDesignConflicts().at(-1);
+    assert.equal(conflict?.kind, "scope", `${name}: recorded under the scope kind`);
+    assert.equal(conflict?.tool, "tools", `${name}: a grouped refusal carries its line`);
+    assert.equal(conflict?.id, "odd-worktree.tools", name);
+    unchanged();
+    assert.deepEqual(store(), before, `${name}: nothing was written to the store`);
+  }
+
+  // Where there IS an offending tool key, the message names it.
+  assert.throws(
+    () => registerToolDesign({ ...consumerTools(), scopes: { todo: CONSUMER_SCOPE } }),
+    (error: Error) => {
+      assert.match(error.message, /"todo"/u, "the offending tool key is named");
+      assert.match(error.message, /description/u);
+      assert.match(error.message, /matches/u);
+      return true;
+    },
+  );
+  assert.throws(
+    () =>
+      registerToolDesign({
+        ...consumerTools(),
+        scopes: { write: {} },
+      } as unknown as ToolDesignRegistration),
+    (error: Error) => {
+      assert.match(error.message, /"write"/u, "the offending tool key is named");
+      assert.match(error.message, /description/u, "and both members it must carry");
+      assert.match(error.message, /matches/u);
+      return true;
+    },
+  );
+
+  // `scope` is the shorthand for the same scope on every tool, so the two cannot be combined.
+  assert.throws(
+    () => registerToolDesign({ ...consumerTools(), scope: CONSUMER_SCOPE }),
+    (error: Error) => {
+      assert.match(error.message, /`scope` and `scopes` cannot be combined/u);
+      assert.match(error.message, /"odd-worktree\.tools"/u);
+      assert.match(error.message, /line "tools"/u);
+      return true;
+    },
+  );
+
+  // The ungrouped shape never carries a scope, in either spelling.
+  const ungrouped = {
+    tool: "write",
+    id: "odd-worktree.ungrouped",
+    label: "ungrouped",
+    scopes: { write: CONSUMER_SCOPE },
+    apply: (lines: readonly string[]) => [...lines],
+  } as unknown as ToolDesignRegistration;
+  assert.throws(
+    () => registerToolDesign(ungrouped),
+    (error: Error) => {
+      assert.match(error.message, /"odd-worktree\.ungrouped"/u, "the design id");
+      assert.match(error.message, /tool "write"/u, "the subject");
+      assert.ok(
+        error.message.includes("{ line, tools, scopes, id, label, apply }"),
+        "and the grouped shape that is how a registration claims only some calls",
+      );
+      return true;
+    },
+  );
+  const conflicts = getToolDesignConflicts();
+  for (const conflict of conflicts.filter((candidate) => candidate.id !== "odd-worktree.diff")) {
+    assert.equal(conflict.kind, "scope");
+  }
+  unchanged();
+  assert.deepEqual(store(), before, "no refusal wrote to the store");
+});
+
+test("S19/S8: one scope per (line, tool), and a tool a registration does not name is unconstrained", () => {
+  const shared = pathScope();
+  registerToolDesign({
+    line: "mixed",
+    tools: ["write"],
+    id: "mixed.one",
+    label: "one",
+    scopes: { write: shared },
+    apply: (lines: readonly string[]) => [...lines],
+  });
+
+  // A second design of the SAME line that names `write` must carry `write`'s scope OBJECT.
+  assert.throws(
+    () =>
+      registerToolDesign({
+        line: "mixed",
+        tools: ["write"],
+        id: "mixed.two",
+        label: "two",
+        scopes: { write: pathScope() },
+        apply: (lines: readonly string[]) => [...lines],
+      }),
+    /line is one switch/u,
+  );
+  let conflict = getToolDesignConflicts().at(-1);
+  assert.equal(conflict?.kind, "scope", "the scope kind");
+  assert.equal(conflict?.tool, "mixed", "a grouped registration reports its line");
+  assert.match(conflict?.message ?? "", /"write"/u, "and the refusal names the tool");
+  assert.deepEqual(snapshotToolDesigns("write").map((design) => design.id), ["mixed.one"]);
+
+  // A design that does NOT name `write` is not constrained by `write`'s scope.
+  registerToolDesign({
+    line: "mixed",
+    tools: ["bash"],
+    id: "mixed.three",
+    label: "three",
+    scope: everyCall(),
+    apply: (lines: readonly string[]) => [...lines],
+  });
+  assert.equal(
+    getToolDesignConflicts().filter((candidate) => candidate.kind === "scope").length,
+    1,
+    "only the genuine disagreement is recorded",
+  );
+
+  // An UNSCOPED claim and a SCOPED claim of one (line, tool) disagree too, in both directions.
+  registerToolDesign({
+    line: "plain",
+    tools: ["read"],
+    id: "plain.one",
+    label: "plain one",
+    apply: (lines: readonly string[]) => [...lines],
+  });
+  assert.throws(
+    () =>
+      registerToolDesign({
+        line: "plain",
+        tools: ["read"],
+        id: "plain.two",
+        label: "plain two",
+        scope: pathScope(),
+        apply: (lines: readonly string[]) => [...lines],
+      }),
+    /line is one switch/u,
+  );
+  assert.deepEqual(snapshotToolDesigns("read").map((design) => design.id), ["plain.one"]);
+
+  // Re-registering the same (line, id) is exempt, so a plugin may carry a fresh scope object.
+  const fresh = pathScope();
+  registerToolDesign({
+    line: "mixed",
+    tools: ["write"],
+    id: "mixed.one",
+    label: "one",
+    scopes: { write: fresh },
+    apply: (lines: readonly string[]) => [...lines],
+  });
+  assert.equal(snapshotToolDesigns("write")[0]?.scopes?.write, fresh, "the later registration is live");
+  assert.equal(
+    getToolDesignConflicts().filter((candidate) => candidate.kind === "scope").length,
+    2,
+    "the two genuine disagreements, and no third from the replacement",
+  );
+});
+
+test("S19/S9: the claim table applies per tool of the registration", () => {
+  // One unscoped claim of `write`; the incoming registration also carries a scoped `read`.
+  registerToolDesign({
+    line: "generic",
+    tools: ["write", "bash"],
+    id: "generic.one",
+    label: "generic",
+    apply: (lines: readonly string[]) => [...lines],
+  });
+
+  assert.throws(
+    () =>
+      registerToolDesign({
+        line: "other",
+        tools: ["write", "read"],
+        id: "other.one",
+        label: "other",
+        scopes: { read: pathScope() },
+        apply: (lines: readonly string[]) => [...lines],
+      }),
+    /already belongs to the line "generic"/u,
+    "the offending tool refuses the WHOLE registration, scoped siblings included",
+  );
+  const conflict = getToolDesignConflicts().at(-1);
+  assert.equal(conflict?.kind, "line", "today's conflict kind is kept");
+  assert.equal(conflict?.tool, "write");
+  assert.deepEqual(
+    toolNamesWithDesigns(),
+    ["write", "bash"],
+    "the fine scoped `read` claim did not survive the refusal",
+  );
+
+  // Two scoped lines and one unscoped line coexist on ONE tool, in both registration orders.
+  registerToolDesign({
+    line: "specific-a",
+    tools: ["edit"],
+    id: "specific-a.edit",
+    label: "specific a",
+    scopes: { edit: pathScope("paths under a/") },
+    apply: (lines: readonly string[]) => [...lines],
+  });
+  registerToolDesign({
+    line: "specific-b",
+    tools: ["edit"],
+    id: "specific-b.edit",
+    label: "specific b",
+    scopes: { edit: pathScope("paths under b/") },
+    apply: (lines: readonly string[]) => [...lines],
+  });
+  registerToolDesign({
+    line: "generic-edit",
+    tools: ["edit"],
+    id: "generic-edit.edit",
+    label: "generic edit",
+    apply: (lines: readonly string[]) => [...lines],
+  });
+  registerToolDesign({
+    line: "legacy-edit",
+    tools: ["todo"],
+    id: "legacy-edit.todo",
+    label: "legacy todo",
+    apply: (lines: readonly string[]) => [...lines],
+  });
+  assert.deepEqual(
+    toolDesignClaims("edit").map((claim) => claim.line),
+    ["specific-a", "specific-b", "generic-edit"],
+    "the one unscoped claim lives beside any number of scoped ones",
+  );
+  assert.deepEqual(
+    getToolDesignConflicts().filter((candidate) => candidate.kind === "line"),
+    [
+      {
+        tool: "write",
+        id: "other.one",
+        kind: "line",
+        message: conflict?.message,
+      },
+    ],
+    "the only `line` refusal is the one `write` caused",
+  );
+});
+
+test("S19: `scope` is the shorthand for `scopes` with the same object on every tool", () => {
+  const scope = pathScope();
+  registerToolDesign({
+    line: "shorthand",
+    tools: ["write", "edit"],
+    id: "shorthand.one",
+    label: "shorthand",
+    scope,
+    apply: (lines: readonly string[]) => [...lines],
+  });
+
+  // Every claim of the line carries the SAME object: the shorthand is exactly `scopes` for each tool.
+  assert.equal(toolDesignClaims("write")[0]?.scopeDescription, scope.description);
+  assert.equal(toolDesignClaims("edit")[0]?.scopeDescription, scope.description);
+  assert.equal(snapshotToolDesigns("write")[0]?.scope, scope);
+  assert.equal(snapshotToolDesigns("edit")[0]?.scope, scope);
+
+  setToolDesignLineSelection("line", "shorthand", "shorthand.one");
+  for (const tool of ["write", "edit"]) {
+    assert.equal(answerOf(tool, { path: "odd/a.md" }), "shorthand.one", `${tool}: the call it owns`);
+    assert.equal(answerOf(tool, { path: "src/a.ts" }), "native", `${tool}: the call it does not`);
+  }
+
+  // Another design of the same line may repeat the same object (S8 identity), not a copy of it.
+  registerToolDesign({
+    line: "shorthand",
+    tools: ["write"],
+    id: "shorthand.two",
+    label: "shorthand two",
+    scope,
+    apply: (lines: readonly string[]) => [...lines],
+  });
+  assert.throws(
+    () =>
+      registerToolDesign({
+        line: "shorthand",
+        tools: ["write"],
+        id: "shorthand.three",
+        label: "shorthand three",
+        scope: pathScope(),
+        apply: (lines: readonly string[]) => [...lines],
+      }),
+    /line is one switch/u,
+    "the shorthand is compared per tool, so a different object on `write` is refused",
+  );
+
+  // A design that does NOT name `write` is unconstrained by the shorthand's scope on `write`.
+  registerToolDesign({
+    line: "shorthand",
+    tools: ["bash"],
+    id: "shorthand.bash",
+    label: "shorthand bash",
+    scope: everyCall(),
+    apply: (lines: readonly string[]) => [...lines],
+  });
+  assert.equal(
+    getToolDesignConflicts().filter((candidate) => candidate.kind === "scope").length,
+    1,
+    "the bash design's own scope is not a disagreement: the line does not narrow it twice",
+  );
+  assert.equal(toolDesignClaims("bash")[0]?.scopeDescription, "every call");
+});
+
+test("S19/S18: a state slot left by the PREVIOUS copy (shape 4, claims per line) is repaired", () => {
+  const host = globalThis as unknown as Record<symbol, unknown>;
+  const previous = host[DESIGNS_SLOT];
+  // The slot the previous release warmed: the same entries, and a derived index of the PREVIOUS
+  // shape, whose `claimsByTool` maps a tool to LINES rather than to (line, tool) claims. Reading it
+  // would give a line a scope for a tool it never scoped, so it has to be dropped and rebuilt.
+  const oldLine = { scope: "line", line: "diff", tools: ["write"], entries: [] };
+  host[DESIGNS_SLOT] = {
+    entries: [{ scope: "line", line: "diff", tools: ["write"], design: scopedWrite() }],
+    conflicts: [],
+    failures: [],
+    selectionReads: 0,
+    revision: 7,
+    lineOrder: new Map([["line\u0000diff", 0]]),
+    lineOrderSeq: 1,
+    index: {
+      shape: 4,
+      revision: 7,
+      owner: new Map([["write", { scope: "line", line: "diff" }]]),
+      lines: [oldLine],
+      byKey: new Map([["line\u0000diff", oldLine]]),
+      designsByTool: new Map([["write", [scopedWrite()]]]),
+      claimsByTool: new Map([["write", [oldLine]]]),
+    },
+  };
+  try {
+    // Resolve is a read site...
+    assert.deepEqual(
+      resolveToolDesignSelection("write", { path: "skills/a.md" }),
+      { kind: "native" },
+      "resolve answers through the rebuilt index, on a slot the previous copy warmed",
+    );
+    // ...`toolDesignClaims` is what status lists...
+    assert.deepEqual(
+      toolDesignClaims("write").map((claim) => [claim.line, claim.scopeDescription]),
+      [["diff", WRITE_SCOPE.description]],
+      "the claim of THIS shape is rebuilt from the entries that survived",
+    );
+    // ...registering walks the claim map...
+    registerToolDesign(
+      scopedLine("audit", "write", "loon.audit", "audit card", pathScope("paths under audit/")),
+    );
+    assert.deepEqual(
+      toolDesignClaims("write").map((claim) => claim.line),
+      ["diff", "audit"],
+      "and the new claim joins the rebuilt one in creation order",
+    );
+    // ...and `/bridge-status` reads it for every tool with a design.
+    assert.doesNotThrow(() => formatStatus(collectStatus()));
+  } finally {
+    host[DESIGNS_SLOT] = previous;
+  }
 });

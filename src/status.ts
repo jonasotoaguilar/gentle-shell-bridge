@@ -187,7 +187,7 @@ export interface StatusToolDesignLine {
   values: StatusToolDesignLineValue[];
 }
 
-/** One line's claim on one tool, reported when that tool has SCOPED claims (S9/S14). */
+/** One line's claim on one tool, reported when that tool has SCOPED claims (S9/S14/S19). */
 export interface StatusToolDesignClaim {
   /** Whether the claim comes from a tool's own implicit line or from a registered line. */
   kind: "tool" | "line";
@@ -195,7 +195,11 @@ export interface StatusToolDesignClaim {
   line: string;
   /** The design id stored for that line, or `native` when the line draws the host's own card. */
   stored: string;
-  /** Only for a scoped line: the scope's description, so a user can tell which line owns what. */
+  /**
+   * Only when THIS (line, tool) claim is scoped: the scope's description, so a user can tell which
+   * line owns which calls. A line that narrows one of its tools and claims another unconditionally
+   * shows the scope on the claim it narrows, and none on the other.
+   */
   scope?: string;
 }
 
@@ -207,8 +211,8 @@ export interface StatusToolDesignTool {
   line?: string;
   /**
    * Every line that claims this tool, each with its stored value — present only when at least one
-   * of them declares a scope (S14). A tool claimed by one unscoped line keeps today's `line` field
-   * and gains nothing here, so its report stays byte-identical.
+   * of them is a SCOPED claim (S14/S19). A tool claimed by one unscoped line keeps today's `line`
+   * field and gains nothing here, so its report stays byte-identical.
    */
   claims?: StatusToolDesignClaim[];
   /** The stored value: a design id, `native`, or `<id> (missing: not registered)`. */
@@ -607,7 +611,8 @@ function describeToolDesigns(): StatusToolDesigns | undefined {
       const wrapped = wiring.wrappedCards.find((entry) => entry.tool === tool);
       const adopted = adoption.adoptedCards.find((entry) => entry.tool === tool);
       const owner = lineOfTool(tool);
-      // S14: a tool with SCOPED claims is painted by more than one line, so the answer is per line.
+      // S14/S19: a tool with SCOPED claims is painted by more than one line, so the answer is per
+      // claim (one per line); `toolDesignClaims` carries the scope of THIS tool's claim.
       const claims = toolDesignClaims(tool);
       const scoped = claims.some((claim) => claim.scopeDescription !== undefined);
       return {

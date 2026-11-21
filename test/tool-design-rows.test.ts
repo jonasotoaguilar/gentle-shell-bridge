@@ -20,7 +20,7 @@ import { resetNoticesForTests } from "../src/notices.ts";
 import { resetPluginLinesForTests } from "../src/plugin-lines.ts";
 import { getRepaintDiagnostics, resetRepaintForTests, setRepaintHost } from "../src/repaint.ts";
 import { buildRows, resetRowBuildStateForTests } from "../src/rows.ts";
-import { collectStatus } from "../src/status.ts";
+import { collectStatus, formatStatus } from "../src/status.ts";
 import { createStore, resetStoreStateForTests } from "../src/store.ts";
 import {
   TOOL_DESIGN_DEFAULT_LABEL,
@@ -29,6 +29,7 @@ import {
   getToolDesignSelection,
   registerToolDesign,
   resetToolDesignsForTests,
+  setToolDesignLineSelection,
   setToolDesignSelection,
   toolNamesWithDesigns,
 } from "../src/tool-designs.ts";
@@ -41,7 +42,7 @@ import {
   resetToolDesignWiringForTests,
   toolDesignResolver,
 } from "../src/tool-design-wiring.ts";
-import type { CustomizeRow, ToolDesignRegistration } from "../src/types.ts";
+import type { CustomizeRow, ToolDesignRegistration, ToolDesignScope } from "../src/types.ts";
 
 let configHome: string;
 let previousConfigHome: string | undefined;
@@ -580,3 +581,131 @@ test("S13/PRESERVE: an unscoped registry's rows are byte-identical to today", ()
   ]);
 });
 
+
+// ---------------------------------------------------------------------------------------------
+// S19 — the scope belongs to the (line, tool) CLAIM, not to the line
+// ---------------------------------------------------------------------------------------------
+
+/** The consumer's rule: a path under `skills/` or `odd/`. */
+const CONSUMER_SCOPE: ToolDesignScope = {
+  description: SCOPE_DESCRIPTION,
+  matches: (call) => typeof (call.args as { path?: unknown } | undefined)?.path === "string",
+};
+
+/** `Card tools`: bash for EVERY call, write/edit only under skills/ or odd/ — ONE shared scope. */
+const toolsLine: ToolDesignRegistration = {
+  line: "tools",
+  tools: ["bash", "write", "edit"],
+  id: "odd-worktree.tools",
+  label: "tools activity",
+  scopes: { write: CONSUMER_SCOPE, edit: CONSUMER_SCOPE },
+  apply: (lines) => [...lines],
+};
+
+/** `Card diff`: write and edit for EVERY call — the generic claim the specific one wins over. */
+const diffLine: ToolDesignRegistration = {
+  line: "diff",
+  tools: ["write", "edit"],
+  id: "odd-worktree.diff",
+  label: "diff card",
+  apply: (lines) => [...lines],
+};
+
+test("S19/S13: a line's scopes stay inside ONE preview row, today's text when they share one", () => {
+  registerToolDesign(toolsLine);
+  registerToolDesign(diffLine);
+
+  const rows = rowsForBuild();
+  assert.deepEqual(
+    toggleLines(rows),
+    ["Card tools ● default ○ tools activity", "Card diff ● default ○ diff card"],
+    "still one row per line, `default` first",
+  );
+
+  // ONE scope object across the line's scoped claims: today's text, byte for byte.
+  const toolsRows = rows.filter((row) => row.choice?.setting === "Card tools");
+  assert.equal(toolsRows.length, 2);
+  for (const row of toolsRows) {
+    assert.ok(row.preview !== undefined);
+    const preview = row.preview();
+    assert.ok(
+      preview.sample.endsWith(` — scope: ${SCOPE_DESCRIPTION}`),
+      `${row.choice?.value}: today's text, byte for byte`,
+    );
+    assert.doesNotMatch(preview.sample, /;/u, `${row.choice?.value}: one scope, not a per-tool list`);
+    assert.doesNotMatch(preview.sample, /\n/u, `${row.choice?.value}: still ONE row`);
+  }
+
+  // The unscoped line says nothing about a scope it does not have.
+  for (const row of rows.filter((candidate) => candidate.choice?.setting === "Card diff")) {
+    assert.ok(row.preview !== undefined);
+    assert.doesNotMatch(row.preview().sample, /scope/u);
+  }
+
+  // Several DISTINCT scopes on one line: one ` — scope: <tools>: <description>` per scope, joined by
+  // `; `, still inside the SAME preview row.
+  registerToolDesign({
+    line: "per-tool",
+    tools: ["bash", "write"],
+    id: "loon.per-tool",
+    label: "per tool",
+    scopes: {
+      bash: { description: "bash commands", matches: () => true },
+      write: { description: "paths under odd/", matches: () => true },
+    },
+    apply: (lines) => [...lines],
+  });
+
+  const perTool = rowsForBuild().filter((row) => row.choice?.setting === "Card per tool");
+  assert.equal(perTool.length, 2, "one row per value, `default` first");
+  const expected = " — scope: bash: bash commands; — scope: write: paths under odd/";
+  const nativePreview = perTool[0].preview?.();
+  assert.ok(nativePreview !== undefined);
+  assert.equal(
+    nativePreview.sample,
+    `Card per tool: the host's own card for bash, write, untouched${expected}`,
+  );
+  const designPreview = perTool[1].preview?.();
+  assert.ok(designPreview !== undefined);
+  assert.equal(
+    designPreview.sample,
+    `per tool: rewrites the rows the bash, write cards produced${expected}`,
+    "each scope names the tools it covers, on the same single row",
+  );
+  assert.doesNotMatch(designPreview.sample, /\n/u, "never a second row");
+});
+
+test("S19/S14: /bridge-status lists every claiming line with the scope OF THAT TOOL", () => {
+  registerToolDesign(toolsLine);
+  registerToolDesign(diffLine);
+  setToolDesignLineSelection("line", "tools", "odd-worktree.tools");
+  setToolDesignLineSelection("line", "diff", "odd-worktree.diff");
+
+  const designs = collectStatus().toolDesigns;
+  assert.ok(designs !== undefined);
+  const write = designs.tools.find((entry) => entry.tool === "write");
+  assert.ok(write !== undefined);
+  assert.equal(write.line, undefined, "a tool with scoped claims lists its lines instead of one");
+  assert.deepEqual(
+    write.claims,
+    [
+      { kind: "line", line: "tools", stored: "odd-worktree.tools", scope: SCOPE_DESCRIPTION },
+      { kind: "line", line: "diff", stored: "odd-worktree.diff" },
+    ],
+    "the scope shown is the one of THIS tool's claim, and an unscoped claim shows none",
+  );
+
+  // `bash` is claimed by the tools line only, and UNSCOPED: it prints as today, with no claims list.
+  const bash = designs.tools.find((entry) => entry.tool === "bash");
+  assert.ok(bash !== undefined);
+  assert.equal(bash.line, "tools", "today's `line` field");
+  assert.equal(bash.claims, undefined, "and no claims list");
+
+  const report = formatStatus(collectStatus()).join("\n");
+  assert.match(
+    report,
+    /line "tools": odd-worktree\.tools — scope: paths under skills\/ or odd\/\n/u,
+    "the scoped claim says which calls its line owns",
+  );
+  assert.match(report, /line "diff": odd-worktree\.diff\n/u, "an unscoped claim adds no scope text");
+});

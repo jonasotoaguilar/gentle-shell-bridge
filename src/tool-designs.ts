@@ -22,15 +22,21 @@
  *   registrations naming the same line produce ONE customize line (`Card tools`) and that line's
  *   tool set is the union of their `tools` (S2, S3).
  *
- * A tool belongs to at most ONE line (S5/D1) — unless a line declares a SCOPE (S7–S10). A
- * registration without a `scope` claims every call of its tools, so a second UNSCOPED claim of one
- * tool — or a legacy `Card <tool>` registration on a tool that already has a line — is refused whole
- * and recorded. A registration that DOES declare a scope claims only the calls `scope.matches`
- * answers true for: any number of scoped claims may name one tool beside the one unscoped claim, and
- * the resolver decides per call which of them paints it. A scope goes on the GROUPED shape only:
- * an ungrouped registration IS the tool's own `Card <tool>` line, which means every call of that
- * tool, so `{ tool, scope, … }` is refused whole (L6/S7). Nothing here is bash-specific: a design is
- * declared for a tool NAME, and the registry is keyed by that name.
+ * A tool belongs to at most ONE line (S5/D1) — unless a line narrows its claim on that tool with a
+ * SCOPE (S7–S10, S19). A claim is a (line, tool) pair: a registration WITHOUT a scope for a tool
+ * claims every call of it, so a second UNSCOPED claim of that tool — or a legacy `Card <tool>`
+ * registration on a tool that already has one — is refused whole and recorded. A SCOPED claim owns
+ * only the calls its scope's `matches` answers true for: any number of scoped claims may name one
+ * tool beside the one unscoped claim, and the resolver decides per call which of them paints it. A
+ * scope goes on the GROUPED shape only: an ungrouped registration IS the tool's own `Card <tool>`
+ * line, which means every call of that tool, so `{ tool, scope, … }` is refused whole (L6/S7).
+ *
+ * The scope belongs to the CLAIM, not to the line (S19): one line may own some of its tools
+ * unconditionally and narrow others (`Card tools`: bash/grep/find/ls/read for every call, write/edit
+ * only under `skills/` or `odd/`), while another line carries the generic claim on the same tools.
+ * `scopes` maps a tool to its scope, and `scope` is the shorthand for the same object on every tool.
+ * Nothing here is bash-specific: a design is declared for a tool NAME, and the registry is keyed by
+ * that name.
  *
  * ## The selection
  *
@@ -131,10 +137,11 @@ export interface ToolDesignLine {
   /** Every design of the line, in registration order. */
   designs: ToolDesignRegistration[];
   /**
-   * The ONE scope every live registration of this line declares (S8), or `undefined` when the line
-   * claims every call of its tools — the historical meaning, byte for byte.
+   * The scope of each TOOL this line claims that has one (S19), one entry per DISTINCT scope object
+   * in tool order: the menu shows it inside the same preview row and `/bridge-status` reads it per
+   * claim. Empty when every claim of the line is unscoped, which is the historical meaning.
    */
-  designScope?: ToolDesignScope;
+  scopedClaims: Array<{ tools: string[]; scope: ToolDesignScope }>;
 }
 
 interface IndexedLine {
@@ -142,6 +149,19 @@ interface IndexedLine {
   line: string;
   tools: string[];
   entries: DesignEntry[];
+}
+
+/**
+ * One (line, tool) CLAIM: the line that makes it, the scope of THAT tool (S19) and the live entry
+ * that declares the scope, so a throwing or non-boolean answer can be reported against its design.
+ * The unit of `claimsByTool`, precedence and resolution — never a whole line.
+ */
+interface IndexedClaim {
+  line: IndexedLine;
+  /** `design.scopes[tool]`, else the `scope` shorthand, else `undefined` (EVERY call of the tool). */
+  scope?: ToolDesignScope;
+  /** The live entry that declares the scope, for the failure record (a scope belongs to a design). */
+  entry: DesignEntry;
 }
 
 interface ToolDesignIndex {
@@ -165,12 +185,13 @@ interface ToolDesignIndex {
   /** tool → its designs, in registration order: the ONE lookup every render path uses (T1). */
   designsByTool: Map<string, ToolDesignRegistration[]>;
   /**
-   * tool → every line that CLAIMS it, in PRECEDENCE order (`ToolDesignState.lineOrder`, the line
-   * creation order that survives the disposal of one of its values — S10): the one unscoped line and
-   * the scoped ones (S9). The resolver walks this list per call; `/bridge-status` lists it for a tool
-   * with scoped claims. Never a display order: see `lines`.
+   * tool → every (line, tool) CLAIM on it, in PRECEDENCE order (`ToolDesignState.lineOrder`, the line
+   * creation order that survives the disposal of one of its values — S10): the scoped claims and the
+   * ONE unscoped claim (S9/S19), each with the scope of THAT tool. The resolver walks this list per
+   * call; `/bridge-status` lists it for a tool with scoped claims. Never a display order: see
+   * `lines`.
    */
-  claimsByTool: Map<string, IndexedLine[]>;
+  claimsByTool: Map<string, IndexedClaim[]>;
 }
 
 interface ToolDesignState {
@@ -206,11 +227,17 @@ const DESIGNS_KEY = Symbol.for("gentle-shell-bridge.tool-designs.v1");
  * The shape of the derived index: bumped whenever `ToolDesignIndex` gains, loses or renames a field
  * OR the meaning of one of them changes. The index is DERIVED and never persisted, so an index of
  * another shape is always safe to drop and rebuild — which is exactly what a slot warmed by another
- * copy of the bridge requires (S18). Shape 4 splits the two orders shape 3 had collapsed: `lines` is
+ * copy of the bridge requires (S18). Shape 4 split the two orders shape 3 had collapsed: `lines` is
  * DISPLAY order (the first live entry, S2) and only `claimsByTool` is claim PRECEDENCE (`lineOrder`,
  * S10). An index of shape 3 ordered `lines` by precedence too, so it must be dropped, not read.
+ *
+ * Shape 5 is the per-(line, tool) claim (S19): `claimsByTool` maps a tool to CLAIMS carrying that
+ * tool's own scope, where shape 4 mapped it to LINES carrying one scope for the whole line. An index
+ * of shape 4 would make a mixed line (some tools scoped, others not) answer with the wrong scope for
+ * some of its tools, so it is dropped and rebuilt — which keeps a slot warmed by the previous copy
+ * readable (S18), including the state that copy left behind.
  */
-const TOOL_DESIGN_INDEX_SHAPE = 4;
+const TOOL_DESIGN_INDEX_SHAPE = 5;
 
 /** Is this a cached index THIS copy can read? A slot written by an older copy answers no (S18). */
 function isCurrentIndexShape(index: unknown): index is ToolDesignIndex {
@@ -364,13 +391,18 @@ function toolDesignIndex(state: ToolDesignState): ToolDesignIndex {
   // survives the disposal of a value the line owns. `claimsByTool` is the only list built from it, so
   // collapsing the two orders — which is what the previous fix did — cannot move a row or a status
   // entry again.
-  const claimsByTool = new Map<string, IndexedLine[]>();
+  const claimsByTool = new Map<string, IndexedClaim[]>();
   const byPrecedence = [...lines].sort((left, right) => orderOf(left) - orderOf(right));
   for (const line of byPrecedence) {
     for (const tool of line.tools) {
+      // One claim per (line, tool): the scope of THAT tool (S19), never the line's first scope.
+      const claim: IndexedClaim = {
+        line,
+        ...claimOfLine(line, tool),
+      };
       const claims = claimsByTool.get(tool);
-      if (claims === undefined) claimsByTool.set(tool, [line]);
-      else claims.push(line);
+      if (claims === undefined) claimsByTool.set(tool, [claim]);
+      else claims.push(claim);
     }
   }
   const built: ToolDesignIndex = {
@@ -402,26 +434,68 @@ export function snapshotToolDesigns(tool?: string): ToolDesignRegistration[] {
 }
 
 /**
+ * The scope of ONE tool's claim on one line (S19): `scopes[tool]`, else the `scope` shorthand, else
+ * `undefined` — the claim every call of that tool, which is the historical meaning.
+ */
+function scopeOfClaim(design: ToolDesignRegistration, tool: string): ToolDesignScope | undefined {
+  // SAFETY: the member is typed, but a plugin is plain JavaScript and another copy of the bridge may
+  // share this slot, so every reading is re-checked instead of trusted.
+  const scopes: unknown = design.scopes;
+  if (isRecord(scopes) && Object.hasOwn(scopes, tool)) {
+    const scope = scopes[tool];
+    // SAFETY: `isRecord` proved a non-null, non-array object; the members themselves were validated
+    // when the registration entered THIS copy, and a value a foreign copy left is re-checked here by
+    // the consumers (`scopeProblem` on registration, the isolated `matches` call on resolution).
+    return isRecord(scope) ? (scope as unknown as ToolDesignScope) : undefined;
+  }
+  return design.scope;
+}
+
+/** The live entry of one line that claims one tool, and the scope of ITS claim on it (S19/S8). */
+function claimOfLine(line: IndexedLine, tool: string): { scope?: ToolDesignScope; entry: DesignEntry } {
+  const entry = line.entries.find((candidate) => candidate.tools.includes(tool));
+  if (entry === undefined) {
+    // SAFETY: every tool of `line.tools` came from an entry that names it, so the search above always
+    // finds one; this branch only keeps the compiler honest about the empty case.
+    return { entry: line.entries[0] as DesignEntry };
+  }
+  return { scope: scopeOfClaim(entry.design, tool), entry };
+}
+
+/** The scope of one LINE's claim on one tool (S19), or `undefined` when that claim is unscoped. */
+function scopeOf(line: IndexedLine, tool: string): ToolDesignScope | undefined {
+  return claimOfLine(line, tool).scope;
+}
+
+/**
+ * One line's SCOPED claims, grouped by scope OBJECT in tool order (S19): the menu prints one
+ * ` — scope: <tool[, tool]>: <description>` per group, and a single group prints today's text.
+ */
+function scopedClaimsOf(line: IndexedLine): Array<{ tools: string[]; scope: ToolDesignScope }> {
+  const groups: Array<{ tools: string[]; scope: ToolDesignScope }> = [];
+  for (const tool of line.tools) {
+    const scope = scopeOf(line, tool);
+    if (scope === undefined) continue;
+    const group = groups.find((candidate) => candidate.scope === scope);
+    if (group === undefined) groups.push({ tools: [tool], scope });
+    else group.tools.push(tool);
+  }
+  return groups;
+}
+
+/**
  * The live lines in DISPLAY order — the first LIVE entry of a line orders it, as the Cards rows and
  * `/bridge-status` always ordered themselves (S2/S13) — each with its tools and designs in
  * registration order. Claim precedence is a separate order and is read through `toolDesignClaims`.
  */
 export function toolDesignLines(): ToolDesignLine[] {
-  return toolDesignIndex(designState()).lines.map((line) => {
-    const designScope = lineScope(line);
-    return {
-      scope: line.scope,
-      line: line.line,
-      tools: [...line.tools],
-      designs: line.entries.map((entry) => entry.design),
-      ...(designScope === undefined ? {} : { designScope }),
-    };
-  });
-}
-
-/** The ONE scope a live line declares (S8), or `undefined` when it claims every call of its tools. */
-function lineScope(line: IndexedLine): ToolDesignScope | undefined {
-  return line.entries[0]?.design.scope;
+  return toolDesignIndex(designState()).lines.map((line) => ({
+    scope: line.scope,
+    line: line.line,
+    tools: [...line.tools],
+    designs: line.entries.map((entry) => entry.design),
+    scopedClaims: scopedClaimsOf(line),
+  }));
 }
 
 /** The line that owns one tool, or `undefined` when no design covers it. */
@@ -567,11 +641,12 @@ function assertLabelIsDistinct(registration: NormalizedRegistration, design: Too
 }
 
 /**
- * A tool has at most ONE unscoped claim (S9/D1). Joining the same line again is fine (S3: union); a
- * second UNSCOPED line — another grouped line, or the tool's own legacy `Card <tool>` line — refuses
- * the WHOLE registration and is recorded under the `line` kind, with today's message. A SCOPED claim
- * narrows the calls it owns, so it never conflicts: any number of them live beside the one unscoped
- * claim, and the resolver decides per call which of them paints it.
+ * A tool has at most ONE unscoped claim (S9/D1), and the claim table applies PER TOOL of the
+ * registration (S19). Joining the same line again is fine (S3: union); a second UNSCOPED claim of a
+ * tool — another grouped line, or the tool's own legacy `Card <tool>` line — refuses the WHOLE
+ * registration and is recorded under the `line` kind, with today's message. A SCOPED claim narrows
+ * the calls it owns, so it never conflicts: any number of them live beside the one unscoped claim,
+ * and the resolver decides per call which of them paints it.
  *
  * The unscoped check is INDEPENDENT of "this registration joins the line that already claims the
  * tool" (L6): re-registering its own (line, id) is exempt from ITS OWN claim, never from the claim
@@ -583,14 +658,17 @@ function assertToolsAreFree(registration: NormalizedRegistration, design: ToolDe
   const self = (line: IndexedLine): boolean =>
     line.scope === registration.scope && line.line === registration.line;
   for (const tool of registration.tools) {
-    // S9: a scoped claim narrows the calls it owns, so it never conflicts — not with the unscoped
-    // claim, not with another scoped one.
-    if (design.scope !== undefined) continue;
+    // S9 per claim: a SCOPED claim of THIS tool narrows the calls it owns, so it never conflicts —
+    // not with the unscoped claim of that tool, not with another scoped one.
+    if (scopeOfClaim(design, tool) !== undefined) continue;
     const claims = index.claimsByTool.get(tool) ?? [];
-    // The one UNSCOPED claim that is not this registration's own line: whatever else is unscoped.
-    const live = claims.find((line) => lineScope(line) === undefined && !self(line));
+    // The one UNSCOPED claim of this tool that is not this registration's own line.
+    const live = claims.find((claim) => claim.scope === undefined && !self(claim.line));
     if (live === undefined) continue;
-    const current = live.scope === "tool" ? `its own Card ${JSON.stringify(tool)} line` : `the line ${JSON.stringify(live.line)}`;
+    const current =
+      live.line.scope === "tool"
+        ? `its own Card ${JSON.stringify(tool)} line`
+        : `the line ${JSON.stringify(live.line.line)}`;
     const message =
       `gentle-shell-bridge: tool ${JSON.stringify(tool)} already belongs to ${current}, so design ` +
       `${JSON.stringify(design.id)} for ${subjectOf(registration)} was refused whole (S5/D1). A tool ` +
@@ -601,44 +679,63 @@ function assertToolsAreFree(registration: NormalizedRegistration, design: ToolDe
 }
 
 /**
- * S7: a scope is a predicate plus the one line that explains it. An absent `scope` is never an error;
- * a present one that is not an object, whose `description` is not a non-empty string after trim, or
- * whose `matches` is not a function refuses the WHOLE registration before anything is stored, and
- * the refusal is recorded under the `scope` kind.
+ * S7/S19: a scope is a predicate plus the one line that explains it. An absent scope is never an
+ * error; a present one that is not an object, whose `description` is not a non-empty string after
+ * trim, or whose `matches` is not a function refuses the WHOLE registration before anything is
+ * stored, and the refusal is recorded under the `scope` kind.
  *
- * A scope is declared on a GROUPED registration ONLY (L6): `{ tool, scope, … }` is refused whole.
- * An ungrouped registration IS the tool's own `Card <tool>` line, and that line means every call of
- * that tool by definition; "only some calls" is a line that shares the tool with another claim,
- * which is the grouped shape. Keeping it apart also keeps the two key spaces apart: an implicit line
- * is keyed by the tool name, and so is the historical per-tool selection.
+ * The scope is declared PER (line, tool) claim: `scopes` maps each of this registration's tools to
+ * its scope, and `scope` is the shorthand for the SAME object on every tool (S19). Refused whole:
+ * both members together, and a `scopes` map that is not an object, is empty, names a tool this
+ * registration does not paint, or carries a value that is not a scope.
+ *
+ * A scope is declared on a GROUPED registration ONLY (L6): `{ tool, scope, … }` and `{ tool, scopes,
+ * … }` are refused whole. An ungrouped registration IS the tool's own `Card <tool>` line, and that
+ * line means every call of that tool by definition; "only some calls" is a line that shares the tool
+ * with another claim, which is the grouped shape. Keeping it apart also keeps the two key spaces
+ * apart: an implicit line is keyed by the tool name, and so is the historical per-tool selection.
  */
 function assertScope(registration: NormalizedRegistration, design: ToolDesignRegistration): void {
-  // SAFETY: the member is typed, but a plugin is plain JavaScript: every member is re-checked here.
+  // SAFETY: the members are typed, but a plugin is plain JavaScript: every member is re-checked here.
   const scope: unknown = design.scope;
-  if (scope === undefined) return;
+  const scopes: unknown = design.scopes;
+  if (scope === undefined && scopes === undefined) return;
   if (registration.scope === "tool") {
+    const shape = scopes === undefined ? "scope" : "scopes";
     const message =
       `gentle-shell-bridge: invalid tool design ${JSON.stringify(design.id)} for tool ` +
       `${JSON.stringify(registration.line)}: a scope is declared on a GROUPED registration only, and ` +
       `\`{ tool, id, label, apply }\` is that tool's own Card ${JSON.stringify(registration.line)} ` +
       "line, which means every call of the tool. To claim only SOME calls, register a grouped line " +
-      "`{ line, tools, scope, id, label, apply }` for the tool beside the line that already claims " +
-      "it. The registration was refused whole.";
+      `\`{ line, tools, ${shape}, id, label, apply }\` for the tool beside the line that already ` +
+      `claims it (\`${shape}\` on an ungrouped registration was refused). The registration was refused whole.`;
     recordConflict({ tool: registration.line, id: design.id, kind: "scope", message });
     throw new Error(message);
   }
-  const problem =
-    !isRecord(scope)
-      ? "must be an object carrying both members"
-      : typeof scope.description !== "string" || scope.description.trim() === ""
-        ? "needs a non-empty string as its description member"
-        : typeof scope.description === "string" && /[\r\n]/u.test(scope.description)
-          ? "description must be ONE line, and it carries a line break (CR or LF). It is rendered " +
-            "inside an existing menu and /bridge-status row, so a break would add a row there; " +
-            "remove the break"
-          : typeof scope.matches !== "function"
-            ? "needs a function as its matches member"
-            : undefined;
+  // The two spellings of one claim would disagree, so they cannot be combined.
+  if (scope !== undefined && scopes !== undefined) {
+    const message =
+      `gentle-shell-bridge: invalid tool design ${JSON.stringify(design.id)} for ` +
+      `${subjectOf(registration)}: \`scope\` and \`scopes\` cannot be combined. \`scope\` is the ` +
+      "shorthand for the SAME scope on every tool of `tools`; use `scopes` keyed by tool to give each " +
+      "tool its own scope. The registration was refused whole.";
+    recordConflict({ tool: registration.line, id: design.id, kind: "scope", message });
+    throw new Error(message);
+  }
+  if (scopes !== undefined) {
+    const problem = scopesProblem(scopes, registration.tools);
+    if (problem !== undefined) {
+      const message =
+        `gentle-shell-bridge: invalid tool design ${JSON.stringify(design.id)} for ` +
+        `${subjectOf(registration)}: ${problem} A scope is { description, matches }: ` +
+        "`description` is the one line the menu and /bridge-status show, and `matches(call)` answers " +
+        "whether the line owns that call (the call is { tool, args }). The registration was refused whole.";
+      recordConflict({ tool: registration.line, id: design.id, kind: "scope", message });
+      throw new Error(message);
+    }
+    return;
+  }
+  const problem = scopeProblem(scope);
   if (problem === undefined) return;
   const message =
     `gentle-shell-bridge: invalid tool design ${JSON.stringify(design.id)} for ` +
@@ -649,14 +746,64 @@ function assertScope(registration: NormalizedRegistration, design: ToolDesignReg
   throw new Error(message);
 }
 
+/** What is wrong with one `ToolDesignScope` value, or `undefined` when it is valid (S7/S18). */
+function scopeProblem(scope: unknown): string | undefined {
+  if (!isRecord(scope)) return "must be an object carrying both members";
+  if (typeof scope.description !== "string" || scope.description.trim() === "") {
+    return "needs a non-empty string as its description member";
+  }
+  if (/[\r\n]/u.test(scope.description)) {
+    return (
+      "description must be ONE line, and it carries a line break (CR or LF). It is rendered " +
+      "inside an existing menu and /bridge-status row, so a break would add a row there; remove the break"
+    );
+  }
+  if (typeof scope.matches !== "function") return "needs a function as its matches member";
+  return undefined;
+}
+
 /**
- * S8: a line is one customize row, one stored value and one switch, so every LIVE registration of one
- * line must carry the SAME scope object (`===`; both absent counts as equal). A registration that
- * replaces the live entry with the same (`line`, `id`) is exempt, so a plugin may re-register its own
- * design with a fresh scope object; any other disagreement refuses the whole registration and is
- * recorded under the `scope` kind.
+ * What is wrong with a `scopes` map, or `undefined` when it is valid (S19). The map is keyed by the
+ * tools THIS registration paints: a key it does not paint claims calls it could never own, so it is a
+ * contradiction rather than a harmless extra. The message names the offending tool key when one is
+ * the problem, because that is the entry the author has to find.
  */
-function assertOneScopePerLine(
+function scopesProblem(scopes: unknown, tools: readonly string[]): string | undefined {
+  if (!isRecord(scopes)) {
+    return (
+      "scopes must be an object keyed by tool name, each key one of the registration's `tools` and " +
+      "each value a { description, matches } scope."
+    );
+  }
+  const keys = Object.keys(scopes);
+  if (keys.length === 0) {
+    return (
+      "scopes is empty: it maps each tool to the scope of its calls, so leave it out entirely to " +
+      "claim every call of every tool."
+    );
+  }
+  for (const tool of keys) {
+    if (!tools.includes(tool)) {
+      return (
+        `scopes names tool ${JSON.stringify(tool)}, which is not one of this registration's tools ` +
+        `(${tools.join(", ")}). scopes is keyed by the tools the design paints.`
+      );
+    }
+    const problem = scopeProblem(scopes[tool]);
+    if (problem !== undefined) return `scopes for tool ${JSON.stringify(tool)} ${problem}.`;
+  }
+  return undefined;
+}
+
+/**
+ * S8 per (line, tool) (S19): every LIVE registration of one line that names a tool must carry the
+ * SAME scope object for that tool (`===`; both absent counts as equal). A registration that does not
+ * name the tool does not constrain it, so one line may own some tools unconditionally and narrow
+ * others. A registration that replaces the live entry with the same (`line`, `id`) is exempt, so a
+ * plugin may re-register its own design with a fresh scope object; any other disagreement refuses the
+ * whole registration and is recorded under the `scope` kind.
+ */
+function assertOneScopePerClaim(
   registration: NormalizedRegistration,
   design: ToolDesignRegistration,
 ): void {
@@ -667,14 +814,20 @@ function assertOneScopePerLine(
   for (const entry of line.entries) {
     // Its own entry is the one this registration replaces: that is the documented exemption.
     if (entry.design.id === design.id) continue;
-    if (entry.design.scope === design.scope) continue;
-    const message =
-      `gentle-shell-bridge: design ${JSON.stringify(design.id)} for ${subjectOf(registration)} was ` +
-      `refused whole: the line already carries a different scope on design ` +
-      `${JSON.stringify(entry.design.id)}. One line is one switch, so every live registration of a ` +
-      "line must share the SAME scope object (S8); re-register the same (line, id) to change it.";
-    recordConflict({ tool: registration.line, id: design.id, kind: "scope", message });
-    throw new Error(message);
+    for (const tool of registration.tools) {
+      if (!entry.tools.includes(tool)) continue;
+      if (scopeOfClaim(entry.design, tool) === scopeOfClaim(design, tool)) continue;
+      const message =
+        `gentle-shell-bridge: design ${JSON.stringify(design.id)} for ${subjectOf(registration)} ` +
+        `was refused whole: the line already carries a different scope on tool ` +
+        `${JSON.stringify(tool)} (design ${JSON.stringify(entry.design.id)}). One line is one switch ` +
+        `per call of a tool, so every live registration of a line that names tool ` +
+        `${JSON.stringify(tool)} must share the SAME scope object for it (S8); a registration that ` +
+        "does not name the tool does not constrain it, and re-registering the same (line, id) is " +
+        "exempt. Re-register the same (line, id) to change a scope.";
+      recordConflict({ tool: registration.line, id: design.id, kind: "scope", message });
+      throw new Error(message);
+    }
   }
 }
 
@@ -753,7 +906,7 @@ function registerToolDesignStored(design: ToolDesignRegistration): () => void {
   assertScope(registration, design);
   assertLabel(subjectOf(registration), design.id, design.label);
   assertApplyFunction(subjectOf(registration), design.id, design.apply);
-  assertOneScopePerLine(registration, design);
+  assertOneScopePerClaim(registration, design);
   assertToolsAreFree(registration, design);
   assertLabelIsDistinct(registration, design);
 
@@ -996,7 +1149,8 @@ export function setToolDesignSelection(tool: string, id: string): void {
 
 /**
  * One live line's claim on one tool, with the value stored for that line: the answer `/bridge-status`
- * gives for a tool that has SCOPED claims (S14).
+ * gives for a tool that has SCOPED claims (S14). `scopeDescription` is the scope of THIS tool's claim
+ * (S19), so a line that narrows only some of its tools reports the scope of the tool being listed.
  */
 export interface ToolDesignClaim {
   /** `tool` for an ungrouped design's implicit line, `line` for a registered line. */
@@ -1005,27 +1159,28 @@ export interface ToolDesignClaim {
   line: string;
   /** The design id stored for the line, or `native`. */
   stored: string;
-  /** The line's scope description when the line declares a scope (S7/S8). */
+  /** The scope's description when this (line, tool) claim is scoped (S7/S8/S19). */
   scopeDescription?: string;
 }
 
 /**
- * Every line that CLAIMS one tool, in creation order — the one unscoped line and the scoped ones
- * (S9) — each with its stored value, read from ONE snapshot of the persisted selections.
+ * Every line that CLAIMS one tool, in creation order — the one unscoped claim and the scoped ones
+ * (S9) — each with its stored value and the scope of THAT tool, read from ONE snapshot of the
+ * persisted selections.
  */
 export function toolDesignClaims(tool: string): ToolDesignClaim[] {
-  const lines = toolDesignIndex(designState()).claimsByTool.get(tool) ?? [];
-  if (lines.length === 0) return [];
+  const claims = toolDesignIndex(designState()).claimsByTool.get(tool) ?? [];
+  if (claims.length === 0) return [];
   const selections = readSelections();
-  return lines.map((line) => {
-    const designScope = lineScope(line);
-    return {
-      scope: line.scope,
-      line: line.line,
-      stored: storedId(line.scope === "tool" ? selections.tools : selections.lines, line.line),
-      ...(designScope === undefined ? {} : { scopeDescription: designScope.description }),
-    };
-  });
+  return claims.map((claim) => ({
+    scope: claim.line.scope,
+    line: claim.line.line,
+    stored: storedId(
+      claim.line.scope === "tool" ? selections.tools : selections.lines,
+      claim.line.line,
+    ),
+    ...(claim.scope === undefined ? {} : { scopeDescription: claim.scope.description }),
+  }));
 }
 
 /**
@@ -1104,18 +1259,18 @@ function drainThenable(value: unknown, depth = THENABLE_DRAIN_DEPTH): void {
   drainThenable(returned, depth - 1);
 }
 
-function scopeMatches(line: IndexedLine, tool: string, args: unknown): boolean {
-  const entry = line.entries[0];
-  const scope = entry?.design.scope;
-  if (entry === undefined || scope === undefined) return false;
+function scopeMatches(claim: IndexedClaim, tool: string, args: unknown): boolean {
+  const scope = claim.scope;
+  if (scope === undefined) return false;
+  const designId = claim.entry.design.id;
   let answer: unknown;
   try {
     answer = scope.matches({ tool, args });
   } catch (error) {
     recordToolDesignFailure(
       tool,
-      entry.design.id,
-      `the scope of design ${JSON.stringify(entry.design.id)} threw (${errorMessage(error)}); ` +
+      designId,
+      `the scope of design ${JSON.stringify(designId)} threw (${errorMessage(error)}); ` +
         "the call counts as one the line does not own, so the line declined it.",
     );
     return false;
@@ -1126,8 +1281,8 @@ function scopeMatches(line: IndexedLine, tool: string, args: unknown): boolean {
   if (typeof answer !== "boolean") {
     recordToolDesignFailure(
       tool,
-      entry.design.id,
-      `the scope of design ${JSON.stringify(entry.design.id)} answered with ${typeof answer} ` +
+      designId,
+      `the scope of design ${JSON.stringify(designId)} answered with ${typeof answer} ` +
         "instead of a boolean, and a paint cannot await; the call counts as one the line does not " +
         "own, so the line declined it. Return true or false from matches.",
     );
@@ -1166,17 +1321,17 @@ export function resolveToolDesignSelection(tool: string, args?: unknown): ToolDe
   // ONE snapshot serves every candidate: one logical store read per resolve (S11).
   const selections = readSelections();
   const claims = index.claimsByTool.get(tool) ?? [];
-  const scoped: IndexedLine[] = [];
-  let unscoped: IndexedLine | undefined;
-  for (const line of claims) {
-    if (lineScope(line) === undefined) {
-      if (unscoped === undefined) unscoped = line;
+  const scoped: IndexedClaim[] = [];
+  let unscoped: IndexedClaim | undefined;
+  for (const claim of claims) {
+    if (claim.scope === undefined) {
+      if (unscoped === undefined) unscoped = claim;
       continue;
     }
     // No arguments: the call is unknown, so no scoped claim applies (S10).
     if (args === undefined) continue;
-    if (!scopeMatches(line, tool, args)) continue;
-    scoped.push(line);
+    if (!scopeMatches(claim, tool, args)) continue;
+    scoped.push(claim);
   }
   const candidates = unscoped === undefined ? scoped : [...scoped, unscoped];
   if (candidates.length === 0) {
@@ -1190,15 +1345,21 @@ export function resolveToolDesignSelection(tool: string, args?: unknown): ToolDe
   for (const candidate of candidates) {
     const selection = selectionOfLine(
       index,
-      candidate.scope,
-      candidate.line,
-      storedFor(selections, candidate),
+      candidate.line.scope,
+      candidate.line.line,
+      storedFor(selections, candidate.line),
       tool,
     );
     if (selection.kind === "design") return selection;
   }
   const last = candidates[candidates.length - 1];
-  return selectionOfLine(index, last.scope, last.line, storedFor(selections, last), tool);
+  return selectionOfLine(
+    index,
+    last.line.scope,
+    last.line.line,
+    storedFor(selections, last.line),
+    tool,
+  );
 }
 
 /** Test-only seam: empties the registry, the conflict records and the failure records in place. */

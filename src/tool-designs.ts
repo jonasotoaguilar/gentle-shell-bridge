@@ -440,6 +440,10 @@ export function snapshotToolDesigns(tool?: string): ToolDesignRegistration[] {
 function scopeOfClaim(design: ToolDesignRegistration, tool: string): ToolDesignScope | undefined {
   // SAFETY: the member is typed, but a plugin is plain JavaScript and another copy of the bridge may
   // share this slot, so every reading is re-checked instead of trusted.
+  //
+  // This is the ONLY read of the claim, and it sees exactly the own keys `scopesProblem` validates
+  // (`Reflect.ownKeys`, S19/L14): a key no validation saw can never be read, so a key that is not
+  // enumerable is validated before it can reach the registry.
   const scopes: unknown = design.scopes;
   if (isRecord(scopes) && Object.hasOwn(scopes, tool)) {
     const scope = scopes[tool];
@@ -701,14 +705,23 @@ function assertScope(registration: NormalizedRegistration, design: ToolDesignReg
   const scopes: unknown = design.scopes;
   if (scope === undefined && scopes === undefined) return;
   if (registration.scope === "tool") {
-    const shape = scopes === undefined ? "scope" : "scopes";
+    // The `scope` SHORTHAND keeps the refusal text it had before `scopes` existed, byte for byte
+    // (S19/L14/S2): the shorthand IS `scopes` with one object, so only a registration that SPELLS
+    // `scopes` carries the per-tool wording — and that wording names `scopes`, the member it used.
     const message =
-      `gentle-shell-bridge: invalid tool design ${JSON.stringify(design.id)} for tool ` +
-      `${JSON.stringify(registration.line)}: a scope is declared on a GROUPED registration only, and ` +
-      `\`{ tool, id, label, apply }\` is that tool's own Card ${JSON.stringify(registration.line)} ` +
-      "line, which means every call of the tool. To claim only SOME calls, register a grouped line " +
-      `\`{ line, tools, ${shape}, id, label, apply }\` for the tool beside the line that already ` +
-      `claims it (\`${shape}\` on an ungrouped registration was refused). The registration was refused whole.`;
+      scopes === undefined
+        ? `gentle-shell-bridge: invalid tool design ${JSON.stringify(design.id)} for tool ` +
+          `${JSON.stringify(registration.line)}: a scope is declared on a GROUPED registration only, and ` +
+          `\`{ tool, id, label, apply }\` is that tool's own Card ${JSON.stringify(registration.line)} ` +
+          "line, which means every call of the tool. To claim only SOME calls, register a grouped line " +
+          "`{ line, tools, scope, id, label, apply }` for the tool beside the line that already claims " +
+          "it. The registration was refused whole."
+        : `gentle-shell-bridge: invalid tool design ${JSON.stringify(design.id)} for tool ` +
+          `${JSON.stringify(registration.line)}: a scope is declared on a GROUPED registration only, and ` +
+          `\`{ tool, id, label, apply }\` is that tool's own Card ${JSON.stringify(registration.line)} ` +
+          "line, which means every call of the tool. To claim only SOME calls, register a grouped line " +
+          "`{ line, tools, scopes, id, label, apply }` for the tool beside the line that already " +
+          "claims it (`scopes` on an ungrouped registration was refused). The registration was refused whole.";
     recordConflict({ tool: registration.line, id: design.id, kind: "scope", message });
     throw new Error(message);
   }
@@ -767,6 +780,12 @@ function scopeProblem(scope: unknown): string | undefined {
  * tools THIS registration paints: a key it does not paint claims calls it could never own, so it is a
  * contradiction rather than a harmless extra. The message names the offending tool key when one is
  * the problem, because that is the entry the author has to find.
+ *
+ * EVERY OWN key is validated, enumerable or not (S19/L14), and a symbol key is refused: `scopeOfClaim`
+ * reads the claim through `Object.hasOwn`, which sees the same own keys, so this list and that read
+ * are ONE key set. With `Object.keys` a non-enumerable `read: null` or a hidden foreign `find` passed
+ * validation and then reached the live registry — and, through the legacy-selection migration, the
+ * persisted selection.
  */
 function scopesProblem(scopes: unknown, tools: readonly string[]): string | undefined {
   if (!isRecord(scopes)) {
@@ -775,14 +794,22 @@ function scopesProblem(scopes: unknown, tools: readonly string[]): string | unde
       "each value a { description, matches } scope."
     );
   }
-  const keys = Object.keys(scopes);
+  const keys = Reflect.ownKeys(scopes);
   if (keys.length === 0) {
     return (
       "scopes is empty: it maps each tool to the scope of its calls, so leave it out entirely to " +
       "claim every call of every tool."
     );
   }
-  for (const tool of keys) {
+  for (const key of keys) {
+    if (typeof key === "symbol") {
+      return (
+        `scopes carries the symbol key ${String(key)}, which cannot name one of this registration's ` +
+        `tools (${tools.join(", ")}). scopes is keyed by tool names, so every key is one of the ` +
+        "tools the design paints."
+      );
+    }
+    const tool = key;
     if (!tools.includes(tool)) {
       return (
         `scopes names tool ${JSON.stringify(tool)}, which is not one of this registration's tools ` +
@@ -817,14 +844,22 @@ function assertOneScopePerClaim(
     for (const tool of registration.tools) {
       if (!entry.tools.includes(tool)) continue;
       if (scopeOfClaim(entry.design, tool) === scopeOfClaim(design, tool)) continue;
+      // The `scope` SHORTHAND keeps the diagnostics it had before `scopes` existed, byte for byte
+      // (S19/L14/S2): it IS `scopes` with one object, so its refusal must not change shape. The
+      // per-tool wording belongs to a registration that SPELLS `scopes`.
       const message =
-        `gentle-shell-bridge: design ${JSON.stringify(design.id)} for ${subjectOf(registration)} ` +
-        `was refused whole: the line already carries a different scope on tool ` +
-        `${JSON.stringify(tool)} (design ${JSON.stringify(entry.design.id)}). One line is one switch ` +
-        `per call of a tool, so every live registration of a line that names tool ` +
-        `${JSON.stringify(tool)} must share the SAME scope object for it (S8); a registration that ` +
-        "does not name the tool does not constrain it, and re-registering the same (line, id) is " +
-        "exempt. Re-register the same (line, id) to change a scope.";
+        design.scopes === undefined
+          ? `gentle-shell-bridge: design ${JSON.stringify(design.id)} for ${subjectOf(registration)} was ` +
+            `refused whole: the line already carries a different scope on design ` +
+            `${JSON.stringify(entry.design.id)}. One line is one switch, so every live registration of a ` +
+            "line must share the SAME scope object (S8); re-register the same (line, id) to change it."
+          : `gentle-shell-bridge: design ${JSON.stringify(design.id)} for ${subjectOf(registration)} ` +
+            `was refused whole: the line already carries a different scope on tool ` +
+            `${JSON.stringify(tool)} (design ${JSON.stringify(entry.design.id)}). One line is one switch ` +
+            `per call of a tool, so every live registration of a line that names tool ` +
+            `${JSON.stringify(tool)} must share the SAME scope object for it (S8); a registration that ` +
+            "does not name the tool does not constrain it, and re-registering the same (line, id) is " +
+            "exempt. Re-register the same (line, id) to change a scope.";
       recordConflict({ tool: registration.line, id: design.id, kind: "scope", message });
       throw new Error(message);
     }

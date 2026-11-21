@@ -466,11 +466,12 @@ export interface ToolDesignRegistration {
   line?: string;
   /**
    * The tools a GROUPED design paints. Required with `line`, refused with `tool`. Non-empty,
-   * deduplicated, each a valid tool name. A tool has at most ONE UNSCOPED claim (S9/D1): a
-   * registration WITHOUT a `scope` is refused whole, and reported in `/bridge-status`, when the tool
-   * already carries another unscoped claim — on a different line, or on its own legacy `Card <tool>`
-   * line. A registration that declares a `scope` claims only the calls its scope matches, so any
-   * number of scoped claims may name one tool, beside that one unscoped claim.
+   * deduplicated, each a valid tool name. A tool's claim is UNSCOPED when neither `scopes[tool]` nor
+   * the `scope` shorthand supplies a scope for it. A tool has at most ONE unscoped claim (S9/D1): a
+   * registration whose unscoped claim meets another one on the same tool is refused whole, and
+   * reported in `/bridge-status` — the other claim may live on a different line, or on the tool's own
+   * legacy `Card <tool>` line. A claim that carries a scope claims only the calls its scope matches,
+   * so any number of scoped claims may name one tool, beside that one unscoped claim.
    */
   tools?: readonly string[];
   /**

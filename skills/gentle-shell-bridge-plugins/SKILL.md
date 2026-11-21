@@ -11,10 +11,10 @@ metadata:
 
 Read `src/index.ts`, `docs/contract.md` and `examples/bash-card.ts` before editing; never work from memory.
 
-Not for: a plugin that only touches Pi-native surfaces (its own tools, commands, shortcuts or
-renderers) or a plain host theme change — nothing there registers through the bridge.
+Not for: a plugin that only touches Pi-native surfaces (own tools, commands, shortcuts, renderers) or
+a plain host theme change — nothing there registers through the bridge.
 
-- Reach it from the package root: `onBridgeApi(handler, pi.events)` in `session_start` — runs at once when the object is already published, otherwise once on `gentle-shell-bridge:ready` (`src/api.ts`).
+- Reach it from the package root: `onBridgeApi(handler, pi.events)` in `session_start` — at once when already published, otherwise once on `gentle-shell-bridge:ready` (`src/api.ts`).
 - `bridgeApi()` tells you only what is true now: `undefined` means absent right now — not installed, or not yet published.
 - Never patch the host, re-implement the interception, or duck-type the host's menu, rail or card objects.
 
@@ -25,20 +25,17 @@ renderers) or a plain host theme change — nothing there registers through the 
 - **Failures are reported, never thrown at the menu.** An invalid registration throws at the call site and lands in the plugin's INTEGRATIONS line; a throw while building loses only its own surface.
 - **`Keymaps` is RESERVED for row providers** — refused and reported: that page captures keys and claims a footer, so a plain row there could never honour them.
 - **A card style repaints the host's frame** from measured pieces: `top({width, title, hint})`, `line({text, width, first})`, `bottom({width})`. Never parse a card back.
-- **A transform** takes the rows plus `ctx.width` and returns rows. Honour the width; report COUNTS ONLY (`ctx.report?.({candidates, recognised, rewritten})`), never card text.
-- **A tool design** transforms rows the HOST's card produced, by tool name. The bridge owns Pi's single `registerToolRenderer`: never call it yourself, never draw a second grammar, keep every byte you do not change, never label a design `default` or `native` (reserved). `ctx.render` is optional: draw your output without it. `registerToolDesign([a, b])` registers several. A grouped `{ line, tools, id, label, apply }` paints several tools from ONE `Card <line>` switch; two UNSCOPED claims of one tool are refused whole and reported, and a declaration without `scope` claims EVERY call of its tools. Fields, lines and the one-row preview rule: `docs/contract.md` §14.
-- **A scope claims CALLS, not tools.** `scope: { description, matches({ tool, args }) }` narrows a line to the calls it owns, so another line may claim the tool: matching scoped lines answer in registration order, the unscoped one last; a line storing `default` (`native`) declines the call. GROUPED shape only (`{ tool, scope }` refused whole), one scope per line (`===`, the same (`line`, `id`) entry excepted), `description` required, shown in the preview, a throw is no match. Omit `args` in `resolveToolDesignSelection` and only unscoped lines answer. When every candidate declines, the LAST one's answer stands — `missing` (disposed design), `not-covered` (design misses the tool), stored `native`; a call with no candidate answers `native`. With NO live claim on it, the historical per-tool value answers — `missing` for a disposed design.
+- **A transform** takes the rows plus `ctx.width`, returns rows. Honour the width; report COUNTS ONLY (`ctx.report?.({candidates, recognised, rewritten})`), never card text.
+- **A tool design** transforms rows the HOST's card produced, by tool name. The bridge owns Pi's single `registerToolRenderer`: never call it yourself, never draw a second grammar, keep every byte you do not change, never label a design `default` or `native` (reserved). `ctx.render` is optional: draw your output without it. `registerToolDesign([a, b])` registers several. A grouped `{ line, tools, id, label, apply }` paints several tools from ONE `Card <line>` switch; two UNSCOPED claims of one tool are refused whole and reported, and a claim with no scope covers EVERY call of its tool. Fields, lines and the one-row preview rule: `docs/contract.md` §14.
+- **A scope claims CALLS, per tool.** A claim is `(line, tool)`: `scopes: { write: scope }` narrows that tool only, so one line may paint some tools whole and others conditionally; `scope` is the shorthand for the SAME scope on every tool. Matching scoped claims answer in line-creation order, the unscoped one last; a line storing `default` (`native`) declines. GROUPED shape only, `scope` refused with `scopes`, one scope per tool per line (`===`, the same (`line`, `id`) entry excepted), `description` required, shown in the preview, a throw is no match. `resolveToolDesignSelection` without `args` answers only unscoped claims. When every candidate declines, the LAST one's answer stands — `missing` (disposed design), `not-covered` (design misses the tool), stored `native`; a call with no candidate answers `native`. With NO live claim on the tool, the historical per-tool value answers (`missing` for a disposed design).
 
   ```ts
   api.registerToolDesign({
-    line: "skills",              // only some `write` calls
-    tools: ["write"],
-    id: "acme.skills",
-    label: "skills",
-    scope: {
-      description: "paths under skills/ or odd/",
-      matches: ({ args }) => underSkillsOrOdd(args),
-    },
+    line: "tools",
+    tools: ["bash", "grep", "write"],
+    id: "acme.tools",
+    label: "activity",
+    scopes: { write: { description: "under skills/", matches: ({ args }) => underSkills(args) } },
     apply: (lines) => [...lines],
   });
   ```
@@ -54,7 +51,7 @@ renderers) or a plain host theme change — nothing there registers through the 
 | Card chrome, conversation and rail | `registerCardStyle({id, label, frame})` |
 | A choice that must reach cards already on screen | `registerTransform` |
 | One tool's card | `registerToolDesign({tool, id, label, apply})` |
-| Only some calls of a tool | `registerToolDesign({line, tools, id, label, scope: {description, matches}, apply})` |
+| Only some calls of a tool | `registerToolDesign({line, tools, id, label, scopes: {<tool>: scope}, apply})` |
 | Several tools behind ONE switch | `registerToolDesign({line, tools, id, label, apply})` |
 | What a tool draws right now | `resolveToolDesignSelection(tool, args?)` |
 | Persistence / repaint after a bridge-owned write | `createStore` / `requestRepaint()` |

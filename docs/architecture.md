@@ -887,9 +887,9 @@ Wrapping even when nothing is selected is deliberate. Pi resolves the renderers 
 it constructs it (`interactive-mode.js:1816-1818,2957-2961,3028-3032,3376-3380`), and re-renders that
 same component on every frame. A card built while the design was unselected must still be able to
 follow a later selection, so the wrapper reads the LIVE selection on every pass, with the call's own
-arguments (`render?.args`) so that a scoped line is a candidate for THIS call and no other; with no
-selection (or a selection whose design was disposed) it returns the host's own array instance, byte
-for byte. A host that hands no render context passes `undefined`, no scoped line applies, and the
+arguments (`render?.args`) so that a scoped claim on the tool is a candidate for THIS call and no other;
+with no selection (or a selection whose design was disposed) it returns the host's own array instance,
+byte for byte. A host that hands no render context passes `undefined`, no scoped claim applies, and the
 card is drawn exactly as before.
 
 ### The `Cards` line is `Card <tool>` — or `Card <line>`
@@ -941,23 +941,33 @@ Pi's render loop.
 `src/tool-designs.ts` keeps one registry per line: an UNGROUPED design gets an implicit line keyed by
 its tool name, a GROUPED one names its line (`line` + `tools`) and several registrations naming the
 same line join it, with the line's tool set the union of their `tools`. Nothing else is special-cased:
-no known-tool list, no branch on a name. A tool has at most ONE UNSCOPED claim, and only a tool's
-SECOND UNSCOPED claim refuses: that registration is refused whole and reported. An unscoped claim
-beside a SCOPED one is accepted in either order — a legacy `Card <tool>` registration beside a tool
-that only SCOPED lines claim is accepted, because a scoped line never owns the whole tool. A
-`scope` is declared on the GROUPED shape only (`line` + `tools`): an ungrouped registration IS the
-tool's own line and means every call of it, so `{ tool, scope, … }` is refused whole and reported; a
-line that declares a `scope` claims only the calls its predicate matches, so any number of scoped
-lines may name one tool beside the one unscoped claim, and resolution is then per CALL rather than
-per tool: the scoped lines that match the call answer in registration order, the first one whose
-stored value is a live design covering the tool paints the card, a line that declines (`native`,
-`missing`, `not-covered`) lets the next one answer, and the unscoped claim answers last. When every
-candidate declines, the LAST matching candidate's OWN answer stands — `missing` when its stored id
-names a disposed design, `not-covered` when that design does not name the tool, `native` when the
-last candidate stores `native` — and a call no live claim owns answers `native` too: only a tool with
-NO live claim at all falls back to its historical per-tool value (`native` in an ordinary registry).
-Overlap cannot be proven at registration, so it is ordered and never refused, and a scope that throws
-counts as no match — one recorded failure, never a throw into the frame. `src/tool-design-rows.ts` turns each line into one `Cards` line — the host's own card
+no known-tool list, no branch on a name. The claim is the pair (`line`, `tool`) and the scope belongs
+to it: `scopes` maps each tool of `tools` to the scope of THAT claim, `scope` is the shorthand for the
+same scope on every tool of the registration, and a tool with no entry claims every call of it. One
+line may therefore own some of its tools unconditionally and narrow others — `Card tools` paints
+bash/grep/find/ls/read for every call and write/edit only under `skills/` or `odd/`, while `Card diff`
+carries the generic claim on write/edit. The claim table is applied per TOOL: a tool has at most ONE
+UNSCOPED claim, and only a tool's SECOND UNSCOPED claim refuses — that registration is refused whole
+and reported, even when the clash is on one tool of a registration that names several. An unscoped
+claim beside a SCOPED one is accepted in either order — a legacy `Card <tool>` registration beside a
+tool that only SCOPED claims name is accepted, because a scoped claim never owns the whole tool. A
+scope is declared on the GROUPED shape only (`line` + `tools`): an ungrouped registration IS the
+tool's own line and means every call of it, so `{ tool, scope, … }` and `{ tool, scopes, … }` are
+refused whole and reported. A claim that declares a scope owns only the calls its predicate matches,
+so any number of scoped claims may name one tool beside the one unscoped claim, and resolution is then
+per CALL rather than per tool: the scoped claims that match the call answer first, in claim PRECEDENCE
+order (the order their lines were created), the first one whose stored value is a live design covering
+the tool paints the card, a line that declines (`native`, `missing`, `not-covered`) lets the next one
+answer, and the single unscoped claim answers last whatever its line's age. Claim PRECEDENCE is the
+line creation order and survives the disposal of one of a line's values; DISPLAY order — the `Cards`
+rows and the `/bridge-status` block — follows the first LIVE entry, and the two orders are computed
+separately. When every candidate declines, the LAST matching candidate's OWN answer stands — `missing`
+when its stored id names a disposed design, `not-covered` when that design does not name the tool,
+`native` when the last candidate stores `native` — and a call no live scoped claim owns answers
+`native` too: only a tool with NO live claim at all falls back to its historical per-tool value
+(`native` in an ordinary registry). Overlap cannot be proven at registration, so it is ordered and
+never refused, and a scope that throws counts as no match — one recorded failure, never a throw into
+the frame. `src/tool-design-rows.ts` turns each line into one `Cards` line — the host's own card
 (shown `default`, stored `native`) plus one value per design, in registration order —
 and persists the selection per line in the bridge's own `bridge-tool-designs` store, never in the
 host's config: ungrouped lines keep the historical flat `selections` map, and a grouped line's value
@@ -966,9 +976,11 @@ serves both (`src/store.ts` reads the file on every `get`). Migration runs once,
 legacy per-tool value when that value names a design of the line. The stored value is the design's
 `id`, so renaming a label never moves the bullet; a selection whose design left the line resolves to
 `missing` and draws the host's card, and a tool the selected value does not paint resolves to
-`not-covered` and also draws the host's card (S6/D4). A scoped line's values carry the scope's
-`description` in the same preview row, so the menu never needs a second row to say which calls a
-line owns.
+`not-covered` and also draws the host's card (S6/D4). A scoped claim's `description` rides in the SAME
+preview row of its line: ` — scope: <description>` when the line's scoped claims share ONE scope
+object, and ` — scope: <tool[, tool]>: <description>` per distinct scope otherwise, so the menu never
+needs a second row to say which calls a line owns, and a line that narrows only some of its tools says
+so tool by tool.
 
 Registration goes through the same attribution as every other surface (`src/plugin-lines.ts`,
 `PluginSurface` includes `"tool design"`), so a plugin that contributes ONLY designs still gets its
@@ -977,11 +989,12 @@ one INTEGRATIONS line and the same accepted/rejected counts.
 ### What it reports
 
 `/bridge-status` lists every tool with designs and its coarse `selection` (the answer with no
-arguments — `native` for a tool only scoped lines claim, however a given CALL resolves). Its claims
-come in ONE of two shapes, never both: a tool with scoped claims carries `claims`, every line claiming
-it with the value stored for it (a scoped line also showing the scope's `description`), and no `line`;
-a tool claimed by one unscoped grouped line carries `line`, the line whose switch paints it, and no
-`claims`, so its report stays byte-identical to the one the previous release printed; a tool whose
+arguments — `native` for a tool only scoped claims name, however a given CALL resolves). Its claims
+come in ONE of two shapes, never both: a tool with at least one scoped claim carries `claims`, every
+line claiming it with the value stored for it (a scoped claim also showing the scope of THAT tool's
+claim, a claim without one showing none), and no `line`; a tool claimed by one unscoped grouped line
+carries `line`, the line whose switch paints it, and no `claims`, so its report stays byte-identical to
+the one the previous release printed; a tool whose
 only claim is its own ungrouped `Card <tool>` line carries neither field, exactly as before. The block
 also lists whether the wrapper has mounted a card for it (`wrapper mounted on 2 cards` — the answer to
 "is this card even wrapped?" via the resolver), how many cards the adoption
@@ -989,8 +1002,8 @@ pass reached (`adopted 1 card` — the answer when a resolver ahead of the bridg
 conflicts a replacement, a duplicate label or a second-line ownership produced, and the designs that
 threw. A grouped line also gets a line report: the line, its row name, its tools, and each value with
 the tools it `covers`. `not covered` is a PER-TOOL `selection` reading beside `missing` and `native`,
-not a line-report field; and with a `scope` in play that per-tool answer describes only the calls no
-scoped line claims, so a tool claimed only by scoped lines reads `native` there while a matching call
+not a line-report field; and with a scope in play that per-tool answer describes only the calls no
+scoped claim covers, so a tool claimed only by scoped claims reads `native` there while a matching call
 can answer `not-covered`. Failures are deduplicated by (tool, id, message): a design
 that throws on every frame is one fact, not one line per frame. Two orders stay separate: claim
 PRECEDENCE is the order the lines were CREATED, and it survives the disposal of one of a line's values

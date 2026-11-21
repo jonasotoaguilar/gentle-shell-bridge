@@ -26,7 +26,22 @@ renderers) or a plain host theme change — nothing there registers through the 
 - **`Keymaps` is RESERVED for row providers** — refused and reported: that page captures keys and claims a footer, so a plain row there could never honour them.
 - **A card style repaints the host's frame** from measured pieces: `top({width, title, hint})`, `line({text, width, first})`, `bottom({width})`. Never parse a card back.
 - **A transform** takes the rows plus `ctx.width` and returns rows. Honour the width; report COUNTS ONLY (`ctx.report?.({candidates, recognised, rewritten})`), never card text.
-- **A tool design** transforms rows the HOST's card produced, by tool name. The bridge owns Pi's single `registerToolRenderer`: never call it yourself, never draw a second grammar, keep every byte you do not change, never label a design `default` or `native` (reserved). `ctx.render` is optional: draw your output without it. `registerToolDesign([a, b])` registers several. A grouped `{ line, tools, id, label, apply }` paints several tools from ONE `Card <line>` switch; a tool in two lines is refused whole and reported. Fields, lines and the one-row preview rule: `docs/contract.md` §14.
+- **A tool design** transforms rows the HOST's card produced, by tool name. The bridge owns Pi's single `registerToolRenderer`: never call it yourself, never draw a second grammar, keep every byte you do not change, never label a design `default` or `native` (reserved). `ctx.render` is optional: draw your output without it. `registerToolDesign([a, b])` registers several. A grouped `{ line, tools, id, label, apply }` paints several tools from ONE `Card <line>` switch; two UNSCOPED claims of one tool are refused whole and reported, and a declaration without `scope` claims EVERY call of its tools. Fields, lines and the one-row preview rule: `docs/contract.md` §14.
+- **A scope claims CALLS, not tools.** `scope: { description, matches({ tool, args }) }` narrows a line to the calls it owns, so another line may claim the tool: matching scoped lines answer in registration order, the unscoped one last; a line storing `default` (`native`) declines the call. GROUPED shape only (`{ tool, scope }` refused whole), one scope per line (`===`, the same (`line`, `id`) entry excepted), `description` required, shown in the preview, a throw is no match. Omit `args` in `resolveToolDesignSelection` and only unscoped lines answer. When every candidate declines, the LAST one's answer stands — `missing` (disposed design), `not-covered` (design misses the tool), stored `native`; a call with no candidate answers `native`. With NO live claim on it, the historical per-tool value answers — `missing` for a disposed design.
+
+  ```ts
+  api.registerToolDesign({
+    line: "skills",              // only some `write` calls
+    tools: ["write"],
+    id: "acme.skills",
+    label: "skills",
+    scope: {
+      description: "paths under skills/ or odd/",
+      matches: ({ args }) => underSkillsOrOdd(args),
+    },
+    apply: (lines) => [...lines],
+  });
+  ```
 - **Plugin state stays the plugin's**: `createStore(pluginId)`. `createStore` reserves nothing, so never take a bridge id — `bridge-card-style` and `bridge-tool-designs` are the bridge's own files.
 
 ## Decision Gates
@@ -39,8 +54,9 @@ renderers) or a plain host theme change — nothing there registers through the 
 | Card chrome, conversation and rail | `registerCardStyle({id, label, frame})` |
 | A choice that must reach cards already on screen | `registerTransform` |
 | One tool's card | `registerToolDesign({tool, id, label, apply})` |
+| Only some calls of a tool | `registerToolDesign({line, tools, id, label, scope: {description, matches}, apply})` |
 | Several tools behind ONE switch | `registerToolDesign({line, tools, id, label, apply})` |
-| What a tool draws right now | `resolveToolDesignSelection(tool)` |
+| What a tool draws right now | `resolveToolDesignSelection(tool, args?)` |
 | Persistence / repaint after a bridge-owned write | `createStore` / `requestRepaint()` |
 
 These members are OPTIONAL on an older object: `registerCardStyle`, `registerTransform`, `registerToolDesign`, `resolveToolDesignSelection`, `requestRepaint` — gate with `typeof api.x === "function"`.

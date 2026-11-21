@@ -20,6 +20,7 @@ import { resetNoticesForTests } from "../src/notices.ts";
 import { resetPluginLinesForTests } from "../src/plugin-lines.ts";
 import { getRepaintDiagnostics, resetRepaintForTests, setRepaintHost } from "../src/repaint.ts";
 import { buildRows, resetRowBuildStateForTests } from "../src/rows.ts";
+import { collectStatus } from "../src/status.ts";
 import { createStore, resetStoreStateForTests } from "../src/store.ts";
 import {
   TOOL_DESIGN_DEFAULT_LABEL,
@@ -430,5 +431,152 @@ test("D3: a legacy per-tool value appears selected on the line once the tool joi
   registerToolDesign(grouped({ tools: ["bash", "write"] }));
 
   assert.match(toggleLines(rowsForBuild())[0] ?? "", /○ default ● activity/u);
+});
+
+// ---------------------------------------------------------------------------------------------
+// S13 — a scoped line shows its scope inside the SAME preview row
+// ---------------------------------------------------------------------------------------------
+
+const SCOPE_DESCRIPTION = "paths under skills/ or odd/";
+
+/** The second line the consumer asked for: scoped to the paths its own `apply` recognises. */
+const scopedDiff: ToolDesignRegistration = {
+  line: "diff",
+  tools: ["write"],
+  id: "loon.diff",
+  label: "diff card",
+  description: "draws a write as an IDE diff",
+  scope: {
+    description: SCOPE_DESCRIPTION,
+    matches: (call) =>
+      typeof (call.args as { path?: unknown } | undefined)?.path === "string",
+  },
+  preview: () => ({ title: "Cards · diff card", sample: "◂ diff src/index.ts" }),
+  apply: (lines) => [...lines],
+};
+
+const unscopedLine: ToolDesignRegistration = {
+  line: "tools",
+  tools: ["read"],
+  id: "loon.tools-activity",
+  label: "activity",
+  apply: (lines) => [...lines],
+};
+
+test("S13: one row per line, `default` first, and a scoped line's description in its preview row", () => {
+  registerToolDesign(unscopedLine);
+  registerToolDesign(scopedDiff);
+
+  const rows = rowsForBuild();
+  assert.deepEqual(
+    toggleLines(rows),
+    ["Card tools ● default ○ activity", "Card diff ● default ○ diff card"],
+    "row count, row order and naming are unchanged: one line per line, default first",
+  );
+
+  for (const value of [TOOL_DESIGN_DEFAULT_LABEL, "diff card"]) {
+    const row = rows.find(
+      (candidate) => candidate.choice?.setting === "Card diff" && candidate.choice?.value === value,
+    );
+    assert.ok(row?.preview !== undefined, `${value}: a scoped line's values keep their preview`);
+    const preview = row.preview();
+    assert.match(preview.sample, /paths under skills\/ or odd\//u, `${value}: the scope is explained`);
+    assert.doesNotMatch(preview.sample, /\n/u, `${value}: still ONE row, never a second line`);
+  }
+
+  // The unscoped line's values say nothing about a scope they do not have.
+  for (const row of rows.filter((candidate) => candidate.choice?.setting === "Card tools")) {
+    assert.ok(row.preview !== undefined);
+    assert.doesNotMatch(row.preview().sample, /scope/u);
+  }
+});
+
+test("S2/S13/S14: disposing a value preserves the DISPLAY order of the lines it does not change", () => {
+  // Claim PRECEDENCE is line creation order (S10); DISPLAY order is a different thing and stays what
+  // it always was: the Cards rows and the `/bridge-status` block follow the first LIVE registration of
+  // a line (S2). Disposing the founding value of a line, while a later value of it survives, must
+  // therefore move neither the menu nor the status order — it moved both before this test existed.
+  const alphaLine = (id: string): ToolDesignRegistration => ({
+    line: "alpha",
+    tools: ["write"],
+    id,
+    label: id,
+    apply: (lines) => [...lines],
+  });
+  const disposeFounding = registerToolDesign(alphaLine("loon.alpha-one"));
+  registerToolDesign({ tool: "read", id: "loon.read-card", label: "read card", apply: (lines) => [...lines] });
+  registerToolDesign(alphaLine("loon.alpha-two"));
+
+  /** What a person reads: the tools status walks, and the lines the menu draws, in order. */
+  const shown = (): { status: string[]; menu: Array<string | undefined> } => {
+    const designs = collectStatus().toolDesigns;
+    assert.ok(designs !== undefined);
+    return {
+      status: designs.tools.map((entry) => entry.tool),
+      menu: rowsForBuild().map((row) => row.choice?.setting),
+    };
+  };
+
+  assert.deepEqual(
+    shown(),
+    {
+      status: ["write", "read"],
+      menu: ["Card alpha", "Card alpha", "Card alpha", "Card read", "Card read"],
+    },
+    "while both values of `alpha` are live: the first registration of each line orders it",
+  );
+
+  disposeFounding();
+
+  assert.deepEqual(
+    shown(),
+    {
+      status: ["read", "write"],
+      menu: ["Card read", "Card read", "Card alpha", "Card alpha"],
+    },
+    "after disposing alpha's founding value, the menu and status follow the first LIVE entry",
+  );
+});
+
+test("S13/PRESERVE: an unscoped registry's rows are byte-identical to today", () => {
+  registerToolDesign(bashHeading);
+  registerToolDesign(writeBadge);
+
+  const shown = rowsForBuild().map((row) => ({
+    setting: row.choice?.setting,
+    value: row.choice?.value,
+    preview: row.preview?.(),
+  }));
+  assert.deepEqual(shown, [
+    {
+      setting: "Card bash",
+      value: TOOL_DESIGN_DEFAULT_LABEL,
+      preview: {
+        title: "Cards · Card bash",
+        sample: "Card bash: the host's own card for bash, untouched",
+      },
+    },
+    {
+      setting: "Card bash",
+      value: "bash heading",
+      preview: { title: "Cards · bash heading", sample: "bash ls -la" },
+    },
+    {
+      setting: "Card write",
+      value: TOOL_DESIGN_DEFAULT_LABEL,
+      preview: {
+        title: "Cards · Card write",
+        sample: "Card write: the host's own card for write, untouched",
+      },
+    },
+    {
+      setting: "Card write",
+      value: "write badge",
+      preview: {
+        title: "Cards · write badge",
+        sample: "write badge: rewrites the rows write's own card produced",
+      },
+    },
+  ]);
 });
 

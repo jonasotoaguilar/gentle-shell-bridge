@@ -55,7 +55,7 @@ import {
   toolDesignLines,
   type ToolDesignLine,
 } from "./tool-designs.ts";
-import type { CustomizeRow, RowPreview, ToolDesignRegistration } from "./types.ts";
+import type { CustomizeRow, RowPreview, ToolDesignRegistration, ToolDesignScope } from "./types.ts";
 
 /** The rows provider's id; it is the bridge's own registration, never a plugin's. */
 export const TOOL_DESIGN_ROWS_PROVIDER_ID = "bridge.tool-designs";
@@ -128,6 +128,19 @@ function firstSampleRow(sample: string): string {
   return sample.split(/\r?\n/u)[0] ?? sample;
 }
 
+/**
+ * A scoped line's values say WHICH calls the line owns, inside the SAME preview row (S13): the
+ * description joins the preview's first line, so nothing gains a second row, a value or a row kind.
+ * An UNSCOPED line's preview is handed back untouched, byte for byte.
+ */
+function withScopeDescription(preview: RowPreview, scope: ToolDesignScope | undefined): RowPreview {
+  if (scope === undefined) return preview;
+  return {
+    title: preview.title,
+    sample: `${firstSampleRow(preview.sample)} — scope: ${scope.description}`,
+  };
+}
+
 /** What a design's fallback preview says it paints. */
 function designTarget(tools: readonly string[]): string {
   return tools.length === 1 ? `${tools[0]}'s own card` : `the ${tools.join(", ")} cards`;
@@ -174,10 +187,14 @@ function nativeRow(line: ToolDesignLine, setting: string): CustomizeRow {
       // Identity, never the displayed text: a renamed label cannot lose the user's choice.
       current: () => getToolDesignLineSelection(line.scope, line.line) === TOOL_DESIGN_NATIVE,
     },
-    preview: () => ({
-      title: `Cards · ${setting}`,
-      sample: `${setting}: the host's own card for ${subject}, untouched`,
-    }),
+    preview: () =>
+      withScopeDescription(
+        {
+          title: `Cards · ${setting}`,
+          sample: `${setting}: the host's own card for ${subject}, untouched`,
+        },
+        line.designScope,
+      ),
     action: () => selectDesign(line.scope, line.line, TOOL_DESIGN_NATIVE),
   };
 }
@@ -192,7 +209,7 @@ function designRow(line: ToolDesignLine, setting: string, design: ToolDesignRegi
       value: design.label,
       current: () => getToolDesignLineSelection(line.scope, line.line) === design.id,
     },
-    preview: () => previewFor(design, tools),
+    preview: () => withScopeDescription(previewFor(design, tools), line.designScope),
     action: () => selectDesign(line.scope, line.line, design.id),
   };
 }

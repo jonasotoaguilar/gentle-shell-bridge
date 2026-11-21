@@ -1240,7 +1240,8 @@ const dispose = registerTransform({
 ## 14. Tool designs
 
 A **design** decides how ONE tool's card is drawn, without owning the frame. It is declared per tool
-NAME and composed with the host's own card:
+NAME — a line may narrow that to the tool's CALLS with the optional `scope` (below) — and composed
+with the host's own card:
 
 ```ts
 api.registerToolDesign({
@@ -1272,12 +1273,17 @@ api.registerToolDesign({
 Exactly one of `tool` / (`line` + `tools`) is required; mixing them is refused. `tools` must be
 non-empty, deduplicated, and each entry a valid tool name. Several registrations naming the same
 `line` — from one plugin or two — join ONE line (S3): `default` is added by the bridge once, first,
-never registered by a plugin, and the line's tool set is the union of its designs' `tools`. A tool
-belongs to at most ONE line (S5/D1): a registration that would put it in a second line, or add a
-legacy `Card <tool>` registration to a tool that is already in one, is refused whole and reported as
-a `line` conflict in `/bridge-status`; nothing is half-registered. An array registration may mix both
-shapes and stays all-or-nothing. `(line, id)` is the value identity: a second registration of the same
-pair replaces the earlier one in place, is reported, and its `tools` set is the later one's (D2).
+never registered by a plugin, and the line's tool set is the union of its designs' `tools`. A tool has
+at most ONE **unscoped** claim (S5/D1, S9), and only a tool's SECOND **unscoped** claim is refused:
+that registration is refused whole and reported as a `line` conflict in `/bridge-status`, so nothing
+is half-registered. An unscoped claim beside a SCOPED one is ACCEPTED in either order — a legacy
+`Card <tool>` registration beside a tool that only SCOPED lines claim is accepted — because a scoped
+line never owns the whole tool. Any number of SCOPED claims may name one tool, because a scope
+claims only the calls it matches (the `scope` subsection below) — and a `scope` goes on the GROUPED
+shape only. An array registration may mix both
+shapes and stays all-or-nothing. `(line, id)` is
+the value identity: a second registration of the same pair replaces the earlier one in place, is
+reported, and its `tools` set is the later one's (D2).
 
 ### The convention: lines in, lines out
 
@@ -1350,9 +1356,13 @@ card yet applies as soon as Pi builds one: Pi resolves renderers when the card i
 bridge's one resolver is installed for the whole session.
 
 A grouped registration (`line` + `tools`) is still declared by tool name: the line's tool set is the
-union of its designs' `tools`, and the resolver looks a tool up to find the line that owns it. From a
-tool's point of view nothing changes — the bridge reads the line's selection on every pass and hands
-the design the rows of whatever tool it wraps, with `ctx.tool` naming that tool.
+union of its designs' `tools`, and the resolver looks a tool up to find the lines that claim it — one
+unscoped claim plus any number of scoped ones, or ONLY scoped lines (a sole scoped line is a whole
+claim set with no unscoped claim beside it), and two scopes may match the very same input, resolved by
+registration order. Coverage stays a tool NAME, never drawn text: what a `scope` adds is a narrower
+claim on the CALLS of that tool, not a second way to declare one. From a tool's point of view nothing
+changes — the bridge reads every claiming line's selection on every pass and hands the design the rows
+of whatever tool it wraps, with `ctx.tool` naming that tool.
 
 ### One line over several tools (S1–S3, S8)
 
@@ -1361,6 +1371,165 @@ The customize menu names each line after its owner. An ungrouped design keeps it
 same row-name rule (`src/row-names.ts`): one to three plain words, and one shared ordinal space, so a
 line and a tool that derive the same name are told apart deterministically (`Card tools`,
 `Card tools 2`). The line's values are `default` first, then its designs in registration order.
+
+### A line that claims only some calls: `scope` (S7–S10)
+
+A registration may narrow its claim from "every call of these tools" to "the calls my scope matches"
+with one OPTIONAL member:
+
+```ts
+export interface ToolDesignCall {
+  readonly tool: string;
+  readonly args?: unknown;
+}
+
+export interface ToolDesignScope {
+  /** One short line a preview and `/bridge-status` can show, e.g. `paths under skills/ or odd/`. */
+  readonly description: string;
+  /** Whether this line owns THIS call. Cheap and pure; the bridge isolates a throw. */
+  matches(call: ToolDesignCall): boolean;
+}
+
+export interface ToolDesignRegistration {
+  // …every existing member unchanged…
+  /** Optional. Absent, the line claims EVERY call of its tools, exactly as before. */
+  readonly scope?: ToolDesignScope;
+}
+
+// The diff line claims just the writes under skills/ or odd/; every other write keeps the line it
+// had. `line` + `tools` is the shape a scope goes on: the tool's own line keeps every call.
+api.registerToolDesign({
+  line: "diff",
+  tools: ["write"],
+  id: "loon.skill-writes",
+  label: "skill writes",
+  scope: {
+    description: "paths under skills/ or odd/",
+    matches: ({ args }) => isUnderSkillsOrOdd(args),
+  },
+  apply(lines) { return [...lines]; },
+});
+```
+
+Absent `scope`, a design claims EVERY call of its tools, exactly as before. A scope is a PREDICATE,
+never a declarative path rule: path identity ("under `skills/` or `odd/`") is the consumer's own
+rule, and this bridge is tool-agnostic by construction. It is the same trust model `apply` already
+has — plugin code the host runs, isolated on throw — and it sees `{ tool, args }` and nothing else:
+both halves of one card are resolved by the SAME procedure against the same arguments, so no half is
+asked a different question. The guarantee stops there, and two facts bound it. The SELECTION is read
+live on EVERY pass, so a menu switch between the two halves CAN change the painter — a switch on a
+line whose scope does not match the call leaves the winner unchanged, and a switch on the winning one
+repaints the card already on screen. And `args` is the host's own object, forwarded by reference like
+`ctx.render.args` and read again on every pass, so a scope that reads a field the host mutates while a
+call streams can answer differently for the call and the result halves. Read fields that are stable
+for the life of a call, such as `path`.
+
+**A scope is declared on a GROUPED registration only.** `{ tool, scope, … }` is refused whole and
+reported as a `scope` conflict: an ungrouped registration IS the tool's own `Card <tool>` line, and
+that line means every call of that tool by definition — "only some calls" is the GROUPED shape, and
+that grouped line may be the ONLY line claiming the tool, because scoped claims need no unscoped claim
+beside them. The refusal names the design id, the tool and the shape that does it (its last sentence is
+the side-by-side upgrade, where a `Card <tool>` line already claims the tool):
+
+```text
+gentle-shell-bridge: invalid tool design "loon.skill-writes" for tool "write": a scope is declared
+on a GROUPED registration only, and `{ tool, id, label, apply }` is that tool's own Card "write"
+line, which means every call of the tool. To claim only SOME calls, register a grouped line
+`{ line, tools, scope, id, label, apply }` for the tool beside the line that already claims it. The
+registration was refused whole.
+```
+
+**Validation.** A present `scope` that is not an object, whose `description` is not a non-empty string
+after trim, or whose `matches` is not a function refuses the WHOLE registration, and is reported as a
+`scope` conflict. A refused registration stores nothing. A BATCH that fails on a later entry rolls the
+REGISTRY back to its state before the batch, but the legacy per-tool migration an EARLIER entry of
+that batch performed STAYS written: the store is never restored byte for byte. That is the
+pre-existing behaviour of EVERY refusal kind — a known limitation of the store, which has no delete
+primitive — not a rule this scope introduces. The refusal names the design id, its subject and both
+members:
+
+```text
+gentle-shell-bridge: invalid tool design "loon.skill-writes" for line "diff": scope needs a
+non-empty string as its description member. A scope is { description, matches }: `description` is the
+one line the menu and /bridge-status show, and `matches(call)` answers whether this line owns that
+call (the call is { tool, args }). The registration was refused whole.
+```
+
+**`description` is ONE line.** A `description` carrying a CR or an LF is refused whole with the `scope`
+kind, exactly like a missing one: the description is rendered INTO an existing preview or
+`/bridge-status` row, and a line break there would add a row instead of explaining one (`S18`).
+
+**`matches` answers a boolean, synchronously.** Anything else it returns — a `Promise`, a truthy
+string, `undefined` — counts as "this line does not own the call" and is recorded once per (tool,
+design id, message) like a throw: a paint cannot await, so a scope that cannot answer now has not
+answered (`S18`).
+
+An absent `scope` is never an error.
+
+**One scope per line.** A line is one customize row, one stored value and one switch, so every LIVE
+registration of one line must carry the SAME `scope` object (`===`; both absent counts as equal). The
+entry a registration replaces — same (`line`, `id`) — is exempt from its own check, so a plugin may
+re-register its own design with a fresh scope object; every OTHER live entry of the line must still be
+that same object, and any disagreement refuses the whole registration as a `scope` conflict:
+
+```text
+gentle-shell-bridge: design "loon.diff-two" for line "diff" was refused whole: the line already
+carries a different scope on design "loon.diff". One line is one switch, so every live registration
+of a line must share the SAME scope object (S8); re-register the same (line, id) to change it.
+```
+
+**The claim rule.** A tool has at most ONE unscoped claim and any number of scoped claims, and the
+rule is order-independent:
+
+| live claim | incoming claim | result |
+| --- | --- | --- |
+| unscoped | unscoped | refused whole, `line` conflict, today's message |
+| unscoped | scoped | allowed |
+| scoped | unscoped | allowed |
+| scoped | scoped | allowed |
+
+Joining the line that already claims the tool is allowed as before (the line's tool set is the union),
+and every other rule about `tools` and the line shape is unchanged. The `scoped | unscoped` row also
+covers a line REPLACING its own scoped entry with an unscoped one (`S8`'s exemption is about the entry,
+never about another line's claim), checked against every OTHER unscoped claim, so a re-registration can
+never leave two unscoped claims of one tool alive: it is refused whole, `line` conflict, today's
+message.
+
+**Which line paints a call.** The candidates for ONE call, in order: the scoped claims of the tool
+whose `matches({ tool, args })` is true, in registration order, then the unscoped claim, if any. The
+FIRST candidate whose line's stored value is a live design covering the tool paints it; any other
+answer (`native`, `missing`, `not-covered`) DECLINES the call and the next candidate answers.
+Otherwise the LAST candidate's answer stands, and it is that candidate's OWN stored value that
+answers: `missing` when it names a design that is no longer registered, `not-covered` when it names
+one that does not cover this tool, and `native` when it stores `native`. A decline therefore never
+turns a `missing` or `not-covered` last candidate into `native`. A tool that NO live line claims
+still answers through its historical per-tool value, so a disposed design keeps resolving to
+`missing`, not `default`; in an ordinary registry that value is absent and the answer is
+`{ kind: "native" }`. A tool that HAS live claims never re-enters a value from the historical
+per-tool map, which is where an implicit line's own value lives.
+The persisted selections are read ONCE per call, however many candidates there are. Consequences, all
+deliberate:
+
+- A scoped line whose value is `native` (its default) DECLINES the call, so registering a scoped line
+  never changes what an existing line paints until the user selects the new design. `native` on the
+  LAST candidate still means the host's own card.
+- Two scoped claims that both match resolve by REGISTRATION ORDER: the earlier one wins when both
+  would paint, and one that declines lets the next answer. Overlap cannot be proven at registration,
+  so it is ordered and documented, never refused.
+- A scope that throws counts as "does not match" and is recorded once per (tool, design id, message)
+  in `/bridge-status`; resolution itself never throws.
+
+`/gentle:customize` still draws one row per line with `default` first: a scoped line's values say
+which calls the line owns in the SAME preview row (the value's first preview line gains
+` — scope: <description>`), so nothing gains a second row, a new value or a new row kind, and an
+unscoped line's rows are byte-identical to before. `/bridge-status` prints a tool claimed by ONE
+UNSCOPED line as before, byte for byte; a sole SCOPED claim has no earlier shape, so its row adds its
+claim detail by design and its coarse `selection` reads `native` — without arguments no scoped line
+is a candidate. That coarse answer stays `native` even when a matching CALL resolves `not-covered`: the
+`selection` asks for the tool without arguments, and a resolve with a call's arguments asks for that
+call, so the two answers are computed separately. A tool with scoped claims lists every claiming
+line with the value stored for it and, for a scoped line, the scope's `description`, and prints a
+`scope` conflict or a scope's failure like any other.
 
 ### When the bridge is not first in the chain (S10)
 
@@ -1418,18 +1587,23 @@ never in the render path: when a tool joins a line that has no stored value, the
 tool's legacy per-tool value if it names a design of the line, and writes it then; otherwise the line
 stays `default`. A migration that cannot be written is reported and never fails the registration.
 
-**Coverage (S6/D4).** A grouped line can cover a tool that the selected value does not paint. That
-tool still gets a switch (the wrapper is installed for every tool of the line) but draws `default`,
-the host's own card, and `/bridge-status` reports it as `not covered` — distinct from `missing`, which
-means the selected design left the line entirely. The line report lists every value's coverage.
+**Coverage (S6/D4).** Two separate reports, and neither is an inference from the other. The PER-TOOL
+`selection` is the bridge's answer for a tool asked WITHOUT arguments: the selected design's id,
+`native`, `missing` (the selected design left the line) or `not covered` (that design does not name
+this tool). The LINE report is a different shape: the line, its row name, its tools, and each value
+with the tools it `covers`. With a `scope` in play the per-tool answer describes only the calls no
+scoped line claims — a tool claimed ONLY by scoped lines answers `native` there, and a tool with one
+unscoped claim answers from that line — while a resolve WITH a call's arguments can answer
+`not-covered` for that call. The two answers are computed separately. See "A line that claims only
+some calls: `scope`" above.
 
 A selection naming a design that is no longer registered degrades to the host's own card and is
 reported as `missing` in `/bridge-status`.
 
-### Asking which design a tool draws: `resolveToolDesignSelection(tool)`
+### Asking which design a tool draws: `resolveToolDesignSelection(tool, args?)`
 
 ```ts
-resolveToolDesignSelection(tool: string):
+resolveToolDesignSelection(tool: string, args?: unknown):
   | { kind: "native" }
   | { kind: "design"; design: ToolDesignRegistration }
   | { kind: "missing"; id: string }
@@ -1442,12 +1616,25 @@ instead of guessing. `native` means the host's own card is what draws; `design` 
 registration, so a caller reads its `id` and `label` rather than re-deriving them; `missing` and
 `not-covered` are the two degrades above, and both paint the host's card.
 
-It is a **pure read and never throws**: no store, an unreadable store or a malformed document reads as
-`native`, exactly like `/bridge-status`. It costs **one persisted-selection read per call** — what one
-render pass of the bridge's own wrapper already pays for that tool (`src/tool-design-wiring.ts`) — so
-asking on every frame for the tool being painted is the intended use. Asking once per tool per frame
-multiplies that count, and nothing here caches the answer: a selection can change between frames, and
-that is exactly why the wrapper reads it every pass.
+`args` is the CALL's arguments, opaque to the bridge and forwarded to a scope by reference. Pass what
+the card is drawing (`ctx.render.args`) and a scoped line becomes a candidate for THIS call, resolved
+by the rule above; OMIT it and no scoped claim is a candidate, so a tool whose unscoped claim exists
+answers exactly what it did before scopes existed — and a tool claimed only by scoped lines answers
+`native` — for a consumer that only knows a tool name.
+The union gained NO variant: only which lines are candidates changed, so a consumer that compares
+`answer.design.id` compiles and behaves identically, and its own gate on `native`, `missing` and
+`not-covered` ("do not paint") keeps meaning what it means. The bridge's wrapper resolves with
+`render?.args`, so with no render context from the host the argument is `undefined` and the card is
+drawn as before.
+
+It never throws and is not a pure read: no store, an unreadable store or a malformed document reads
+as `native`, exactly like `/bridge-status`; a scope that cannot answer — one that throws, or one that
+returns anything but a boolean — has that failure RECORDED for `/bridge-status`, once per (tool,
+design id, message). It costs **one persisted-selection read per call**, whatever the number of
+candidate lines — what one render pass of the bridge's own wrapper already pays for that tool
+(`src/tool-design-wiring.ts`) — so asking on every frame for the tool being painted is the intended
+use. Asking once per tool per frame multiplies that count, and nothing here caches the answer: a
+selection can change between frames, and that is exactly why the wrapper reads it every pass.
 
 The raw stored value is deliberately **not** on the contract (`getToolDesignLineSelection` stays
 internal): an id alone would push the resolution rule — which design is live, whether it covers the
@@ -1522,13 +1709,18 @@ a model, not the host's own module.
 
 Same rules as every other surface: `tool` and `id` are validated before anything is stored; a second
 registration with the same (`tool`, `id`) replaces in place and is REPORTED (never a silent takeover);
-two designs of one tool cannot share a visible label; `default` and `native` are reserved. One call may
-register several designs — `registerToolDesign([a, b])` — in order, all-or-nothing (a refused design leaves
-none of them registered), with ONE disposer that removes exactly that call's designs. Two designs of one
-tool from one call, or from two plugins, join that tool's ONE line: the tool name is the join key and
-`default` is never duplicated. A design that throws, or
-returns something that is not an array of strings, loses only its own card — the host's rows are drawn
-— and is reported once per (tool, id, message).
+two values of ONE line cannot share a visible label — the rule is per LINE, not per tool, so two lines
+may both carry the label `Activity` for the same tool and only the values of one line must differ;
+`default` and `native` are reserved; `scope` is validated beside `apply`, before anything is stored.
+One call may register several designs —
+`registerToolDesign([a, b])` — in order, all-or-nothing (a refused design leaves none of them
+registered), with ONE disposer that removes exactly that call's designs. Two designs of one tool from
+one call, or from two plugins, join that tool's ONE line: the tool name is the join key and `default`
+is never duplicated. Two lines may name one tool once scoped claims are in play: the unscoped claim
+keeps its whole-tool meaning, each scoped line owns the calls its scope matches, and the resolver
+decides per call — the menu still shows one switch per line. A design that throws, or returns
+something that is not an array of strings, loses only its own card — the host's rows are drawn — and
+is reported once per (tool, id, message).
 
 `name` is optional and does the same job as `RowProvider.name` (§2): a single-file extension with no
 owning `package.json` gets an INTEGRATIONS line only if it names itself, and a plugin that contributes

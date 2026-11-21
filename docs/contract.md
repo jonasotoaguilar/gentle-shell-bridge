@@ -1456,10 +1456,13 @@ api.registerToolDesign({
 | `write { path: "src/app.ts" }` | — | `diff` | `diff` | `Card diff` |
 | `edit { path: "lib/x.ts" }` | — | `diff` | `diff` | `Card diff` |
 
-A line paints the call when its stored value — a design's `id`, never its label — is one of its own
-designs, so the last two columns hold while `Card tools` stores `odd.worktree-activity` (its row shows
-the label `activity`) and `Card diff` stores `odd.worktree-diff` (shown `diff`); a line whose stored
-value is `native` (its default, shown as the label `default`) DECLINES the call, and the next
+A line is a CANDIDATE for a call when its claim on the tool is unscoped, or scoped and `matches` returned
+`true` for that call. The first candidate whose stored value — a design's `id`, never its label — is one of
+its own designs that names the tool paints the call, so the last two columns hold while `Card tools`
+stores `odd.worktree-activity` (its row shows the label `activity`) and `Card diff` stores
+`odd.worktree-diff` (shown `diff`), and when both lines are selected the scoped one answers for a call
+it matches and the generic one for every other. A line whose stored value is `native` (its default,
+shown as the label `default`, and what a line never selected reads) DECLINES the call, and the next
 candidate answers. When no candidate paints,
 the answer is not a design, and no design's `apply` is called for that call: the bridge's wrapper
 returns the host's own rows for every selection kind other than `design` (`src/tool-design-wiring.ts`).

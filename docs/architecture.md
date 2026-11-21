@@ -968,11 +968,13 @@ line creation order and survives the disposal of one of a line's values; DISPLAY
 rows and the `/bridge-status` block — follows the first LIVE entry, and the two orders are computed
 separately. When every candidate declines, the LAST candidate's OWN answer stands — `missing` when its
 stored id names a disposed design, `not-covered` when that design does not name the tool, `native`
-when the last candidate stores `native`. That last candidate is the unscoped claim whenever the tool
+when the last candidate's line has no stored value or stores `native` (a line never selected reads
+`native`). That last candidate is the unscoped claim whenever the tool
 has one, and it is a candidate on EVERY call of its tool, so a call no scoped claim matches falls
 through to that line's own answer instead of stopping at `native`. `native` is therefore the answer in
-exactly two cases — the last candidate stores `native`, or no candidate exists at all: the tool has
-live claims and every one of them is scoped, so a call without `args` has no scoped candidate and a
+exactly two cases — the last candidate's line has no stored value or stores `native`, or no candidate
+exists at all: the tool
+has live claims and every one of them is scoped, so a call without `args` has no scoped candidate and a
 call with `args` keeps only the scoped claims whose `matches` accepted it. A tool with NO live claim
 at all is outside that rule and falls back to its historical per-tool value (`native` in an ordinary
 registry). Overlap cannot be proven at registration, so it is ordered and never refused, and a scope

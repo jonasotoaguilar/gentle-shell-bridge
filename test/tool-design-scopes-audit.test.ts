@@ -25,6 +25,7 @@ import test from "node:test";
 
 import { resetNoticesForTests } from "../src/notices.ts";
 import { resetPluginLinesForTests } from "../src/plugin-lines.ts";
+import { collectStatus, formatStatus } from "../src/status.ts";
 import { createStore, resetStoreStateForTests } from "../src/store.ts";
 import {
   TOOL_DESIGN_STORE_ID,
@@ -204,6 +205,14 @@ test("S19: the `scope` shorthand keeps the previous conflict diagnostics, byte f
       "the shorthand's conflict still carries the line (the tool for the ungrouped refusal)",
     );
   }
+  // The formatted /bridge-status block prints the same two diagnostics, in registration order.
+  const lines = formatStatus(collectStatus());
+  const start = lines.indexOf("tool design conflicts: 2");
+  assert.notEqual(start, -1, "the status block lists both conflicts");
+  assert.deepEqual(lines.slice(start + 1, start + 3), [
+    `  - tools / acme.other (scope): ${expected[0]}`,
+    `  - write / acme.ungrouped (scope): ${expected[1]}`,
+  ]);
 });
 
 test("S19: `scopes` keeps the per-tool wording, naming `scopes` on the ungrouped shape", (t) => {

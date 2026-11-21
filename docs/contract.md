@@ -1456,9 +1456,11 @@ api.registerToolDesign({
 | `write { path: "src/app.ts" }` | — | `diff` | `diff` | `Card diff` |
 | `edit { path: "lib/x.ts" }` | — | `diff` | `diff` | `Card diff` |
 
-A line paints the call when its stored value is one of its own designs, so the last two columns hold
-while `Card tools` stores `activity` and `Card diff` stores `diff`; a line whose stored value is
-`native` (its default) DECLINES the call, and the next candidate answers. When no candidate paints,
+A line paints the call when its stored value — a design's `id`, never its label — is one of its own
+designs, so the last two columns hold while `Card tools` stores `odd.worktree-activity` (its row shows
+the label `activity`) and `Card diff` stores `odd.worktree-diff` (shown `diff`); a line whose stored
+value is `native` (its default, shown as the label `default`) DECLINES the call, and the next
+candidate answers. When no candidate paints,
 the answer is not a design, and no design's `apply` is called for that call: the bridge's wrapper
 returns the host's own rows for every selection kind other than `design` (`src/tool-design-wiring.ts`).
 
@@ -1480,22 +1482,24 @@ are refused whole and reported as a `scope` conflict: an ungrouped registration 
 `Card <tool>` line, and that line means every call of that tool by definition — "only some calls" is
 the GROUPED shape, and that grouped line may be the ONLY line claiming the tool, because scoped claims
 need no unscoped claim beside them. The refusal names the design id, the tool, the member that was given
-and the shape that does it (its last sentence is the side-by-side upgrade, where a `Card <tool>` line
-already claims the tool):
+and the shape that does it. The `scope` spelling reads as follows; a registration that spells `scopes`
+reads the same with `scopes` in the suggested shape and ends "(`scopes` on an ungrouped registration was
+refused). The registration was refused whole.":
 
 ```text
 gentle-shell-bridge: invalid tool design "loon.skill-writes" for tool "write": a scope is declared
 on a GROUPED registration only, and `{ tool, id, label, apply }` is that tool's own Card "write"
 line, which means every call of the tool. To claim only SOME calls, register a grouped line
-`{ line, tools, scope, id, label, apply }` for the tool beside the line that already claims it
-(`scope` on an ungrouped registration was refused). The registration was refused whole.
+`{ line, tools, scope, id, label, apply }` for the tool beside the line that already claims it.
+The registration was refused whole.
 ```
 
 **Validation.** Every one of these refuses the WHOLE registration before anything is stored, and is
 recorded as a `scope` conflict:
 
 - `scopes` is not an object, or is empty, or names a tool that is not one of this registration's
-  `tools`;
+  `tools`. Every OWN key of the map is checked, enumerable or not, and a symbol key is refused, so
+  the keys that are validated are exactly the keys the claim reads;
 - a `scopes` value, or the single `scope`, is not a `ToolDesignScope`: an object whose `description`
   is a non-empty string after trim and one line (below), and whose `matches` is a function;
 - `scope` and `scopes` are given together, because the two spellings of the claim on one tool would
@@ -1557,6 +1561,11 @@ for it (S8); a registration that does not name the tool does not constrain it, a
 same (line, id) is exempt. Re-register the same (line, id) to change a scope.
 ```
 
+A registration that uses the `scope` shorthand gets the text this refusal had before `scopes` existed,
+byte for byte: `design "<id>" for line "<line>" was refused whole: the line already carries a different
+scope on design "<other id>". One line is one switch, so every live registration of a line must share
+the SAME scope object (S8); re-register the same (line, id) to change it.`
+
 **The claim rule.** A tool has at most ONE unscoped claim and any number of scoped claims, and the
 rule is applied to EVERY tool of the incoming registration, order-independently:
 
@@ -1613,9 +1622,11 @@ keeps today's text, so the value's first preview line gains ` — scope: <descri
 several DISTINCT scopes gains one ` — scope: <tool[, tool]>: <description>` per distinct scope, joined
 by `; `, in tool order. Either way the text joins the same FIRST preview line, so nothing gains a
 second row, a new value or a new row kind, and a line with no scoped claim has rows byte-identical to
-before. `/bridge-status` prints a tool claimed by ONE UNSCOPED line as before, byte for byte, keeping
-its `line` field; a tool with at least one scoped claim carries `claims`, every claiming line with the
-value stored for it, and the `scope` of THAT tool's claim sits on the claim that has one — a line that
+before. `/bridge-status` prints a tool claimed by ONE UNSCOPED GROUPED line as before, byte for byte,
+keeping its `line` field; a tool whose only claim is its own ungrouped `Card <tool>` line carries
+neither `line` nor `claims`, exactly as before; a tool with at least one scoped claim carries
+`claims` — and no `line` — every claiming line with the value stored for it, and the `scope` of THAT
+tool's claim sits on the claim that has one — a line that
 narrows `write` and claims `read` unconditionally carries it on the `write` claim and not on the `read`
 one. A sole SCOPED claim has no earlier shape, so its row adds its claim detail by design and its
 coarse `selection` reads `native` — without arguments no scoped claim is a candidate. That coarse
@@ -1711,7 +1722,9 @@ registration, so a caller reads its `id` and `label` rather than re-deriving the
 
 `args` is the CALL's arguments, opaque to the bridge and forwarded to a scope by reference. Pass what
 the card is drawing (`ctx.render.args`) and a scoped claim on that tool becomes a candidate for THIS
-call, resolved by the rule above; OMIT it and no scoped claim is a candidate, so a tool whose unscoped
+call only when its scope's `matches({ tool, args })` returned `true` for that call; any other answer
+leaves it out of the candidate list, so it is not a candidate at all. The candidates are then resolved
+by the rule above; OMIT `args` and no scoped claim is a candidate, so a tool whose unscoped
 claim exists answers exactly what it did before scopes existed — and a tool claimed only by scoped
 claims answers `native` — for a consumer that only knows a tool name.
 The union gained NO variant: only which lines are candidates changed, so a consumer that compares

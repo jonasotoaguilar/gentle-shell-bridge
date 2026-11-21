@@ -44,8 +44,10 @@ import {
   lineOfTool,
   resolveToolDesignSelection,
   snapshotToolDesigns,
+  toolDesignClaims,
   toolDesignLines,
   toolNamesWithDesigns,
+  type ToolDesignClaim,
   type ToolDesignConflict,
   type ToolDesignFailure,
   type ToolDesignLine,
@@ -185,12 +187,30 @@ export interface StatusToolDesignLine {
   values: StatusToolDesignLineValue[];
 }
 
+/** One line's claim on one tool, reported when that tool has SCOPED claims (S9/S14). */
+export interface StatusToolDesignClaim {
+  /** Whether the claim comes from a tool's own implicit line or from a registered line. */
+  kind: "tool" | "line";
+  /** The line id, or the tool name for an ungrouped design's implicit line. */
+  line: string;
+  /** The design id stored for that line, or `native` when the line draws the host's own card. */
+  stored: string;
+  /** Only for a scoped line: the scope's description, so a user can tell which line owns what. */
+  scope?: string;
+}
+
 /** One tool with designs, its values, and the selection in force. */
 export interface StatusToolDesignTool {
   tool: string;
   designs: StatusToolDesignEntry[];
   /** Only for a tool covered by a GROUPED line: the line id whose switch paints it (D7). */
   line?: string;
+  /**
+   * Every line that claims this tool, each with its stored value — present only when at least one
+   * of them declares a scope (S14). A tool claimed by one unscoped line keeps today's `line` field
+   * and gains nothing here, so its report stays byte-identical.
+   */
+  claims?: StatusToolDesignClaim[];
   /** The stored value: a design id, `native`, or `<id> (missing: not registered)`. */
   selection: string;
   /**
@@ -587,6 +607,9 @@ function describeToolDesigns(): StatusToolDesigns | undefined {
       const wrapped = wiring.wrappedCards.find((entry) => entry.tool === tool);
       const adopted = adoption.adoptedCards.find((entry) => entry.tool === tool);
       const owner = lineOfTool(tool);
+      // S14: a tool with SCOPED claims is painted by more than one line, so the answer is per line.
+      const claims = toolDesignClaims(tool);
+      const scoped = claims.some((claim) => claim.scopeDescription !== undefined);
       return {
         tool,
         designs: snapshotToolDesigns(tool).map((design) => ({
@@ -608,7 +631,11 @@ function describeToolDesigns(): StatusToolDesigns | undefined {
           ? { wrapper: "not mounted" as const }
           : { wrapper: "mounted" as const, cards: wrapped.cards }),
         ...(adopted === undefined ? {} : { adopted: adopted.cards }),
-        ...(owner !== undefined && owner.scope === "line" ? { line: owner.line } : {}),
+        ...(scoped
+          ? { claims: claims.map((claim) => statusClaimOf(claim)) }
+          : owner !== undefined && owner.scope === "line"
+            ? { line: owner.line }
+            : {}),
       };
     }),
     ...(lineReports.length === 0 ? {} : { lines: lineReports }),
@@ -623,6 +650,16 @@ function describeToolDesigns(): StatusToolDesigns | undefined {
         }),
     conflicts,
     failures,
+  };
+}
+
+/** The `/bridge-status` shape of one line's claim on a tool (S14). */
+function statusClaimOf(claim: ToolDesignClaim): StatusToolDesignClaim {
+  return {
+    kind: claim.scope,
+    line: claim.line,
+    stored: claim.stored,
+    ...(claim.scopeDescription === undefined ? {} : { scope: claim.scopeDescription }),
   };
 }
 
@@ -1030,6 +1067,12 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
       // exactly what it printed before lines existed.
       const line = entry.line === undefined ? "" : ` (line "${entry.line}")`;
       lines.push(`  - ${entry.tool}: ${entry.selection}, ${wrapper}${adopted}${line}`);
+      // S14: a tool with SCOPED claims is painted by more than one line, so each claiming line is
+      // listed with the value stored for it and, when it is scoped, the calls that line owns.
+      for (const claim of entry.claims ?? []) {
+        const scope = claim.scope === undefined ? "" : ` — scope: ${claim.scope}`;
+        lines.push(`      ${claim.kind} "${claim.line}": ${claim.stored}${scope}`);
+      }
       for (const design of entry.designs) {
         const description = design.description === undefined ? "" : ` — ${design.description}`;
         lines.push(`      ${design.id} "${design.label}"${description}`);

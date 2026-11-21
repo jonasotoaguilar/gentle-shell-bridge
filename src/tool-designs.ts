@@ -22,10 +22,15 @@
  *   registrations naming the same line produce ONE customize line (`Card tools`) and that line's
  *   tool set is the union of their `tools` (S2, S3).
  *
- * A tool belongs to at most ONE line (S5/D1): a registration that would put it in a second line — or
- * add a legacy `Card <tool>` registration to a tool that already has a line — is refused whole and
- * recorded. Nothing here is bash-specific: a design is declared for a tool NAME, and the registry is
- * keyed by that name.
+ * A tool belongs to at most ONE line (S5/D1) — unless a line declares a SCOPE (S7–S10). A
+ * registration without a `scope` claims every call of its tools, so a second UNSCOPED claim of one
+ * tool — or a legacy `Card <tool>` registration on a tool that already has a line — is refused whole
+ * and recorded. A registration that DOES declare a scope claims only the calls `scope.matches`
+ * answers true for: any number of scoped claims may name one tool beside the one unscoped claim, and
+ * the resolver decides per call which of them paints it. A scope goes on the GROUPED shape only:
+ * an ungrouped registration IS the tool's own `Card <tool>` line, which means every call of that
+ * tool, so `{ tool, scope, … }` is refused whole (L6/S7). Nothing here is bash-specific: a design is
+ * declared for a tool NAME, and the registry is keyed by that name.
  *
  * ## The selection
  *
@@ -40,15 +45,16 @@
  * that has no stored value lends that line its legacy per-tool value when that value names a design of
  * the line, and the line value is written then.
  *
- * This module is internal: `src/index.ts` re-exports `registerToolDesign` and the two public types,
- * never this file's diagnostics or its `reset…ForTests` seam.
+ * This module is internal: `src/index.ts` re-exports `registerToolDesign`,
+ * `resolveToolDesignSelection` and the public types those signatures carry, never this file's
+ * diagnostics (`toolDesignClaims`, the index) or its `reset…ForTests` seam.
  */
 
 import { assertRegistrationId } from "./bus.ts";
 import { attributeRegistration } from "./plugin-lines.ts";
 import { isRecord } from "./rows.ts";
 import { createStore } from "./store.ts";
-import type { ToolDesignContext, ToolDesignRegistration } from "./types.ts";
+import type { ToolDesignContext, ToolDesignRegistration, ToolDesignScope } from "./types.ts";
 
 /**
  * The STORED value meaning "no design: the host draws the card", shared by every line. It is
@@ -79,7 +85,7 @@ export const TOOL_DESIGN_STORE_KEY = "selections";
 export const TOOL_DESIGN_LINE_STORE_KEY = "$lines";
 
 /** Why a registration did not become the live one: it replaced one, or it was refused. */
-export type ToolDesignConflictKind = "replaced" | "label" | "line";
+export type ToolDesignConflictKind = "replaced" | "label" | "line" | "scope";
 
 /** One registration that replaced another, or was refused, kept for `/bridge-status`. */
 export interface ToolDesignConflict {
@@ -101,6 +107,9 @@ export interface ToolDesignFailure {
 /** How many failures are kept for `/bridge-status`; a design that throws every frame is one fact. */
 const MAX_FAILURES = 8;
 
+/** How far `drainThenable` follows the values `then` returns before it stops (S18). */
+const THENABLE_DRAIN_DEPTH = 4;
+
 /** One live registration, normalized: its line, the tools it paints, and the plugin's design. */
 interface DesignEntry {
   /** `tool` for an ungrouped implicit line, `line` for a grouped one. */
@@ -121,6 +130,11 @@ export interface ToolDesignLine {
   tools: string[];
   /** Every design of the line, in registration order. */
   designs: ToolDesignRegistration[];
+  /**
+   * The ONE scope every live registration of this line declares (S8), or `undefined` when the line
+   * claims every call of its tools — the historical meaning, byte for byte.
+   */
+  designScope?: ToolDesignScope;
 }
 
 interface IndexedLine {
@@ -131,19 +145,47 @@ interface IndexedLine {
 }
 
 interface ToolDesignIndex {
+  /**
+   * The SHAPE this index was built with (`TOOL_DESIGN_INDEX_SHAPE`). Two copies of the bridge can
+   * share this process-global slot — a plugin pinned to an older release and the host on this one —
+   * and the older copy leaves an index built from fields this one does not read. The stamp is what
+   * lets a cached index be DROPPED instead of trusted (S18).
+   */
+  shape: number;
   revision: number;
-  /** tool → the one line that owns it (S5/D1). */
+  /** tool → the one line that owns it (S5/D1), by the first entry that names the tool. */
   owner: Map<string, { scope: "tool" | "line"; line: string }>;
-  /** Lines in creation order. */
+  /**
+   * Lines in DISPLAY order: the first LIVE entry of a line fixes its place, exactly as the Cards rows
+   * and the `/bridge-status` block ordered themselves before claim precedence existed (S2/S13/S14).
+   * PRECEDENCE is a different order and lives only in `claimsByTool` (S10).
+   */
   lines: IndexedLine[];
   byKey: Map<string, IndexedLine>;
   /** tool → its designs, in registration order: the ONE lookup every render path uses (T1). */
   designsByTool: Map<string, ToolDesignRegistration[]>;
+  /**
+   * tool → every line that CLAIMS it, in PRECEDENCE order (`ToolDesignState.lineOrder`, the line
+   * creation order that survives the disposal of one of its values — S10): the one unscoped line and
+   * the scoped ones (S9). The resolver walks this list per call; `/bridge-status` lists it for a tool
+   * with scoped claims. Never a display order: see `lines`.
+   */
+  claimsByTool: Map<string, IndexedLine[]>;
 }
 
 interface ToolDesignState {
   /** Every live registration, in registration order; one entry per (`scope`, `line`, `id`). */
   entries: DesignEntry[];
+  /**
+   * The creation order of every live line, keyed by `lineKey`: the order a line keeps for as long as
+   * any value of it is live (S10). Disposing ONE value of a line must not move the line, because a
+   * line never stopped claiming its tools; precedence between two claims therefore never depends on
+   * which registrations happen to survive. It lives in the STATE and not in the derived index, so it
+   * is stable across index rebuilds and identical for every copy sharing this slot.
+   */
+  lineOrder: Map<string, number>;
+  /** The order the NEXT line to appear receives. Monotonic: an order is never reused. */
+  lineOrderSeq: number;
   conflicts: ToolDesignConflict[];
   failures: ToolDesignFailure[];
   /**
@@ -159,6 +201,21 @@ interface ToolDesignState {
 
 /** Stable process-global slot, like the bus and the store: two copies must agree. */
 const DESIGNS_KEY = Symbol.for("gentle-shell-bridge.tool-designs.v1");
+
+/**
+ * The shape of the derived index: bumped whenever `ToolDesignIndex` gains, loses or renames a field
+ * OR the meaning of one of them changes. The index is DERIVED and never persisted, so an index of
+ * another shape is always safe to drop and rebuild — which is exactly what a slot warmed by another
+ * copy of the bridge requires (S18). Shape 4 splits the two orders shape 3 had collapsed: `lines` is
+ * DISPLAY order (the first live entry, S2) and only `claimsByTool` is claim PRECEDENCE (`lineOrder`,
+ * S10). An index of shape 3 ordered `lines` by precedence too, so it must be dropped, not read.
+ */
+const TOOL_DESIGN_INDEX_SHAPE = 4;
+
+/** Is this a cached index THIS copy can read? A slot written by an older copy answers no (S18). */
+function isCurrentIndexShape(index: unknown): index is ToolDesignIndex {
+  return isRecord(index) && index.shape === TOOL_DESIGN_INDEX_SHAPE;
+}
 
 function designsHost(): Record<symbol, ToolDesignState | undefined> {
   // SAFETY: only `designState()` writes this key, and it re-checks every list before trusting a
@@ -179,6 +236,15 @@ function designState(): ToolDesignState {
       existing.revision = 0;
       delete existing.index;
     }
+    // The derived maps are valid only for THIS copy's shape and revision. An index left by a copy
+    // that predates the claim map (S18) is dropped here, so no read site below can reach a field
+    // that copy never wrote; the next read rebuilds it from the entries that survived.
+    if (!isCurrentIndexShape(existing.index)) delete existing.index;
+    // A slot created by a copy that predates the line order gains it here, exactly like the lists
+    // above: the entries it already holds are the only evidence of which line appeared first, so the
+    // next rebuild assigns each of them an order in that order.
+    if (!(existing.lineOrder instanceof Map)) existing.lineOrder = new Map<string, number>();
+    if (typeof existing.lineOrderSeq !== "number") existing.lineOrderSeq = existing.lineOrder.size;
     // A slot created before grouped lines has `{ tool, design }` entries: normalize them in place.
     for (const raw of existing.entries as unknown[]) {
       if (!isRecord(raw) || !isRecord(raw.design)) continue;
@@ -195,6 +261,8 @@ function designState(): ToolDesignState {
   }
   const created: ToolDesignState = {
     entries: [],
+    lineOrder: new Map<string, number>(),
+    lineOrderSeq: 0,
     conflicts: [],
     failures: [],
     selectionReads: 0,
@@ -204,8 +272,37 @@ function designState(): ToolDesignState {
   return created;
 }
 
+/** What `/bridge-status` says about a thrown value that cannot be read as text at all (S18). */
+const UNPRINTABLE_THROWN_VALUE = "a value that cannot be read as text";
+
+/**
+ * Text for a thrown value, whatever a plugin threw at us. It NEVER throws (S18): a paint is not a
+ * place to fail, and the failure record is built from this string, so `String(...)` on a value whose
+ * prototype is null (or whose `toString` explodes) would escape as `Cannot convert object to
+ * primitive value` out of the published resolver. Every reading is isolated, and a fixed text stands
+ * in when even the object tag cannot be read. Shared with `applyToolDesign`, so a design's throw takes
+ * the same path.
+ */
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (typeof error === "string") return error;
+  try {
+    if (error instanceof Error && typeof error.message === "string") return error.message;
+  } catch {
+    // A hostile prototype chain (`instanceof` walks it) or a throwing `message` getter: try the
+    // generic readings below instead of giving up on the report.
+  }
+  try {
+    return String(error);
+  } catch {
+    // `String` needs a primitive out of the value: a null prototype, a throwing `toString`/`valueOf`
+    // or an object-returning pair all end here.
+  }
+  try {
+    return Object.prototype.toString.call(error);
+  } catch {
+    // Even the tag is unreadable (a Proxy whose trap throws). The caller still gets text.
+  }
+  return UNPRINTABLE_THROWN_VALUE;
 }
 
 function lineKey(scope: "tool" | "line", line: string): string {
@@ -220,11 +317,22 @@ function bumpRevision(state: ToolDesignState): void {
 
 function toolDesignIndex(state: ToolDesignState): ToolDesignIndex {
   const cached = state.index;
-  if (cached !== undefined && cached.revision === state.revision) return cached;
-  const owner = new Map<string, { scope: "tool" | "line"; line: string }>();
-  const lines: IndexedLine[] = [];
+  if (cached !== undefined) {
+    // A cached index is trusted only when it was built by THIS copy, for THIS revision. Another copy
+    // of the bridge can write the same slot between two calls, so the shape is checked HERE and not
+    // only in the repair: dropping a derived value is always safe (S18).
+    if (isCurrentIndexShape(cached) && cached.revision === state.revision) return cached;
+    delete state.index;
+  }
   const byKey = new Map<string, IndexedLine>();
+  /**
+   * DISPLAY order, built by walking the ENTRIES: the first LIVE entry of a line fixes its place
+   * (S2/S13/S14). Disposing one value of a line, while another survives, therefore leaves the Cards
+   * rows and the `/bridge-status` block in the order the previous release drew them.
+   */
+  const lines: IndexedLine[] = [];
   const designsByTool = new Map<string, ToolDesignRegistration[]>();
+  const owner = new Map<string, { scope: "tool" | "line"; line: string }>();
   for (const entry of state.entries) {
     const key = lineKey(entry.scope, entry.line);
     let line = byKey.get(key);
@@ -232,6 +340,11 @@ function toolDesignIndex(state: ToolDesignState): ToolDesignIndex {
       line = { scope: entry.scope, line: entry.line, tools: [], entries: [] };
       byKey.set(key, line);
       lines.push(line);
+      // The order a line receives when it FIRST appears, kept until its last value is gone (S10).
+      if (!state.lineOrder.has(key)) {
+        state.lineOrder.set(key, state.lineOrderSeq);
+        state.lineOrderSeq += 1;
+      }
     }
     line.entries.push(entry);
     for (const tool of entry.tools) {
@@ -242,12 +355,32 @@ function toolDesignIndex(state: ToolDesignState): ToolDesignIndex {
       else designs.push(entry.design);
     }
   }
+  // A line with NO live entry left is gone: its order is dropped, so a line that comes back is a new
+  // line that takes its place at the end instead of inheriting a claim it stopped making.
+  for (const key of [...state.lineOrder.keys()]) if (!byKey.has(key)) state.lineOrder.delete(key);
+  const orderOf = (line: IndexedLine): number =>
+    state.lineOrder.get(lineKey(line.scope, line.line)) ?? Number.MAX_SAFE_INTEGER;
+  // CLAIM PRECEDENCE, a DIFFERENT order from the display one above (S10): line creation order, which
+  // survives the disposal of a value the line owns. `claimsByTool` is the only list built from it, so
+  // collapsing the two orders — which is what the previous fix did — cannot move a row or a status
+  // entry again.
+  const claimsByTool = new Map<string, IndexedLine[]>();
+  const byPrecedence = [...lines].sort((left, right) => orderOf(left) - orderOf(right));
+  for (const line of byPrecedence) {
+    for (const tool of line.tools) {
+      const claims = claimsByTool.get(tool);
+      if (claims === undefined) claimsByTool.set(tool, [line]);
+      else claims.push(line);
+    }
+  }
   const built: ToolDesignIndex = {
+    shape: TOOL_DESIGN_INDEX_SHAPE,
     revision: state.revision,
     owner,
     lines,
     byKey,
     designsByTool,
+    claimsByTool,
   };
   state.index = built;
   return built;
@@ -268,14 +401,27 @@ export function snapshotToolDesigns(tool?: string): ToolDesignRegistration[] {
   return designState().entries.map((entry) => entry.design);
 }
 
-/** The live lines, in creation order, each with its tools and designs in registration order. */
+/**
+ * The live lines in DISPLAY order — the first LIVE entry of a line orders it, as the Cards rows and
+ * `/bridge-status` always ordered themselves (S2/S13) — each with its tools and designs in
+ * registration order. Claim precedence is a separate order and is read through `toolDesignClaims`.
+ */
 export function toolDesignLines(): ToolDesignLine[] {
-  return toolDesignIndex(designState()).lines.map((line) => ({
-    scope: line.scope,
-    line: line.line,
-    tools: [...line.tools],
-    designs: line.entries.map((entry) => entry.design),
-  }));
+  return toolDesignIndex(designState()).lines.map((line) => {
+    const designScope = lineScope(line);
+    return {
+      scope: line.scope,
+      line: line.line,
+      tools: [...line.tools],
+      designs: line.entries.map((entry) => entry.design),
+      ...(designScope === undefined ? {} : { designScope }),
+    };
+  });
+}
+
+/** The ONE scope a live line declares (S8), or `undefined` when it claims every call of its tools. */
+function lineScope(line: IndexedLine): ToolDesignScope | undefined {
+  return line.entries[0]?.design.scope;
 }
 
 /** The line that owns one tool, or `undefined` when no design covers it. */
@@ -284,7 +430,7 @@ export function lineOfTool(tool: string): { scope: "tool" | "line"; line: string
   return owner === undefined ? undefined : { ...owner };
 }
 
-/** The tool names that have at least one design, in line-creation and tool-registration order. */
+/** The tool names that have at least one design, in line DISPLAY order and tool-registration order. */
 export function toolNamesWithDesigns(): string[] {
   const names: string[] = [];
   for (const line of toolDesignIndex(designState()).lines) {
@@ -421,22 +567,113 @@ function assertLabelIsDistinct(registration: NormalizedRegistration, design: Too
 }
 
 /**
- * A tool belongs to at most ONE line (S5/D1). Joining the same line again is fine (S3: union); any
- * other owner — a different grouped line, or its own legacy `Card <tool>` line — refuses the WHOLE
- * registration and is recorded under the `line` kind.
+ * A tool has at most ONE unscoped claim (S9/D1). Joining the same line again is fine (S3: union); a
+ * second UNSCOPED line — another grouped line, or the tool's own legacy `Card <tool>` line — refuses
+ * the WHOLE registration and is recorded under the `line` kind, with today's message. A SCOPED claim
+ * narrows the calls it owns, so it never conflicts: any number of them live beside the one unscoped
+ * claim, and the resolver decides per call which of them paints it.
+ *
+ * The unscoped check is INDEPENDENT of "this registration joins the line that already claims the
+ * tool" (L6): re-registering its own (line, id) is exempt from ITS OWN claim, never from the claim
+ * of another line. Without that independence a scoped line could re-register itself unscoped over a
+ * second unscoped line and leave two unscoped claims of one tool alive.
  */
 function assertToolsAreFree(registration: NormalizedRegistration, design: ToolDesignRegistration): void {
   const index = toolDesignIndex(designState());
+  const self = (line: IndexedLine): boolean =>
+    line.scope === registration.scope && line.line === registration.line;
   for (const tool of registration.tools) {
-    const owner = index.owner.get(tool);
-    if (owner === undefined) continue;
-    if (owner.scope === registration.scope && owner.line === registration.line) continue;
-    const current = owner.scope === "tool" ? `its own Card ${JSON.stringify(tool)} line` : `the line ${JSON.stringify(owner.line)}`;
+    // S9: a scoped claim narrows the calls it owns, so it never conflicts — not with the unscoped
+    // claim, not with another scoped one.
+    if (design.scope !== undefined) continue;
+    const claims = index.claimsByTool.get(tool) ?? [];
+    // The one UNSCOPED claim that is not this registration's own line: whatever else is unscoped.
+    const live = claims.find((line) => lineScope(line) === undefined && !self(line));
+    if (live === undefined) continue;
+    const current = live.scope === "tool" ? `its own Card ${JSON.stringify(tool)} line` : `the line ${JSON.stringify(live.line)}`;
     const message =
       `gentle-shell-bridge: tool ${JSON.stringify(tool)} already belongs to ${current}, so design ` +
       `${JSON.stringify(design.id)} for ${subjectOf(registration)} was refused whole (S5/D1). A tool ` +
       "belongs to at most one line; register it on that line or remove the other registration.";
     recordConflict({ tool, id: design.id, kind: "line", message });
+    throw new Error(message);
+  }
+}
+
+/**
+ * S7: a scope is a predicate plus the one line that explains it. An absent `scope` is never an error;
+ * a present one that is not an object, whose `description` is not a non-empty string after trim, or
+ * whose `matches` is not a function refuses the WHOLE registration before anything is stored, and
+ * the refusal is recorded under the `scope` kind.
+ *
+ * A scope is declared on a GROUPED registration ONLY (L6): `{ tool, scope, … }` is refused whole.
+ * An ungrouped registration IS the tool's own `Card <tool>` line, and that line means every call of
+ * that tool by definition; "only some calls" is a line that shares the tool with another claim,
+ * which is the grouped shape. Keeping it apart also keeps the two key spaces apart: an implicit line
+ * is keyed by the tool name, and so is the historical per-tool selection.
+ */
+function assertScope(registration: NormalizedRegistration, design: ToolDesignRegistration): void {
+  // SAFETY: the member is typed, but a plugin is plain JavaScript: every member is re-checked here.
+  const scope: unknown = design.scope;
+  if (scope === undefined) return;
+  if (registration.scope === "tool") {
+    const message =
+      `gentle-shell-bridge: invalid tool design ${JSON.stringify(design.id)} for tool ` +
+      `${JSON.stringify(registration.line)}: a scope is declared on a GROUPED registration only, and ` +
+      `\`{ tool, id, label, apply }\` is that tool's own Card ${JSON.stringify(registration.line)} ` +
+      "line, which means every call of the tool. To claim only SOME calls, register a grouped line " +
+      "`{ line, tools, scope, id, label, apply }` for the tool beside the line that already claims " +
+      "it. The registration was refused whole.";
+    recordConflict({ tool: registration.line, id: design.id, kind: "scope", message });
+    throw new Error(message);
+  }
+  const problem =
+    !isRecord(scope)
+      ? "must be an object carrying both members"
+      : typeof scope.description !== "string" || scope.description.trim() === ""
+        ? "needs a non-empty string as its description member"
+        : typeof scope.description === "string" && /[\r\n]/u.test(scope.description)
+          ? "description must be ONE line, and it carries a line break (CR or LF). It is rendered " +
+            "inside an existing menu and /bridge-status row, so a break would add a row there; " +
+            "remove the break"
+          : typeof scope.matches !== "function"
+            ? "needs a function as its matches member"
+            : undefined;
+  if (problem === undefined) return;
+  const message =
+    `gentle-shell-bridge: invalid tool design ${JSON.stringify(design.id)} for ` +
+    `${subjectOf(registration)}: scope ${problem}. A scope is { description, matches }: ` +
+    "`description` is the one line the menu and /bridge-status show, and `matches(call)` answers " +
+    "whether this line owns that call (the call is { tool, args }). The registration was refused whole.";
+  recordConflict({ tool: registration.line, id: design.id, kind: "scope", message });
+  throw new Error(message);
+}
+
+/**
+ * S8: a line is one customize row, one stored value and one switch, so every LIVE registration of one
+ * line must carry the SAME scope object (`===`; both absent counts as equal). A registration that
+ * replaces the live entry with the same (`line`, `id`) is exempt, so a plugin may re-register its own
+ * design with a fresh scope object; any other disagreement refuses the whole registration and is
+ * recorded under the `scope` kind.
+ */
+function assertOneScopePerLine(
+  registration: NormalizedRegistration,
+  design: ToolDesignRegistration,
+): void {
+  const line = toolDesignIndex(designState()).byKey.get(
+    lineKey(registration.scope, registration.line),
+  );
+  if (line === undefined) return;
+  for (const entry of line.entries) {
+    // Its own entry is the one this registration replaces: that is the documented exemption.
+    if (entry.design.id === design.id) continue;
+    if (entry.design.scope === design.scope) continue;
+    const message =
+      `gentle-shell-bridge: design ${JSON.stringify(design.id)} for ${subjectOf(registration)} was ` +
+      `refused whole: the line already carries a different scope on design ` +
+      `${JSON.stringify(entry.design.id)}. One line is one switch, so every live registration of a ` +
+      "line must share the SAME scope object (S8); re-register the same (line, id) to change it.";
+    recordConflict({ tool: registration.line, id: design.id, kind: "scope", message });
     throw new Error(message);
   }
 }
@@ -513,8 +750,10 @@ function registerToolDesignStored(design: ToolDesignRegistration): () => void {
   // Reused from the bus: identity is a plain-object key and the store's key set. The message reads
   // "invalid tool name" / "invalid tool design id", both of which name the field that was wrong.
   assertRegistrationId("tool design", design.id);
+  assertScope(registration, design);
   assertLabel(subjectOf(registration), design.id, design.label);
   assertApplyFunction(subjectOf(registration), design.id, design.apply);
+  assertOneScopePerLine(registration, design);
   assertToolsAreFree(registration, design);
   assertLabelIsDistinct(registration, design);
 
@@ -756,6 +995,40 @@ export function setToolDesignSelection(tool: string, id: string): void {
 }
 
 /**
+ * One live line's claim on one tool, with the value stored for that line: the answer `/bridge-status`
+ * gives for a tool that has SCOPED claims (S14).
+ */
+export interface ToolDesignClaim {
+  /** `tool` for an ungrouped design's implicit line, `line` for a registered line. */
+  scope: "tool" | "line";
+  /** The selection key: the tool name, or the registered line id. */
+  line: string;
+  /** The design id stored for the line, or `native`. */
+  stored: string;
+  /** The line's scope description when the line declares a scope (S7/S8). */
+  scopeDescription?: string;
+}
+
+/**
+ * Every line that CLAIMS one tool, in creation order — the one unscoped line and the scoped ones
+ * (S9) — each with its stored value, read from ONE snapshot of the persisted selections.
+ */
+export function toolDesignClaims(tool: string): ToolDesignClaim[] {
+  const lines = toolDesignIndex(designState()).claimsByTool.get(tool) ?? [];
+  if (lines.length === 0) return [];
+  const selections = readSelections();
+  return lines.map((line) => {
+    const designScope = lineScope(line);
+    return {
+      scope: line.scope,
+      line: line.line,
+      stored: storedId(line.scope === "tool" ? selections.tools : selections.lines, line.line),
+      ...(designScope === undefined ? {} : { scopeDescription: designScope.description }),
+    };
+  });
+}
+
+/**
  * What the stored value means right now for one tool: `native` (the host's own card), the live
  * `design`, `missing` when the design it names left the line, or `not-covered` when the selected
  * value is a design of the line that does not name this tool (S6/D4). Both degrade to the host's
@@ -767,23 +1040,165 @@ export type ToolDesignSelection =
   | { kind: "missing"; id: string }
   | { kind: "not-covered"; id: string };
 
-/** Resolve one tool's persisted line selection against the live registry. Never throws. */
-export function resolveToolDesignSelection(tool: string): ToolDesignSelection {
-  const state = designState();
-  const index = toolDesignIndex(state);
-  const owner = index.owner.get(tool);
-  // A tool with no group still owns its own (implicit) line, whose value is the historical per-tool
-  // one — so a design that was disposed still resolves to `missing` instead of silently to `default`.
-  const id =
-    owner === undefined ? getToolDesignSelection(tool) : getToolDesignLineSelection(owner.scope, owner.line);
-  if (id === TOOL_DESIGN_NATIVE) return { kind: "native" };
-  if (owner === undefined) return { kind: "missing", id };
-  const line = index.byKey.get(lineKey(owner.scope, owner.line));
-  const entry = line?.entries.find((candidate) => candidate.design.id === id);
-  if (entry === undefined) return { kind: "missing", id };
+/** The stored value of one line inside one snapshot of the persisted selections. */
+function storedFor(selections: SelectionState, line: IndexedLine): string {
+  return storedId(line.scope === "tool" ? selections.tools : selections.lines, line.line);
+}
+
+/**
+ * The answer one line's stored value gives for one tool. `native`, `missing` and `not-covered`
+ * DECLINE a call: the next candidate answers (S10).
+ */
+function selectionOfLine(
+  index: ToolDesignIndex,
+  scope: "tool" | "line",
+  line: string,
+  stored: string,
+  tool: string,
+): ToolDesignSelection {
+  if (stored === TOOL_DESIGN_NATIVE) return { kind: "native" };
+  const indexed = index.byKey.get(lineKey(scope, line));
+  const entry = indexed?.entries.find((candidate) => candidate.design.id === stored);
+  if (entry === undefined) return { kind: "missing", id: stored };
   return entry.tools.includes(tool)
     ? { kind: "design", design: entry.design }
-    : { kind: "not-covered", id };
+    : { kind: "not-covered", id: stored };
+}
+
+/**
+ * Does this line own THIS call (S10)? The scope sees `{ tool, args }` and nothing else — never the card's
+ * `part` — so both halves are decided by this same procedure. It is not promised the same input: the
+ * arguments are the host's object, read again on every pass (see `ToolDesignCall`), and the selection is
+ * read on every pass too, so a switch or a mutated argument can legitimately change the answer between the
+ * two halves. A scope that throws, or that answers with anything but a boolean, counts as
+ * "does not match" and is recorded once per (tool, design id, message); resolution never throws.
+ */
+/**
+ * Swallow a rejected thenable without ever throwing (S18). Both halves reach PLUGIN code: reading
+ * `then` can run a getter, and calling it can run anything, so both happen inside a try. A value that
+ * cannot even be drained is still only "not an answer", and the failure the caller already recorded
+ * is the whole report. A native rejected promise IS drained here, so it never reaches the process as
+ * an unhandled rejection.
+ *
+ * The value the `then` CALL RETURNS is drained too, because it can itself be rejecting: an `async
+ * then` cannot throw to its caller — it rejects the promise it returns — and dropping that promise
+ * lets `--unhandled-rejections=strict` fail the host on a paint already declined. The recursion is
+ * bounded, so a thenable chain cannot loop forever and a promise that keeps handing back promises
+ * costs at most `THENABLE_DRAIN_DEPTH` steps.
+ */
+function drainThenable(value: unknown, depth = THENABLE_DRAIN_DEPTH): void {
+  if (depth <= 0) return;
+  let returned: unknown;
+  try {
+    // SAFETY: a plugin is plain JavaScript, so `then` is read as `unknown` and re-checked.
+    const then = (value as { then?: unknown }).then;
+    if (typeof then !== "function") return;
+    returned = (
+      then as (this: unknown, onFulfilled: undefined, onRejected: () => void) => unknown
+    ).call(value, undefined, () => {});
+  } catch {
+    // A `then` getter or a `then` body that throws synchronously is not a rejection: the decline
+    // stands as recorded, and there is no value to drain.
+    return;
+  }
+  drainThenable(returned, depth - 1);
+}
+
+function scopeMatches(line: IndexedLine, tool: string, args: unknown): boolean {
+  const entry = line.entries[0];
+  const scope = entry?.design.scope;
+  if (entry === undefined || scope === undefined) return false;
+  let answer: unknown;
+  try {
+    answer = scope.matches({ tool, args });
+  } catch (error) {
+    recordToolDesignFailure(
+      tool,
+      entry.design.id,
+      `the scope of design ${JSON.stringify(entry.design.id)} threw (${errorMessage(error)}); ` +
+        "the call counts as one the line does not own, so the line declined it.",
+    );
+    return false;
+  }
+  // A paint cannot await (S18/S10), so only `true` and `false` ARE answers: a Promise, a truthy
+  // string, `undefined` or anything else is a scope that has not answered NOW, and the call counts as
+  // one the line does not own. Recorded once per (tool, design id, message), like a throw.
+  if (typeof answer !== "boolean") {
+    recordToolDesignFailure(
+      tool,
+      entry.design.id,
+      `the scope of design ${JSON.stringify(entry.design.id)} answered with ${typeof answer} ` +
+        "instead of a boolean, and a paint cannot await; the call counts as one the line does not " +
+        "own, so the line declined it. Return true or false from matches.",
+    );
+    // A scope that returned a Promise is a plugin bug the bridge must not turn into a host crash: an
+    // unhandled rejection can take the process down on a host that treats it as fatal, and this paint
+    // declines the call anyway. Inspection itself is isolated, so a thenable that throws while it is
+    // read or drained leaves the failure recorded above as the whole report.
+    drainThenable(answer);
+    return false;
+  }
+  return answer;
+}
+
+/**
+ * Resolve one tool's card for ONE call against the live registry. Never throws.
+ *
+ * The candidates, in order (S10): the scoped claims of the tool whose scope matches `{ tool, args }`,
+ * in registration order, then the unscoped claim of the tool, if any. The first candidate whose
+ * line's stored value is a live design covering the tool answers; otherwise the LAST candidate's
+ * answer stands — today's answer, byte for byte, when the only candidate is the unscoped claim.
+ *
+ * With no `args` argument no scoped claim is a candidate, so a consumer that only knows a tool name
+ * keeps answering exactly as before. The persisted selections are read ONCE per call (S11), never
+ * once per candidate.
+ *
+ * The HISTORICAL per-tool value answers only for a tool with NO live claim at all (S10/L6): that is
+ * what keeps a stale legacy selection resolving to `missing` for a disposed design (S2). When the
+ * tool HAS live claims and every one of them declined the call — each scoped claim's predicate
+ * missed, `args` were omitted, or a value was `native` — the answer is `{ kind: "native" }`: never a
+ * value re-entered from `selections.tools[tool]`, which for an implicit line is that line's own
+ * stored value.
+ */
+export function resolveToolDesignSelection(tool: string, args?: unknown): ToolDesignSelection {
+  const state = designState();
+  const index = toolDesignIndex(state);
+  // ONE snapshot serves every candidate: one logical store read per resolve (S11).
+  const selections = readSelections();
+  const claims = index.claimsByTool.get(tool) ?? [];
+  const scoped: IndexedLine[] = [];
+  let unscoped: IndexedLine | undefined;
+  for (const line of claims) {
+    if (lineScope(line) === undefined) {
+      if (unscoped === undefined) unscoped = line;
+      continue;
+    }
+    // No arguments: the call is unknown, so no scoped claim applies (S10).
+    if (args === undefined) continue;
+    if (!scopeMatches(line, tool, args)) continue;
+    scoped.push(line);
+  }
+  const candidates = unscoped === undefined ? scoped : [...scoped, unscoped];
+  if (candidates.length === 0) {
+    // Live claims exist and every one declined this call: the host's own card, never the stored value
+    // of a line that just declined it.
+    if (claims.length > 0) return { kind: "native" };
+    // No live claim at all: the historical per-tool value still answers, so a design that was
+    // disposed keeps resolving to `missing` instead of silently to `default`.
+    return selectionOfLine(index, "tool", tool, storedId(selections.tools, tool), tool);
+  }
+  for (const candidate of candidates) {
+    const selection = selectionOfLine(
+      index,
+      candidate.scope,
+      candidate.line,
+      storedFor(selections, candidate),
+      tool,
+    );
+    if (selection.kind === "design") return selection;
+  }
+  const last = candidates[candidates.length - 1];
+  return selectionOfLine(index, last.scope, last.line, storedFor(selections, last), tool);
 }
 
 /** Test-only seam: empties the registry, the conflict records and the failure records in place. */
@@ -793,6 +1208,8 @@ export function resetToolDesignsForTests(): void {
   state.conflicts.length = 0;
   state.failures.length = 0;
   state.selectionReads = 0;
+  state.lineOrder.clear();
+  state.lineOrderSeq = 0;
   state.revision += 1;
   delete state.index;
 }

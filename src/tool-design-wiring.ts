@@ -282,18 +282,21 @@ function wrapComponent(
       // SAFETY: `Array.isArray` just proved this is the host's own `string[]`; `applyToolDesign` only
       // reads it (through a copy) and answers with strings, or `undefined` for "draw the host's".
       const rows = lines as string[];
+      // The host's context is snapshotted BEFORE resolving: the scope decides on THIS call, and the
+      // arguments are exactly what the design gets as `ctx.render.args` afterwards (S10/S12).
+      const render = snapshotRender(hostContext);
       let selection: ToolDesignSelection;
       try {
         // Read on EVERY pass, never captured at resolution: that is what lets a design selected after
-        // this card was drawn repaint it (S2).
-        selection = resolveToolDesignSelection(tool);
+        // this card was drawn repaint it (S2). The call's arguments make a scoped claim a candidate
+        // for THIS call; with no render context they are `undefined` and only unscoped claims apply.
+        selection = resolveToolDesignSelection(tool, render?.args);
       } catch (error) {
         recordToolDesignFailure(tool, "(selection)", errorMessage(error));
         return rows;
       }
       // No design selected, or the selected design is gone: the host's bytes, untouched.
       if (selection.kind !== "design") return rows;
-      const render = snapshotRender(hostContext);
       const ctx: ToolDesignContext =
         render === undefined ? { width, tool, theme, part } : { width, tool, theme, part, render };
       const applied = applyToolDesign(selection.design, rows, ctx);

@@ -128,6 +128,26 @@ function firstSampleRow(sample: string): string {
   return sample.split(/\r?\n/u)[0] ?? sample;
 }
 
+/**
+ * A line's scope text, inside the SAME preview row (S13/S19): nothing to say when no claim of the
+ * line is scoped; one scope shared by every scoped claim prints today's ` — scope: <description>`
+ * byte for byte; several DISTINCT scopes print ` — scope: <tool[, tool]>: <description>` per scope,
+ * joined by `; `. Either way it joins the preview's first line, so nothing gains a second row, a
+ * value or a row kind.
+ */
+function withScopeText(preview: RowPreview, line: ToolDesignLine): RowPreview {
+  const groups = line.scopedClaims;
+  if (groups.length === 0) return preview;
+  const text = groups
+    .map((group) =>
+      groups.length === 1
+        ? `— scope: ${group.scope.description}`
+        : `— scope: ${group.tools.join(", ")}: ${group.scope.description}`,
+    )
+    .join("; ");
+  return { title: preview.title, sample: `${firstSampleRow(preview.sample)} ${text}` };
+}
+
 /** What a design's fallback preview says it paints. */
 function designTarget(tools: readonly string[]): string {
   return tools.length === 1 ? `${tools[0]}'s own card` : `the ${tools.join(", ")} cards`;
@@ -174,10 +194,14 @@ function nativeRow(line: ToolDesignLine, setting: string): CustomizeRow {
       // Identity, never the displayed text: a renamed label cannot lose the user's choice.
       current: () => getToolDesignLineSelection(line.scope, line.line) === TOOL_DESIGN_NATIVE,
     },
-    preview: () => ({
-      title: `Cards · ${setting}`,
-      sample: `${setting}: the host's own card for ${subject}, untouched`,
-    }),
+    preview: () =>
+      withScopeText(
+        {
+          title: `Cards · ${setting}`,
+          sample: `${setting}: the host's own card for ${subject}, untouched`,
+        },
+        line,
+      ),
     action: () => selectDesign(line.scope, line.line, TOOL_DESIGN_NATIVE),
   };
 }
@@ -192,7 +216,7 @@ function designRow(line: ToolDesignLine, setting: string, design: ToolDesignRegi
       value: design.label,
       current: () => getToolDesignLineSelection(line.scope, line.line) === design.id,
     },
-    preview: () => previewFor(design, tools),
+    preview: () => withScopeText(previewFor(design, tools), line),
     action: () => selectDesign(line.scope, line.line, design.id),
   };
 }

@@ -20,6 +20,7 @@ import { resetNoticesForTests } from "../src/notices.ts";
 import { resetPluginLinesForTests } from "../src/plugin-lines.ts";
 import { getRepaintDiagnostics, resetRepaintForTests, setRepaintHost } from "../src/repaint.ts";
 import { buildRows, resetRowBuildStateForTests } from "../src/rows.ts";
+import { collectStatus, formatStatus } from "../src/status.ts";
 import { createStore, resetStoreStateForTests } from "../src/store.ts";
 import {
   TOOL_DESIGN_DEFAULT_LABEL,
@@ -28,6 +29,7 @@ import {
   getToolDesignSelection,
   registerToolDesign,
   resetToolDesignsForTests,
+  setToolDesignLineSelection,
   setToolDesignSelection,
   toolNamesWithDesigns,
 } from "../src/tool-designs.ts";
@@ -40,7 +42,7 @@ import {
   resetToolDesignWiringForTests,
   toolDesignResolver,
 } from "../src/tool-design-wiring.ts";
-import type { CustomizeRow, ToolDesignRegistration } from "../src/types.ts";
+import type { CustomizeRow, ToolDesignRegistration, ToolDesignScope } from "../src/types.ts";
 
 let configHome: string;
 let previousConfigHome: string | undefined;
@@ -432,3 +434,278 @@ test("D3: a legacy per-tool value appears selected on the line once the tool joi
   assert.match(toggleLines(rowsForBuild())[0] ?? "", /○ default ● activity/u);
 });
 
+// ---------------------------------------------------------------------------------------------
+// S13 — a scoped line shows its scope inside the SAME preview row
+// ---------------------------------------------------------------------------------------------
+
+const SCOPE_DESCRIPTION = "paths under skills/ or odd/";
+
+/** The second line the consumer asked for: scoped to the paths its own `apply` recognises. */
+const scopedDiff: ToolDesignRegistration = {
+  line: "diff",
+  tools: ["write"],
+  id: "loon.diff",
+  label: "diff card",
+  description: "draws a write as an IDE diff",
+  scope: {
+    description: SCOPE_DESCRIPTION,
+    matches: (call) =>
+      typeof (call.args as { path?: unknown } | undefined)?.path === "string",
+  },
+  preview: () => ({ title: "Cards · diff card", sample: "◂ diff src/index.ts" }),
+  apply: (lines) => [...lines],
+};
+
+const unscopedLine: ToolDesignRegistration = {
+  line: "tools",
+  tools: ["read"],
+  id: "loon.tools-activity",
+  label: "activity",
+  apply: (lines) => [...lines],
+};
+
+test("S13: one row per line, `default` first, and a scoped line's description in its preview row", () => {
+  registerToolDesign(unscopedLine);
+  registerToolDesign(scopedDiff);
+
+  const rows = rowsForBuild();
+  assert.deepEqual(
+    toggleLines(rows),
+    ["Card tools ● default ○ activity", "Card diff ● default ○ diff card"],
+    "row count, row order and naming are unchanged: one line per line, default first",
+  );
+
+  for (const value of [TOOL_DESIGN_DEFAULT_LABEL, "diff card"]) {
+    const row = rows.find(
+      (candidate) => candidate.choice?.setting === "Card diff" && candidate.choice?.value === value,
+    );
+    assert.ok(row?.preview !== undefined, `${value}: a scoped line's values keep their preview`);
+    const preview = row.preview();
+    assert.match(preview.sample, /paths under skills\/ or odd\//u, `${value}: the scope is explained`);
+    assert.doesNotMatch(preview.sample, /\n/u, `${value}: still ONE row, never a second line`);
+  }
+
+  // The unscoped line's values say nothing about a scope they do not have.
+  for (const row of rows.filter((candidate) => candidate.choice?.setting === "Card tools")) {
+    assert.ok(row.preview !== undefined);
+    assert.doesNotMatch(row.preview().sample, /scope/u);
+  }
+});
+
+test("S2/S13/S14: disposing a value preserves the DISPLAY order of the lines it does not change", () => {
+  // Claim PRECEDENCE is line creation order (S10); DISPLAY order is a different thing and stays what
+  // it always was: the Cards rows and the `/bridge-status` block follow the first LIVE registration of
+  // a line (S2). Disposing the founding value of a line, while a later value of it survives, must
+  // therefore move neither the menu nor the status order — it moved both before this test existed.
+  const alphaLine = (id: string): ToolDesignRegistration => ({
+    line: "alpha",
+    tools: ["write"],
+    id,
+    label: id,
+    apply: (lines) => [...lines],
+  });
+  const disposeFounding = registerToolDesign(alphaLine("loon.alpha-one"));
+  registerToolDesign({ tool: "read", id: "loon.read-card", label: "read card", apply: (lines) => [...lines] });
+  registerToolDesign(alphaLine("loon.alpha-two"));
+
+  /** What a person reads: the tools status walks, and the lines the menu draws, in order. */
+  const shown = (): { status: string[]; menu: Array<string | undefined> } => {
+    const designs = collectStatus().toolDesigns;
+    assert.ok(designs !== undefined);
+    return {
+      status: designs.tools.map((entry) => entry.tool),
+      menu: rowsForBuild().map((row) => row.choice?.setting),
+    };
+  };
+
+  assert.deepEqual(
+    shown(),
+    {
+      status: ["write", "read"],
+      menu: ["Card alpha", "Card alpha", "Card alpha", "Card read", "Card read"],
+    },
+    "while both values of `alpha` are live: the first registration of each line orders it",
+  );
+
+  disposeFounding();
+
+  assert.deepEqual(
+    shown(),
+    {
+      status: ["read", "write"],
+      menu: ["Card read", "Card read", "Card alpha", "Card alpha"],
+    },
+    "after disposing alpha's founding value, the menu and status follow the first LIVE entry",
+  );
+});
+
+test("S13/PRESERVE: an unscoped registry's rows are byte-identical to today", () => {
+  registerToolDesign(bashHeading);
+  registerToolDesign(writeBadge);
+
+  const shown = rowsForBuild().map((row) => ({
+    setting: row.choice?.setting,
+    value: row.choice?.value,
+    preview: row.preview?.(),
+  }));
+  assert.deepEqual(shown, [
+    {
+      setting: "Card bash",
+      value: TOOL_DESIGN_DEFAULT_LABEL,
+      preview: {
+        title: "Cards · Card bash",
+        sample: "Card bash: the host's own card for bash, untouched",
+      },
+    },
+    {
+      setting: "Card bash",
+      value: "bash heading",
+      preview: { title: "Cards · bash heading", sample: "bash ls -la" },
+    },
+    {
+      setting: "Card write",
+      value: TOOL_DESIGN_DEFAULT_LABEL,
+      preview: {
+        title: "Cards · Card write",
+        sample: "Card write: the host's own card for write, untouched",
+      },
+    },
+    {
+      setting: "Card write",
+      value: "write badge",
+      preview: {
+        title: "Cards · write badge",
+        sample: "write badge: rewrites the rows write's own card produced",
+      },
+    },
+  ]);
+});
+
+
+// ---------------------------------------------------------------------------------------------
+// S19 — the scope belongs to the (line, tool) CLAIM, not to the line
+// ---------------------------------------------------------------------------------------------
+
+/** The consumer's rule: a path under `skills/` or `odd/`. */
+const CONSUMER_SCOPE: ToolDesignScope = {
+  description: SCOPE_DESCRIPTION,
+  matches: (call) => typeof (call.args as { path?: unknown } | undefined)?.path === "string",
+};
+
+/** `Card tools`: bash for EVERY call, write/edit only under skills/ or odd/ — ONE shared scope. */
+const toolsLine: ToolDesignRegistration = {
+  line: "tools",
+  tools: ["bash", "write", "edit"],
+  id: "odd-worktree.tools",
+  label: "tools activity",
+  scopes: { write: CONSUMER_SCOPE, edit: CONSUMER_SCOPE },
+  apply: (lines) => [...lines],
+};
+
+/** `Card diff`: write and edit for EVERY call — the generic claim the specific one wins over. */
+const diffLine: ToolDesignRegistration = {
+  line: "diff",
+  tools: ["write", "edit"],
+  id: "odd-worktree.diff",
+  label: "diff card",
+  apply: (lines) => [...lines],
+};
+
+test("S19/S13: a line's scopes stay inside ONE preview row, today's text when they share one", () => {
+  registerToolDesign(toolsLine);
+  registerToolDesign(diffLine);
+
+  const rows = rowsForBuild();
+  assert.deepEqual(
+    toggleLines(rows),
+    ["Card tools ● default ○ tools activity", "Card diff ● default ○ diff card"],
+    "still one row per line, `default` first",
+  );
+
+  // ONE scope object across the line's scoped claims: today's text, byte for byte.
+  const toolsRows = rows.filter((row) => row.choice?.setting === "Card tools");
+  assert.equal(toolsRows.length, 2);
+  for (const row of toolsRows) {
+    assert.ok(row.preview !== undefined);
+    const preview = row.preview();
+    assert.ok(
+      preview.sample.endsWith(` — scope: ${SCOPE_DESCRIPTION}`),
+      `${row.choice?.value}: today's text, byte for byte`,
+    );
+    assert.doesNotMatch(preview.sample, /;/u, `${row.choice?.value}: one scope, not a per-tool list`);
+    assert.doesNotMatch(preview.sample, /\n/u, `${row.choice?.value}: still ONE row`);
+  }
+
+  // The unscoped line says nothing about a scope it does not have.
+  for (const row of rows.filter((candidate) => candidate.choice?.setting === "Card diff")) {
+    assert.ok(row.preview !== undefined);
+    assert.doesNotMatch(row.preview().sample, /scope/u);
+  }
+
+  // Several DISTINCT scopes on one line: one ` — scope: <tools>: <description>` per scope, joined by
+  // `; `, still inside the SAME preview row.
+  registerToolDesign({
+    line: "per-tool",
+    tools: ["bash", "write"],
+    id: "loon.per-tool",
+    label: "per tool",
+    scopes: {
+      bash: { description: "bash commands", matches: () => true },
+      write: { description: "paths under odd/", matches: () => true },
+    },
+    apply: (lines) => [...lines],
+  });
+
+  const perTool = rowsForBuild().filter((row) => row.choice?.setting === "Card per tool");
+  assert.equal(perTool.length, 2, "one row per value, `default` first");
+  const expected = " — scope: bash: bash commands; — scope: write: paths under odd/";
+  const nativePreview = perTool[0].preview?.();
+  assert.ok(nativePreview !== undefined);
+  assert.equal(
+    nativePreview.sample,
+    `Card per tool: the host's own card for bash, write, untouched${expected}`,
+  );
+  const designPreview = perTool[1].preview?.();
+  assert.ok(designPreview !== undefined);
+  assert.equal(
+    designPreview.sample,
+    `per tool: rewrites the rows the bash, write cards produced${expected}`,
+    "each scope names the tools it covers, on the same single row",
+  );
+  assert.doesNotMatch(designPreview.sample, /\n/u, "never a second row");
+});
+
+test("S19/S14: /bridge-status lists every claiming line with the scope OF THAT TOOL", () => {
+  registerToolDesign(toolsLine);
+  registerToolDesign(diffLine);
+  setToolDesignLineSelection("line", "tools", "odd-worktree.tools");
+  setToolDesignLineSelection("line", "diff", "odd-worktree.diff");
+
+  const designs = collectStatus().toolDesigns;
+  assert.ok(designs !== undefined);
+  const write = designs.tools.find((entry) => entry.tool === "write");
+  assert.ok(write !== undefined);
+  assert.equal(write.line, undefined, "a tool with scoped claims lists its lines instead of one");
+  assert.deepEqual(
+    write.claims,
+    [
+      { kind: "line", line: "tools", stored: "odd-worktree.tools", scope: SCOPE_DESCRIPTION },
+      { kind: "line", line: "diff", stored: "odd-worktree.diff" },
+    ],
+    "the scope shown is the one of THIS tool's claim, and an unscoped claim shows none",
+  );
+
+  // `bash` is claimed by the tools line only, and UNSCOPED: it prints as today, with no claims list.
+  const bash = designs.tools.find((entry) => entry.tool === "bash");
+  assert.ok(bash !== undefined);
+  assert.equal(bash.line, "tools", "today's `line` field");
+  assert.equal(bash.claims, undefined, "and no claims list");
+
+  const report = formatStatus(collectStatus()).join("\n");
+  assert.match(
+    report,
+    /line "tools": odd-worktree\.tools — scope: paths under skills\/ or odd\/\n/u,
+    "the scoped claim says which calls its line owns",
+  );
+  assert.match(report, /line "diff": odd-worktree\.diff\n/u, "an unscoped claim adds no scope text");
+});

@@ -403,6 +403,44 @@ export interface ToolDesignRender {
 }
 
 /**
+ * ONE call of a tool, as a scope sees it (S7/S10): the tool name and the arguments Pi holds for that
+ * call, forwarded BY REFERENCE and never cloned or frozen. A scope never sees the card's `part`, so
+ * both halves of one card are resolved with the same INPUT — and the same procedure. The arguments
+ * are read again on each pass and Pi keeps updating them while a call streams, so a scope that reads
+ * a field the host mutates mid-call can answer differently for the two halves: read fields that are
+ * stable for the life of a call (a `path`), never a streaming body.
+ */
+export interface ToolDesignCall {
+  readonly tool: string;
+  readonly args?: unknown;
+}
+
+/**
+ * The narrower-than-a-tool claim a line may declare (S7): the calls of its tools this line OWNS.
+ *
+ * A scope is a PREDICATE, never a declarative path rule: path identity ("under `skills/` or `odd/`")
+ * is the consumer's own rule, and this bridge is tool-agnostic by construction. It is the same trust
+ * model `apply` already has — plugin code the host runs, isolated on throw — because a function has
+ * no printable form, `description` is required: the menu and `/bridge-status` have to explain which
+ * calls the line owns.
+ */
+export interface ToolDesignScope {
+  /**
+   * One short line a preview and `/bridge-status` can show, e.g. `paths under skills/ or odd/`. One
+   * line LITERALLY (S18): the bridge renders it INSIDE an existing row, so a CR or LF would add a row
+   * and the registration is refused whole.
+   */
+  readonly description: string;
+  /**
+   * Whether this line owns THIS call, answered SYNCHRONOUSLY with `true` or `false` (S18). A paint
+   * cannot await, so any other answer (a Promise, a truthy string, `undefined`) counts as "this line
+   * does not own the call" and is reported in `/bridge-status`. Cheap and pure; the bridge isolates a
+   * throw.
+   */
+  matches(call: ToolDesignCall): boolean;
+}
+
+/**
  * A plugin's design for ONE tool's card (S4, S5, S7).
  *
  * A design never owns the frame: the host's own renderer runs first, and the design receives the
@@ -428,10 +466,28 @@ export interface ToolDesignRegistration {
   line?: string;
   /**
    * The tools a GROUPED design paints. Required with `line`, refused with `tool`. Non-empty,
-   * deduplicated, each a valid tool name. A tool belongs to at most one line (S5/D1): a registration
-   * that would put it in a second line is refused whole and reported in `/bridge-status`.
+   * deduplicated, each a valid tool name. A tool's claim is UNSCOPED when neither `scopes[tool]` nor
+   * the `scope` shorthand supplies a scope for it. A tool has at most ONE unscoped claim (S9/D1): a
+   * registration whose unscoped claim meets another one on the same tool is refused whole, and
+   * reported in `/bridge-status` — the other claim may live on a different line, or on the tool's own
+   * legacy `Card <tool>` line. A claim that carries a scope claims only the calls its scope matches,
+   * so any number of scoped claims may name one tool, beside that one unscoped claim.
    */
   tools?: readonly string[];
+  /**
+   * Optional. The scope of each TOOL's claim (S19): a key is one of THIS registration's `tools`, and
+   * the value is the `ToolDesignScope` that line owns of that tool's calls. A tool with no entry
+   * claims EVERY call of it, exactly as a registration carrying no scope at all does.
+   *
+   * A scope belongs to the (line, tool) CLAIM and not to the line, so one line may own some tools
+   * unconditionally and narrow others — `Card tools` paints bash/grep/find/ls/read for every call
+   * and write/edit only under `skills/` or `odd/` — while another line carries the generic claim on
+   * the same tools. Specific beats generic at paint time: the matching scoped claims answer first and
+   * the one unscoped claim answers last. An invalid map (not an object, empty, a key that is not one
+   * of `tools`, a value that is not a scope) refuses the whole registration. Declared on a GROUPED
+   * registration only, like `scope`.
+   */
+  readonly scopes?: Readonly<Record<string, ToolDesignScope>>;
   /** Unique per line (or per tool when ungrouped): the value the user selects and the key for replacement. */
   id: string;
   /**
@@ -448,6 +504,21 @@ export interface ToolDesignRegistration {
   description?: string;
   /** Optional literal depiction of the design, drawn in the customize preview. */
   preview?(): RowPreview;
+  /**
+   * Optional SHORTHAND for `scopes` (S19): the SAME scope object on every tool of `tools`. Refused
+   * together with `scopes`, because the two spellings of one claim would disagree.
+   *
+   * A claim without a scope claims EVERY call of its tool, exactly as before (S7/S8). A scoped claim
+   * owns only the calls `matches` answers true for, so another line may name the same tool for the
+   * calls this one does not own. A scope is declared on a GROUPED registration ONLY (`line` +
+   * `tools`): an ungrouped registration IS the tool's own `Card <tool>` line, which means every call
+   * of the tool by definition, so `{ tool, scope, … }` is refused whole. Every live registration of
+   * ONE line that names a tool must share the SAME scope object for that tool: a line is one switch
+   * per call of a tool, and a scope per design would make one switch mean different calls. A
+   * registration that does not name the tool does not constrain it. An invalid scope (no
+   * description, no `matches`) refuses the whole registration.
+   */
+  readonly scope?: ToolDesignScope;
   /**
    * The host's rows in, the rows to draw out. The bridge hands a fresh copy, clips nothing and
    * isolates a throw: an `apply` that throws (or returns something that is not an array of strings)

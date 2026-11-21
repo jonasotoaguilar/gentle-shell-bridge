@@ -48,6 +48,7 @@ import {
   registerToolDesign,
   resetToolDesignSelectionReads,
   resetToolDesignsForTests,
+  resolveToolDesignSelection,
   setToolDesignLineSelection,
   setToolDesignSelection,
 } from "../src/tool-designs.ts";
@@ -494,4 +495,97 @@ test("S9/D6: a grouped line costs the same ONE selection read per card per frame
     3,
     "one persisted-selection read per card, exactly like an ungrouped line",
   );
+});
+
+// ---------------------------------------------------------------------------------------------
+// S11 — resolution reads the persisted value ONCE, however many claims it walks
+// ---------------------------------------------------------------------------------------------
+
+/** A scoped line over `bash` that matches every call, so every claim is a candidate. */
+const scopedBash = (line: string, id: string, label: string): ToolDesignRegistration => ({
+  line,
+  tools: ["bash"],
+  id,
+  label,
+  scope: { description: "every bash call", matches: () => true },
+  apply: (lines: readonly string[]) => [...lines],
+});
+
+const unscopedBash: ToolDesignRegistration = {
+  line: "tools",
+  tools: ["bash"],
+  id: "loon.tools-activity",
+  label: "tools activity",
+  apply: (lines: readonly string[]) => [...lines],
+};
+
+test("S11: one resolve reads the persisted selections ONCE, even with three claims to walk", () => {
+  registerToolDesign(scopedBash("diff", "loon.diff", "diff card"));
+  registerToolDesign(scopedBash("audit", "loon.audit", "audit card"));
+  registerToolDesign(unscopedBash);
+  setToolDesignLineSelection("line", "diff", "loon.diff");
+  setToolDesignLineSelection("line", "audit", "loon.audit");
+  setToolDesignLineSelection("line", "tools", "loon.tools-activity");
+
+  resetToolDesignSelectionReads();
+  const answer = resolveToolDesignSelection("bash", { command: "ls -la" });
+  assert.ok(answer.kind === "design");
+  assert.equal(answer.design.id, "loon.diff", "the first matching claim answers");
+  assert.equal(getToolDesignSelectionReads(), 1, "one snapshot serves every candidate");
+
+  // The same bound for the walk that has to reach the LAST candidate, and for the no-candidate case.
+  setToolDesignLineSelection("line", "diff", TOOL_DESIGN_NATIVE);
+  setToolDesignLineSelection("line", "audit", TOOL_DESIGN_NATIVE);
+  resetToolDesignSelectionReads();
+  const declined = resolveToolDesignSelection("bash", { command: "ls -la" });
+  assert.equal(getToolDesignSelectionReads(), 1, "one read per resolve, never one per claim");
+  assert.ok(declined.kind === "design");
+  assert.equal(declined.design.id, "loon.tools-activity", "the unscoped claim is the last candidate");
+
+  resetToolDesignSelectionReads();
+  resolveToolDesignSelection("bash");
+  assert.equal(getToolDesignSelectionReads(), 1, "no args: still one read");
+});
+
+test("S11: a frame with scoped claims still performs one read per card", () => {
+  registerToolDesign(scopedBash("diff", "loon.diff", "diff card"));
+  registerToolDesign(unscopedBash);
+  setToolDesignLineSelection("line", "diff", "loon.diff");
+  setToolDesignLineSelection("line", "tools", "loon.tools-activity");
+
+  const world = transcript({ children: 6, markdown: 3 });
+  world.drawFrame();
+
+  resetToolDesignSelectionReads();
+  world.drawFrame();
+  assert.equal(getToolDesignSelectionReads(), 3, "at most one read per card per frame");
+});
+
+test("S19/S11: a line with per-tool scopes still costs ONE selection read per resolve", () => {
+  // ONE line, two tools, each claimed by its own scope: the resolver walks claims, not lines.
+  registerToolDesign({
+    line: "mixed",
+    tools: ["bash", "write"],
+    id: "loon.mixed",
+    label: "mixed card",
+    scopes: {
+      bash: { description: "every bash call", matches: () => true },
+      write: { description: "every write call", matches: () => true },
+    },
+    apply: (lines: readonly string[]) => [...lines],
+  });
+  registerToolDesign(unscopedBash);
+  setToolDesignLineSelection("line", "mixed", "loon.mixed");
+  setToolDesignLineSelection("line", "tools", "loon.tools-activity");
+
+  resetToolDesignSelectionReads();
+  const answer = resolveToolDesignSelection("bash", { command: "ls -la" });
+  assert.ok(answer.kind === "design");
+  assert.equal(answer.design.id, "loon.mixed", "the scoped claim of THAT tool answers");
+  assert.equal(getToolDesignSelectionReads(), 1, "one snapshot serves every (line, tool) claim");
+
+  // The same bound for the tool the SAME registration claims through a different scope.
+  resetToolDesignSelectionReads();
+  resolveToolDesignSelection("write", { path: "odd/a.md" });
+  assert.equal(getToolDesignSelectionReads(), 1, "no args or another tool: still one read");
 });

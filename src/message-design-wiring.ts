@@ -165,9 +165,34 @@ function plainBodyRows(message: unknown): string[] {
     return [];
   }
   const label = typeof customType === "string" && customType !== "" ? `[${customType}]` : undefined;
-  const body = typeof content === "string" && content !== "" ? content.split(/\r?\n/u) : [];
+  const body = bodyLines(content);
   if (label === undefined) return body;
   return body.length === 0 ? [label] : [label, "", ...body];
+}
+
+/**
+ * The text a message's `content` holds, as rows. Pi accepts a plain string OR the parts form
+ * (`[{ type: "text", text: "…" }]`), and a body that is only ever read as a string would silently
+ * vanish for every structured message — including the alerts this surface exists for.
+ */
+function bodyLines(content: unknown): string[] {
+  if (typeof content === "string") return content === "" ? [] : content.split(/\r?\n/u);
+  if (!Array.isArray(content)) return [];
+  const rows: string[] = [];
+  for (let index = 0; index < content.length; index += 1) {
+    const part: unknown = content[index];
+    if (!isRecord(part)) continue;
+    let text: unknown;
+    try {
+      text = part.text;
+    } catch {
+      continue;
+    }
+    if (typeof text === "string" && text !== "") {
+      rows.push(...text.split(/\r?\n/u));
+    }
+  }
+  return rows;
 }
 
 /**

@@ -538,12 +538,15 @@ test("S3: an external rebuild at `default` does not strand the design", () => {
 
 test("S4: a message the host removed stops closing the fast path", () => {
   const child = fakeCustomMessage(TYPE);
+  const frame = container([child]);
   const drop = registerMessageDesign(design());
   setMessageDesignSelection(TYPE, "loon.budget");
-  adoptCustomMessages(container([child]));
+  adoptCustomMessages(frame);
 
-  // The host drops the message before anybody disposes the design.
-  adoptCustomMessages(container([]));
+  // The host drops the message before anybody disposes the design: the container the message was
+  // adopted in is the only one that may conclude it is gone.
+  frame.children.length = 0;
+  adoptCustomMessages(frame);
   drop();
 
   let reads = 0;

@@ -99,6 +99,12 @@ interface AdoptionState {
    * number too high, which costs a read and never a wrong answer.
    */
   liveAdoptions: number;
+  /**
+   * Which adopted messages belong to which conversation container, so a pass over one container never
+   * concludes anything about another: a pass over an unrelated (or empty) container must not "heal"
+   * an adoption it never saw, and a container that really lost a child must.
+   */
+  adoptedByContainer: WeakMap<object, Set<unknown>>;
 }
 
 /** Stable process-global slot, like every other piece of bridge state: two copies must agree. */
@@ -115,9 +121,16 @@ function adoptionState(): AdoptionState {
   const existing = host[ADOPTION_KEY];
   if (existing !== undefined && Array.isArray(existing.adoptedMessages)) {
     if (typeof existing.liveAdoptions !== "number") existing.liveAdoptions = 0;
+    if (!(existing.adoptedByContainer instanceof WeakMap)) {
+      existing.adoptedByContainer = new WeakMap();
+    }
     return existing;
   }
-  const created: AdoptionState = { adoptedMessages: [], liveAdoptions: 0 };
+  const created: AdoptionState = {
+    adoptedMessages: [],
+    liveAdoptions: 0,
+    adoptedByContainer: new WeakMap(),
+  };
   host[ADOPTION_KEY] = created;
   return created;
 }
@@ -140,6 +153,7 @@ export function resetMessageDesignAdoptionForTests(): void {
   const state = adoptionState();
   state.adoptedMessages.length = 0;
   state.liveAdoptions = 0;
+  state.adoptedByContainer = new WeakMap();
 }
 
 function errorMessage(error: unknown): string {
@@ -206,14 +220,27 @@ export function adoptCustomMessages(container: unknown): AdoptCustomMessagesResu
   if (!Array.isArray(children)) return result;
 
   const perPass = new Map<string, boolean>();
-  let adopted = 0;
+  const state = adoptionState();
+  // What THIS container owns, reconciled against what it holds: a message the host removed is a
+  // message this container no longer has, while another container's adoptions are none of its
+  // business.
+  const owned = ownedBy(state, container);
+  const seen = new Set<unknown>();
   for (const child of children) {
     result.scanned += 1;
+    seen.add(child);
     try {
       result[adoptMessage(child, perPass)] += 1;
-      // Counted AFTER the call: what this container holds once this pass is done with it is the only
-      // number that may close the fast path, and a message adopted on this very pass must open it.
-      if (isRecord(child) && adoptedMessage(child) !== undefined) adopted += 1;
+      // Counted AFTER the call, from what the child really is now, so an adoption opens the fast path
+      // and a restoration closes it — in one place, from one fact.
+      if (isRecord(child) && adoptedMessage(child) !== undefined) {
+        if (!owned.has(child)) {
+          owned.add(child);
+          state.liveAdoptions += 1;
+        }
+      } else if (owned.delete(child)) {
+        state.liveAdoptions -= 1;
+      }
     } catch (error) {
       // `adoptMessage` is written not to throw; this is the last line of defence inside Pi's render
       // loop, so even a host object whose every accessor throws cannot take the frame down.
@@ -224,11 +251,26 @@ export function adoptCustomMessages(container: unknown): AdoptCustomMessagesResu
       }
     }
   }
-  // The count is reconciled to what this container really holds, so a message the host dropped
-  // without a pass seeing it stops closing the fast path: the next pass answers before reading a
-  // child again (S4). `liveAdoptions` can be too high for at most one pass, which costs a read.
-  adoptionState().liveAdoptions = adopted;
+  // A message this container no longer holds is a message the host removed: only THIS container may
+  // conclude that, which is why the ownership sets exist at all. `liveAdoptions` is the process total,
+  // so one container losing a child reopens the fast path and a container that never saw an adoption
+  // cannot close it (S4).
+  for (const child of owned) {
+    if (!seen.has(child)) {
+      owned.delete(child);
+      state.liveAdoptions -= 1;
+    }
+  }
   return result;
+}
+
+/** The set of messages one container adopted, created on first use. */
+function ownedBy(state: AdoptionState, container: object): Set<unknown> {
+  const existing = state.adoptedByContainer.get(container);
+  if (existing !== undefined) return existing;
+  const created = new Set<unknown>();
+  state.adoptedByContainer.set(container, created);
+  return created;
 }
 
 /** The custom type of a message child, or `undefined` when this child is not one. */
@@ -413,7 +455,14 @@ function hostBoxRows(child: Record<string, unknown>, width: number): string[] | 
   // indented box that no setting asked for.
   const outputPad = readMember(child, "outputPad");
   const setPaddingX = readMember(box, "setPaddingX");
-  if (typeof outputPad === "number" && typeof setPaddingX === "function") {
+  const currentPad = readMember(box, "paddingX");
+  // Only when it really changed: `setPaddingX` invalidates the box's own render cache, and paying that
+  // on every failed draw would make a message with a broken design rebuild its box on every frame.
+  if (
+    typeof outputPad === "number" &&
+    outputPad !== currentPad &&
+    typeof setPaddingX === "function"
+  ) {
     try {
       (setPaddingX as (padding: number) => void).call(box, outputPad);
     } catch {
@@ -421,6 +470,7 @@ function hostBoxRows(child: Record<string, unknown>, width: number): string[] | 
     }
   }
   let rows: unknown;
+  let blank = true;
   try {
     // SAFETY: `typeof` just proved `render` callable, and a component's `render(width)` is the whole
     // contract this reads; its answer is inspected before it is trusted.
@@ -430,10 +480,13 @@ function hostBoxRows(child: Record<string, unknown>, width: number): string[] | 
   }
   if (!Array.isArray(rows)) return undefined;
   for (let index = 0; index < rows.length; index += 1) {
-    if (typeof rows[index] !== "string") return undefined;
+    const row = rows[index];
+    if (typeof row !== "string") return undefined;
+    // An EMPTY box is not a frame: Pi only populates its default box on the path a design bypasses,
+    // so a box that renders nothing at all must not be handed to the user as "the host's answer".
+    if (row.trim() !== "") blank = false;
   }
-  // SAFETY: the loop above proved every position holds a string.
-  return rows as string[];
+  return blank ? undefined : (rows as string[]);
 }
 
 /**

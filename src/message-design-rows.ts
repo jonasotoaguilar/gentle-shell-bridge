@@ -263,8 +263,12 @@ export function installMessageDesignRows(): () => void {
     state.dispose = registerRows(provider);
   };
   setMessageDesignRowsInstaller(install);
-  // A design that registered before the bridge armed is already waiting to be shown.
-  if (messageDesignLines().length > 0) install();
+  // The line is registered NOW when the id is free, and not only once a design exists: the bus answers
+  // an id on a first-come basis, so a plugin that took this id and later gave it back would otherwise
+  // leave the line uninstalled for the rest of the process. It costs one provider whose `rows()` runs
+  // per menu build and returns nothing while nobody has registered a design — and `/bridge-status`
+  // never lists it, because the report filters this exact object out by identity.
+  install();
   let withdrawn = false;
   return () => {
     if (withdrawn) return;

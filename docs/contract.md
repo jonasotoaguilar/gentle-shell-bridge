@@ -2015,11 +2015,15 @@ Two consequences are deliberate rather than incidental: a design receives rows, 
 object, so it cannot wrap, delay or re-enter the host's component; and it never sees a byte of the
 chrome, so the bridge never re-frames, re-measures or clips what it draws.
 
-The renderer clips nothing. Two things downstream can still cut a long row and neither is a policy of
-this surface: a registered TRANSCRIPT transform's output is clipped to the terminal width by the
-transform pipeline (pre-existing, `src/transform-pipeline.ts`'s `clipResult`), and Pi clips at
-compositing. A design that wants its body wrapped must wrap it itself; what the bridge guarantees is
-that no row is withheld, and that a 190-column row at width 24 reaches the screen as a 190-column row.
+The renderer clips nothing, and that is all it promises. A 40-row body of 190-column rows leaves the
+message renderer — and the conversation wrapper — unchanged at width 24. What happens after that is
+Pi's: the `refresh` now wraps at the terminal width instead of emitting a 190-column line, because the
+actual renderer writes the terminal's columns, and the main screen refuses a row wider than the
+terminal at all (`Rendered line 1 exceeds terminal width (190 > 24).`). A registered TRANSCRIPT
+transform's output is likewise clipped to the terminal width by the pipeline
+(`src/transform-pipeline.ts`'s `clipResult`, pre-existing). So no row is ever withheld by a policy of
+this surface, and a design that wants its body wrapped or centred must do it itself — the bridge is
+not the thing that will.
 
 ### Selection, and the default
 

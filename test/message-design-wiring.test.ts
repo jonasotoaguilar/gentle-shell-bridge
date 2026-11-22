@@ -305,7 +305,7 @@ test("S2: a claimed type with NO host renderer is drawn by the design, not by de
   assert.deepEqual(component.render(40), ["╭─ reminder ─╮", "│ settle    │", "╰───────────╯"]);
 });
 
-test("S2: a design for a type with no host renderer receives NO rows — the box is entirely its own", () => {
+test("S2: a host-less type hands the design the message's own body rows, plainly", () => {
   const seen: Array<readonly string[]> = [];
   registerMessageDesign(
     design({
@@ -321,41 +321,42 @@ test("S2: a design for a type with no host renderer receives NO rows — the box
   setMessageDesignSelection(REMINDER, "loon.reminder");
 
   const component = messageDesignRenderer(REMINDER, undefined)(
-    { customType: REMINDER },
+    { customType: REMINDER, content: "settle\nthe reminder" },
     options,
     {},
   ) as { render(width: number): readonly string[] };
   component.render(40);
 
-  assert.deepEqual(seen, [[]], "no invented rows: the bridge has no frame to hand over");
+  assert.deepEqual(
+    seen,
+    [[`[${REMINDER}]`, "", "settle", "the reminder"]],
+    "the body and its label, plainly: the design owns the frame around them",
+  );
 });
 
-test("S2: nothing is clipped or reformatted — the design decides how much body is printed", () => {
-  // Pi's card content level (`minimal`) clips TOOL cards through the host's own renderer, and
-  // gentle-shell's renderers offer `previewRows` for it. A custom message has no such renderer, and
-  // the bridge adds no policy of its own: an alert whose whole body the agent must read has to come
-  // back row for row, character for character, at any content level.
-  const body = Array.from(
-    { length: 40 },
-    (_unused, index) => `instruction ${index}: ${"x".repeat(180)}`,
-  );
+test("S2: a failing own-the-box design leaves the message body on screen", () => {
+  // The whole point of these messages is that the agent READS them: a design that throws must not
+  // take the body with it. The rows it was handed are the fallback.
   registerMessageDesign(
     design({
       customType: REMINDER,
-      id: "loon.alert",
-      label: "alert",
-      apply: () => body,
+      id: "loon.reminder",
+      label: "reminder",
+      apply: () => {
+        throw new Error("boom");
+      },
     }),
   );
-  setMessageDesignSelection(REMINDER, "loon.alert");
+  setMessageDesignSelection(REMINDER, "loon.reminder");
 
   const component = messageDesignRenderer(REMINDER, undefined)(
-    { customType: REMINDER },
+    { customType: REMINDER, content: "the body the agent must read" },
     options,
     {},
   ) as { render(width: number): readonly string[] };
 
-  const drawn = component.render(24);
-  assert.equal(drawn.length, 40, "no row withheld");
-  assert.deepEqual(drawn, body, "no row re-wrapped, truncated or coloured by the bridge");
+  const rows = component.render(40);
+  assert.ok(rows.some((row) => row.includes(REMINDER)), "the type is still on screen");
+  assert.ok(rows.some((row) => row.includes("the body the agent must read")), "and the body");
+  assert.deepEqual(getMessageDesignFailures().map((failure) => failure.message), ["boom"]);
 });

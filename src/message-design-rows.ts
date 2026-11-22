@@ -19,8 +19,9 @@
  * This module is internal: `src/index.ts` does not re-export it.
  */
 
-import { registerRows } from "./bus.ts";
+import { registerRows, snapshotProviders } from "./bus.ts";
 import { HOST_CARD_STYLE_CATEGORY } from "./card-style-line.ts";
+import { recordNotice } from "./notices.ts";
 import { requestRepaint } from "./repaint.ts";
 import { deriveRowLabel } from "./row-labels.ts";
 import { MAX_ROW_NAME_WORDS } from "./row-names.ts";
@@ -35,7 +36,7 @@ import {
   type MessageDesignLine,
   type MessageDesignScope,
 } from "./message-designs.ts";
-import type { CustomizeRow, MessageDesignRegistration, RowPreview } from "./types.ts";
+import type { CustomizeRow, MessageDesignRegistration, RowPreview, RowProvider } from "./types.ts";
 
 /** The rows provider's id; it is the bridge's own registration, never a plugin's. */
 export const MESSAGE_DESIGN_ROWS_PROVIDER_ID = "bridge.message-designs";
@@ -199,6 +200,11 @@ export function messageDesignRows(): CustomizeRow[] {
 interface MessageDesignRowsState {
   /** The live provider's disposer, while the bridge has it registered. */
   dispose?: () => void;
+  /**
+   * The exact provider object this process registered. `/bridge-status` filters by IDENTITY and not by
+   * id, so a plugin that happens to use the same id through the public `registerRows` is still listed.
+   */
+  provider?: RowProvider;
 }
 
 /** Process-global, like every other piece of bridge state: two copies must agree. */
@@ -237,12 +243,24 @@ export function installMessageDesignRows(): () => void {
   const state = rowsState();
   const install = (): void => {
     if (state.dispose !== undefined) return;
-    state.dispose = registerRows({
+    // The bus replaces a provider that reuses an id. This id is the bridge's own, so a plugin that
+    // registered it first keeps it: replacing it would silently take a provider the user already has
+    // off the menu, and hiding it from `/bridge-status` would make the report lie about it.
+    if (snapshotProviders().some((provider) => provider.id === MESSAGE_DESIGN_ROWS_PROVIDER_ID)) {
+      recordNotice(
+        `the rows provider id ${JSON.stringify(MESSAGE_DESIGN_ROWS_PROVIDER_ID)} is already ` +
+          "registered, so the message-design line cannot be added; the other provider keeps it.",
+      );
+      return;
+    }
+    const provider: RowProvider = {
       id: MESSAGE_DESIGN_ROWS_PROVIDER_ID,
       category: HOST_CARD_STYLE_CATEGORY,
       // Rebuilt per build, never cached: a design registered later shows up with no re-registration.
       rows: () => messageDesignRows(),
-    });
+    };
+    state.provider = provider;
+    state.dispose = registerRows(provider);
   };
   setMessageDesignRowsInstaller(install);
   // A design that registered before the bridge armed is already waiting to be shown.
@@ -254,8 +272,17 @@ export function installMessageDesignRows(): () => void {
     setMessageDesignRowsInstaller(undefined);
     const dispose = state.dispose;
     state.dispose = undefined;
+    state.provider = undefined;
     dispose?.();
   };
+}
+
+/**
+ * The exact provider object this process registered, or `undefined` when it has none. Internal: it is
+ * how `/bridge-status` tells the bridge's own line from a plugin's provider that uses the same id.
+ */
+export function bridgeMessageDesignRowsProvider(): RowProvider | undefined {
+  return rowsState().provider;
 }
 
 /** Test-only seam; deliberately not re-exported from `src/index.ts`. */
@@ -264,5 +291,6 @@ export function resetMessageDesignRowStateForTests(): void {
   const state = rowsState();
   const dispose = state.dispose;
   state.dispose = undefined;
+  state.provider = undefined;
   dispose?.();
 }

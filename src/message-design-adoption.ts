@@ -41,8 +41,13 @@
  * This module is internal: `src/index.ts` does not re-export it.
  */
 
-import { isMessageTypeClaimed, recordMessageDesignFailure, resolveMessageDesignSelection } from "./message-designs.ts";
-import { messageDesignRenderer } from "./message-design-wiring.ts";
+import {
+  hasMessageDesignClaims,
+  isMessageTypeClaimed,
+  recordMessageDesignFailure,
+  resolveMessageDesignSelection,
+} from "./message-designs.ts";
+import { messageDesignRenderer, type HostMessageRenderer } from "./message-design-wiring.ts";
 import { isRecord } from "./rows.ts";
 
 /** What one adoption pass did, per child. */
@@ -53,6 +58,8 @@ export interface AdoptCustomMessagesResult {
   adopted: number;
   /** Messages this pass (or an earlier one) already adopted, and the rebuild it needed if any. */
   already: number;
+  /** Messages whose host renderer this pass put back, because no live design claims them any more. */
+  restored: number;
   /** Children that are not a message of a claimed type. */
   ignored: number;
   /** Messages left exactly as the host built them after a reported failure. */
@@ -63,6 +70,14 @@ export interface AdoptCustomMessagesResult {
 interface AdoptedMessage {
   /** Whether the renderer was built while a design was selected (true) or while it was not. */
   designAtBuild: boolean;
+  /** The renderer Pi had resolved for this message, put back the moment nobody claims its type. */
+  hostRenderer: unknown;
+  /**
+   * Whether the host had a renderer at all. With one, `default` and a design are the same ANSWER from
+   * the design renderer (a component), so a switch between them needs no rebuild. Without one they
+   * are different answers — `undefined` (Pi's box) or a component — so the message is rebuilt once.
+   */
+  hadHost: boolean;
 }
 
 /**
@@ -77,6 +92,13 @@ const ADOPTED_MESSAGE: unique symbol = Symbol.for(
 interface AdoptionState {
   /** Per custom type, how many messages this process adopted. */
   adoptedMessages: Array<{ customType: string; messages: number }>;
+  /**
+   * How many messages currently carry the design renderer. The pass answers "no claim and nothing
+   * adopted" BEFORE it reads a child, which is what makes an unclaimed session cost nothing per
+   * frame (S4). A host that drops an adopted component without a pass seeing it can only make this
+   * number too high, which costs a read and never a wrong answer.
+   */
+  liveAdoptions: number;
 }
 
 /** Stable process-global slot, like every other piece of bridge state: two copies must agree. */
@@ -91,8 +113,11 @@ function adoptionHost(): Record<symbol, AdoptionState | undefined> {
 function adoptionState(): AdoptionState {
   const host = adoptionHost();
   const existing = host[ADOPTION_KEY];
-  if (existing !== undefined && Array.isArray(existing.adoptedMessages)) return existing;
-  const created: AdoptionState = { adoptedMessages: [] };
+  if (existing !== undefined && Array.isArray(existing.adoptedMessages)) {
+    if (typeof existing.liveAdoptions !== "number") existing.liveAdoptions = 0;
+    return existing;
+  }
+  const created: AdoptionState = { adoptedMessages: [], liveAdoptions: 0 };
   host[ADOPTION_KEY] = created;
   return created;
 }
@@ -112,7 +137,9 @@ export function getMessageDesignAdoptionDiagnostics(): MessageDesignAdoptionDiag
 
 /** Test-only seam; deliberately not re-exported from `src/index.ts`. */
 export function resetMessageDesignAdoptionForTests(): void {
-  adoptionState().adoptedMessages.length = 0;
+  const state = adoptionState();
+  state.adoptedMessages.length = 0;
+  state.liveAdoptions = 0;
 }
 
 function errorMessage(error: unknown): string {
@@ -161,9 +188,12 @@ export function adoptCustomMessages(container: unknown): AdoptCustomMessagesResu
     scanned: 0,
     adopted: 0,
     already: 0,
+    restored: 0,
     ignored: 0,
     failed: 0,
   };
+  // S4's cost bound: with nothing claimed and nothing adopted, a message is not even looked at.
+  if (!hasMessageDesignClaims() && adoptionState().liveAdoptions === 0) return result;
   let children: unknown;
   try {
     if (!isRecord(container)) return result;
@@ -202,24 +232,41 @@ function messageTypeOf(child: unknown): string | undefined {
   return typeof customType === "string" && customType !== "" ? customType : undefined;
 }
 
-type MessageOutcome = "adopted" | "already" | "ignored" | "failed";
+type MessageOutcome = "adopted" | "already" | "restored" | "ignored" | "failed";
 
 function adoptMessage(child: unknown, perPass: Map<string, boolean>): MessageOutcome {
+  if (!isRecord(child)) return "ignored";
   const customType = messageTypeOf(child);
   if (customType === undefined) return "ignored";
+  const claimed = isMessageTypeClaimed(customType);
+  const adopted = adoptedMessage(child);
+
+  // A message this pass adopted, whose type nobody claims any more: put the host's own renderer back
+  // and rebuild once. Otherwise the message would keep calling a design renderer that now answers
+  // `default` — and would read the store on every frame for a type nobody claims (S4).
+  if (adopted !== undefined && !claimed) return restore(child, customType, adopted);
+
   // Recognition is by CLAIM, never by the drawn frame (S4): a message nobody declared a design for is
   // not ours to touch, and this is the only check that keeps an unclaimed session byte-identical.
-  if (!isMessageTypeClaimed(customType)) return "ignored";
-  if (!isRecord(child)) return "ignored";
+  if (!claimed) return "ignored";
   // A component, and nothing else: a message object that is not renderable is not a message Pi drew.
   if (typeof readMember(child, "render") !== "function") return "ignored";
 
   const design = designIsSelected(customType, perPass);
-  const adopted = adoptedMessage(child);
   if (adopted !== undefined) {
-    // Already adopted. The design renderer reads the selection per pass, so only the shape a renderer
-    // can answer changes anything: `undefined` (Pi's box) and a component are different answers.
-    if (adopted.designAtBuild !== design) {
+    // Already adopted. The design renderer reads the selection per pass, so a switch between `default`
+    // and a design with a host renderer needs NOTHING. Without a host renderer the renderer answers
+    // `undefined` (Pi's own box) or a component — different answers — so it rebuilds exactly once per
+    // shape change, and never twice for the same shape.
+    // When the built answer was the wrapper, it reads the selection itself and nothing is needed. It
+    // is needed in the two cases where the built answer was NOT the wrapper: a host-less message that
+    // answered `undefined` (Pi's box) and now must draw, and a host-backed one that answered the
+    // host's own component and now must be rewritten. Coming back to `default` from a wrapper costs
+    // no rebuild in either case — the wrapper returns the host's rows, or Pi's own body, unchanged.
+    const needsRebuild = adopted.hadHost
+      ? design && !adopted.designAtBuild
+      : adopted.designAtBuild !== design;
+    if (needsRebuild) {
       adopted.designAtBuild = design;
       invalidate(child, customType);
     }
@@ -227,13 +274,57 @@ function adoptMessage(child: unknown, perPass: Map<string, boolean>): MessageOut
   }
 
   const hostRenderer = readMember(child, "customRenderer");
-  const renderer = messageDesignRenderer(
-    customType,
-    typeof hostRenderer === "function" ? (hostRenderer as never) : undefined,
-  );
+  // Pi calls its renderer as a MEMBER (`this.customRenderer(...)`), so a host renderer that is a method
+  // gets the component as `this`. The design renderer must call it the same way or a method renderer
+  // breaks the moment the bridge wraps it.
+  const boundHost =
+    typeof hostRenderer === "function"
+      ? (message: unknown, options: unknown, theme?: unknown): unknown =>
+          // SAFETY: `typeof` just proved this callable; its arguments are Pi's own, forwarded as-is.
+          (hostRenderer as HostMessageRenderer).call(child, message, options, theme)
+      : undefined;
+  const renderer = messageDesignRenderer(customType, boundHost, {
+    // A design that throws on a host-less message must not take the body with it. Pi's own box is
+    // right there on the component it built, so it is rendered as-is: the same bytes the user would
+    // have seen without a design, not a picture of them invented here.
+    fallbackRows: (width: number): string[] | undefined => hostBoxRows(child, width),
+  });
+  const record: AdoptedMessage = {
+    designAtBuild: design,
+    hostRenderer,
+    hadHost: typeof hostRenderer === "function",
+  };
+
+  // The marker goes FIRST. A component that cannot take an own symbol (a sealed one) is reported and
+  // never touched, because replacing its renderer without a marker would make every later pass wrap
+  // it again — the one failure mode that compounds.
+  try {
+    Object.defineProperty(child, ADOPTED_MESSAGE, {
+      value: record,
+      enumerable: false,
+      configurable: true,
+    });
+  } catch (error) {
+    recordMessageDesignFailure(
+      customType,
+      "(adoption)",
+      `the message cannot be marked as adopted (${errorMessage(error)}); Pi's own rendering stands.`,
+    );
+    return "failed";
+  }
+  if (adoptedMessage(child) !== record) {
+    recordMessageDesignFailure(
+      customType,
+      "(adoption)",
+      "the message did not take the adoption marker; Pi's own rendering stands.",
+    );
+    return "failed";
+  }
+
   try {
     child.customRenderer = renderer;
   } catch (error) {
+    delete symbolSlot(child)[ADOPTED_MESSAGE];
     recordMessageDesignFailure(
       customType,
       "(adoption)",
@@ -244,6 +335,7 @@ function adoptMessage(child: unknown, perPass: Map<string, boolean>): MessageOut
   // A setter (or a frozen object in a non-strict host) can ignore the assignment without throwing: the
   // message is only adopted when the renderer this pass installed is really the one Pi will call.
   if (child.customRenderer !== renderer) {
+    delete symbolSlot(child)[ADOPTED_MESSAGE];
     recordMessageDesignFailure(
       customType,
       "(adoption)",
@@ -252,12 +344,7 @@ function adoptMessage(child: unknown, perPass: Map<string, boolean>): MessageOut
     return "failed";
   }
 
-  const record: AdoptedMessage = { designAtBuild: design };
-  Object.defineProperty(child, ADOPTED_MESSAGE, {
-    value: record,
-    enumerable: false,
-    configurable: true,
-  });
+  adoptionState().liveAdoptions += 1;
   recordAdoptedMessage(customType);
   // The renderer Pi stored was resolved when the message was added; `invalidate()` is what makes it
   // resolve again, through the design renderer.
@@ -265,13 +352,83 @@ function adoptMessage(child: unknown, perPass: Map<string, boolean>): MessageOut
   return "adopted";
 }
 
+/**
+ * Put the host's own renderer back on a message no design claims any more, and rebuild it once. The
+ * host's value is restored VERBATIM (including `undefined` for a type with no renderer), so the message
+ * returns to exactly what Pi built, and no later frame pays for a surface nobody uses.
+ */
+function restore(
+  child: Record<string, unknown>,
+  customType: string,
+  record: AdoptedMessage,
+): MessageOutcome {
+  try {
+    child.customRenderer = record.hostRenderer;
+  } catch (error) {
+    recordMessageDesignFailure(
+      customType,
+      "(adoption)",
+      `the message refuses its customRenderer while being restored (${errorMessage(error)}); ` +
+        "the design renderer stays, drawing `default`.",
+    );
+    return "failed";
+  }
+  if (child.customRenderer !== record.hostRenderer) {
+    recordMessageDesignFailure(
+      customType,
+      "(adoption)",
+      "the message did not take its host renderer back; the design renderer stays, drawing `default`.",
+    );
+    return "failed";
+  }
+  delete symbolSlot(child)[ADOPTED_MESSAGE];
+  const state = adoptionState();
+  state.liveAdoptions = Math.max(0, state.liveAdoptions - 1);
+  invalidate(child, customType);
+  return "restored";
+}
+
+/**
+ * Pi's own box for this message, rendered at `width`, or `undefined` when the component has none this
+ * pass can read. `CustomMessageComponent` builds that box in its constructor and keeps it for exactly
+ * this default rendering, so asking it is reading the host's own work — never re-drawing it.
+ */
+function hostBoxRows(child: Record<string, unknown>, width: number): string[] | undefined {
+  const box = readMember(child, "box");
+  if (!isRecord(box) || typeof readMember(box, "render") !== "function") return undefined;
+  let rows: unknown;
+  try {
+    // SAFETY: `typeof` just proved `render` callable, and a component's `render(width)` is the whole
+    // contract this reads; its answer is inspected before it is trusted.
+    rows = (readMember(box, "render") as (width: number) => unknown).call(box, width);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(rows)) return undefined;
+  for (let index = 0; index < rows.length; index += 1) {
+    if (typeof rows[index] !== "string") return undefined;
+  }
+  // SAFETY: the loop above proved every position holds a string.
+  return rows as string[];
+}
+
+/**
+ * The same component, read through the symbol key this module owns. One cast, in one place: the record
+ * lives on the host's own object, so it can only be reached through a symbol index.
+ */
+function symbolSlot(child: Record<string, unknown>): Record<symbol, unknown> {
+  // SAFETY: a symbol-keyed read of the same object; `ADOPTED_MESSAGE` is the only symbol written here,
+  // and the value is re-checked for its shape before it is trusted.
+  return child as unknown as Record<symbol, unknown>;
+}
+
 /** The adoption record of a child this pass installed a renderer on, if it is really still ours. */
 function adoptedMessage(child: Record<string, unknown>): AdoptedMessage | undefined {
-  const record = (child as Record<symbol, unknown>)[ADOPTED_MESSAGE];
+  const record = symbolSlot(child)[ADOPTED_MESSAGE];
   if (!isRecord(record)) return undefined;
   // SAFETY: the only writer of this symbol is `adoptMessage`, which stores an `AdoptedMessage`; a
-  // value left by another copy is re-checked for the one field this pass reads before it is trusted.
-  return typeof record.designAtBuild === "boolean"
+  // value left by another copy is re-checked for the fields this pass reads before it is trusted.
+  return typeof record.designAtBuild === "boolean" && typeof record.hadHost === "boolean"
     ? (record as unknown as AdoptedMessage)
     : undefined;
 }

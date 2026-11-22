@@ -638,9 +638,11 @@ export interface MessageDesignContext {
  *   already painted around them. The design returns the rows to draw and everything it does not
  *   deliberately change comes back byte for byte (S3);
  * - the type has NO host renderer (`gentle-pi.exploration-budget`, `gentle-pi.verifier-settle-reminder`,
- *   or any custom type nobody renders): NO rows at all, because there is no frame and nothing the
- *   bridge may invent on the host's behalf. The design owns the box (S2) and draws everything from
- *   `ctx.render.message`, `ctx.width` and `ctx.cardStyle`.
+ *   or any custom type nobody renders): the message's own body, plainly — its `[customType]` label, a
+ *   blank row and its text — never a picture of Pi's styled box. The design owns the frame around a
+ *   body it did not have to invent (S2), drawing from `ctx.render.message`, `ctx.width` and
+ *   `ctx.cardStyle`, and those same rows are what a FAILING design falls back to, so a message the
+ *   agent must read is never lost to a broken design.
  *
  * With NO design selected for a type the bridge does nothing at all: it never touches a message no
  * design claims (S4), so Pi's own output is byte-identical and no pass pays for the surface.

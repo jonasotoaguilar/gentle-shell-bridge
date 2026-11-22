@@ -68,6 +68,9 @@ import type { CardStyleSelection, MessageDesignContext, MessageDesignRender } fr
 export interface MessageComponentLike {
   render(width: number): readonly string[];
   invalidate?(): void;
+  handleMouse?(event: Record<string, unknown>): Record<string, unknown> | undefined;
+  readonly wantsKeyRelease?: boolean;
+  readonly capturesViewportInput?: boolean;
   [member: string]: unknown;
 }
 
@@ -142,6 +145,32 @@ function hostRows(component: unknown, width: number, customType: string): string
 }
 
 /**
+ * The message's OWN body, plainly: its type label, a blank row and its text, which is what Pi's default
+ * box holds inside its frame. A type with no host renderer hands a design THESE rows, so the design
+ * owns the frame around a body it did not have to invent — and so a design that throws or answers
+ * something that is not rows still leaves the message readable instead of dropping it off the screen.
+ *
+ * Nothing here is styled: the bridge has no business choosing colours a design is about to frame.
+ * Content that is not a string yields the label alone, because inventing text would be worse than
+ * showing less.
+ */
+function plainBodyRows(message: unknown): string[] {
+  if (!isRecord(message)) return [];
+  let customType: unknown;
+  let content: unknown;
+  try {
+    customType = message.customType;
+    content = message.content;
+  } catch {
+    return [];
+  }
+  const label = typeof customType === "string" && customType !== "" ? `[${customType}]` : undefined;
+  const body = typeof content === "string" && content !== "" ? content.split(/\r?\n/u) : [];
+  if (label === undefined) return body;
+  return body.length === 0 ? [label] : [label, "", ...body];
+}
+
+/**
  * The component a design draws through: the host's rows in, the design's rows out, the live
  * selection read on every pass.
  *
@@ -154,15 +183,19 @@ function designComponent(args: {
   host: unknown;
   theme: unknown;
   render: MessageDesignRender;
+  fallbackRows?: (width: number) => string[] | undefined;
 }): MessageComponentLike {
-  const { customType, host, theme, render } = args;
+  const { customType, host, theme, render, fallbackRows } = args;
   return {
     render(width: number): string[] {
       const selection = selectionFor(customType);
-      const fromHost = hostRows(host, width, customType);
-      // `default`, a disposed design, or a design that never claimed this type: the host's rows.
-      if (selection.kind !== "design") return fromHost ?? [];
-      const rows = fromHost ?? [];
+      // With no host component the design owns the box, so what it — and a failing design — receives
+      // is the message's own body. With one, the host's rows are the only frame there is.
+      const plain = plainBodyRows(render.message);
+      const fromHost = host === undefined ? undefined : hostRows(host, width, customType);
+      const rows = fromHost ?? plain;
+      // `default`, a disposed design, or a design that never claimed this type: nothing is rewritten.
+      if (selection.kind !== "design") return rows;
       // S1/S22: resolved ON ACCESS and at most ONCE per pass, so a design that never reads it pays
       // nothing and one that reads it twice cannot draw a card that is half of each style.
       let cardStyle: CardStyleSelection | undefined;
@@ -177,12 +210,36 @@ function designComponent(args: {
         },
       };
       const applied = applyMessageDesign(selection.design, rows, ctx);
-      return applied ?? rows;
+      if (applied !== undefined) return applied;
+      // The design failed: draw what the message would have drawn without it. A host-less message's
+      // own default box is the only faithful answer, and `fallbackRows` is the adoption pass handing
+      // it over; the plain body is the last resort when there is no box to ask (S2 + L7: the body the
+      // agent must read is never the thing that gets dropped).
+      return fallbackRows?.(width) ?? rows;
     },
     invalidate(): void {
       if (!isRecord(host)) return;
       const invalidate = host.invalidate;
       if (typeof invalidate === "function") (invalidate as () => void).call(host);
+    },
+    // Everything else the host's component can do stays the host's: losing the mouse handler would
+    // make a message stop responding to clicks the moment somebody gave it a design.
+    handleMouse(event: Record<string, unknown>): Record<string, unknown> | undefined {
+      if (!isRecord(host)) return undefined;
+      const handleMouse = host.handleMouse;
+      if (typeof handleMouse === "function") {
+        return (handleMouse as (event: Record<string, unknown>) => Record<string, unknown>).call(
+          host,
+          event,
+        );
+      }
+      return undefined;
+    },
+    get wantsKeyRelease(): boolean {
+      return isRecord(host) && host.wantsKeyRelease === true;
+    },
+    get capturesViewportInput(): boolean {
+      return isRecord(host) && host.capturesViewportInput === true;
     },
   };
 }
@@ -204,12 +261,23 @@ function designComponent(args: {
 export function messageDesignRenderer(
   customType: string,
   host: HostMessageRenderer | undefined,
+  hooks?: { fallbackRows?: (width: number) => string[] | undefined },
 ): HostMessageRenderer {
   return function (message: unknown, options: unknown, theme?: unknown): unknown {
     const selection = selectionFor(customType);
     // The host's own renderer first, always, and exactly once per build: it owns the frame, its
-    // arguments and its failures.
-    const hostComponent = host === undefined ? undefined : host(message, options, theme);
+    // arguments and its failures. A host renderer that throws is REPORTED and answers `undefined`,
+    // which is exactly what Pi does with it — its own default box — so the bridge never changes what
+    // the user sees when the host's own renderer is broken.
+    let hostComponent: unknown;
+    if (host !== undefined) {
+      try {
+        hostComponent = host(message, options, theme);
+      } catch (error) {
+        recordMessageDesignFailure(customType, "(host renderer)", errorMessage(error));
+        hostComponent = undefined;
+      }
+    }
     // Nothing to draw through: the host's own answer, including `undefined` (S4).
     if (selection.kind !== "design") return hostComponent;
     return designComponent({
@@ -217,6 +285,7 @@ export function messageDesignRenderer(
       host: hostComponent,
       theme,
       render: snapshotRender(message, options),
+      ...(hooks?.fallbackRows === undefined ? {} : { fallbackRows: hooks.fallbackRows }),
     });
   };
 }

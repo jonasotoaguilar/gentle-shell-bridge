@@ -37,7 +37,7 @@ import {
   type MessageDesignFailure,
   type MessageDesignLine,
 } from "./message-designs.ts";
-import { MESSAGE_DESIGN_ROWS_PROVIDER_ID, messageDesignLineNames } from "./message-design-rows.ts";
+import { bridgeMessageDesignRowsProvider, messageDesignLineNames } from "./message-design-rows.ts";
 import { snapshotNotices, type NoticeLevel } from "./notices.ts";
 import {
   PAINT_SURFACES,
@@ -471,7 +471,10 @@ export function collectStatus(): StatusSnapshot {
           provider.id !== SECTION_ROWS_PROVIDER_ID &&
           provider.id !== CARD_STYLE_ROWS_PROVIDER_ID &&
           provider.id !== TOOL_DESIGN_ROWS_PROVIDER_ID &&
-          provider.id !== MESSAGE_DESIGN_ROWS_PROVIDER_ID,
+          // The message line is ours by IDENTITY, not by id: a plugin may legally register a provider
+          // with this id through the public `registerRows`, and hiding that would be the report lying
+          // about a provider the user really has.
+          provider !== bridgeMessageDesignRowsProvider(),
       )
       .map((provider) => ({ id: provider.id, category: provider.category })),
     backend,

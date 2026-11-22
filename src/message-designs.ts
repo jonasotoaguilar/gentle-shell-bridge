@@ -391,6 +391,14 @@ export function registerMessageDesign(
 // ---------------------------------------------------------------------------------------------
 
 /**
+ * Whether ANY live design exists. The conversation pass asks this before it looks at a child, so a
+ * session with no message design reads no message at all (S4's cost bound, not only its output).
+ */
+export function hasMessageDesignClaims(): boolean {
+  return messageDesignState().entries.length > 0;
+}
+
+/**
  * Whether a custom type is claimed by a live design right now. A registry walk with NO persistence
  * read, which is what lets a conversation pass skip unclaimed messages for free (S4).
  */
@@ -555,7 +563,10 @@ export function applyMessageDesign(
     recordMessageDesignFailure(ctx.customType, design.id, errorMessage(error));
     return undefined;
   }
-  if (!Array.isArray(applied) || !applied.every((line) => typeof line === "string")) {
+  // Read by INDEX, never through the value's own methods: `every` skips a sparse array's holes (so
+  // `Array(3)` would pass and Pi would be handed `undefined` rows) and a plugin's own `every` is a
+  // function this module must not call at all — calling it threw into Pi's render loop.
+  if (!Array.isArray(applied) || !rowsAreStrings(applied)) {
     recordMessageDesignFailure(
       ctx.customType,
       design.id,
@@ -564,8 +575,23 @@ export function applyMessageDesign(
     );
     return undefined;
   }
-  // SAFETY: the element check above proves every member is a string.
-  return applied as string[];
+  // A CLEAN copy, built here: nothing the plugin attached to the array travels into Pi's frame, and
+  // a plugin that later mutates the array it returned cannot change what was already drawn.
+  const rows: string[] = [];
+  for (let index = 0; index < applied.length; index += 1) rows.push(applied[index] as string);
+  return rows;
+}
+
+/**
+ * Whether every position of an array holds a string, holes included. `for` over the LENGTH, so a
+ * sparse array is rejected instead of silently accepted, and nothing calls a method the plugin could
+ * have replaced.
+ */
+function rowsAreStrings(value: readonly unknown[]): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    if (typeof value[index] !== "string") return false;
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -25,7 +25,9 @@ import {
 } from "../src/message-design-adoption.ts";
 import {
   getMessageDesignFailures,
+  getMessageDesignSelectionReads,
   registerMessageDesign,
+  resetMessageDesignSelectionReads,
   resetMessageDesignsForTests,
   setMessageDesignSelection,
 } from "../src/message-designs.ts";
@@ -99,13 +101,12 @@ function fakeCustomMessage(
     },
     render(width: number): readonly string[] {
       child.rendererCalls += 1;
-      const renderer = child.customRenderer;
-      if (typeof renderer === "function") {
-        const component = (renderer as (m: unknown, o: unknown, t: unknown) => unknown)(
-          child.message,
-          { expanded: false, outputPad: 1 },
-          {},
-        );
+      if (typeof child.customRenderer === "function") {
+        // Exactly Pi's own call: a member call, so `this` is the component
+        // (`custom-message.js`, `rebuild()`).
+        const component = (
+          child.customRenderer as (m: unknown, o: unknown, t: unknown) => unknown
+        ).call(child, child.message, { expanded: false, outputPad: 1 }, {});
         if (component !== undefined) {
           return (component as { render(width: number): readonly string[] }).render(width);
         }
@@ -138,14 +139,15 @@ test("S4: a message of a type nobody claimed is left exactly as it was", () => {
 
   const result = adoptCustomMessages(container([child]));
 
-  assert.equal(result.scanned, 1);
-  assert.equal(result.ignored, 1);
+  assert.equal(result.scanned, 0, "no claim anywhere: not one child is looked at");
   assert.equal(result.adopted, 0);
   assert.equal(child.customRenderer, before, "the host's renderer, untouched");
   assert.equal(child.invalidations, 0, "and nothing rebuilt: no work, no bytes changed");
 });
 
 test("S4: a child that is not a custom message is not ours to touch", () => {
+  // Something IS claimed, so the pass really walks the children; the strangers stay strangers.
+  registerMessageDesign(design());
   const stranger = { render: () => ["rows"], toolName: "bash" };
   const result = adoptCustomMessages(container([stranger, 42, null]));
 
@@ -343,7 +345,11 @@ test("S2: the design reads `ctx.cardStyle`, so the consumer's painter knows whic
   setMessageDesignSelection(REMINDER, "loon.reminder");
 
   adoptCustomMessages(container([child]));
-  assert.deepEqual(child.render(40), ["painted 0"], "no host rows: the design draws from the message");
+  assert.deepEqual(
+    child.render(40),
+    ["painted 3"],
+    "the message body's own rows: label, spacer, content",
+  );
   const style = seen as { kind: string; style?: { id: string } };
   assert.equal(style.kind, "style", "the bridge's own Card style selection, the one a tool design reads");
   assert.equal(style.style?.id, "loon.lunar", "and the exact style the user chose");
@@ -373,4 +379,101 @@ test("S2: own-the-box works for ANY custom type, not just the two Pi ships today
     "│ hello │",
     "╰─────────╯",
   ]);
+});
+
+// ---------------------------------------------------------------------------------------------
+// The verifier's reproduced defects (T6). Each test below FAILED against the slice before the fix.
+// ---------------------------------------------------------------------------------------------
+
+test("S4: with no claim anywhere, a pass reads no child at all", () => {
+  // S4 is a cost bound too, not only an output one: the pass must be able to answer before it
+  // touches a single message. A session with no message design pays nothing per conversation frame.
+  let reads = 0;
+  const child = fakeCustomMessage(TYPE);
+  Object.defineProperty(child, "message", {
+    get: () => {
+      reads += 1;
+      return { customType: TYPE, content: "hello" };
+    },
+    configurable: true,
+  });
+
+  const result = adoptCustomMessages(container([child, fakeCustomMessage(REMINDER)]));
+
+  assert.equal(reads, 0, "no claim, no read");
+  assert.equal(result.adopted, 0);
+});
+
+test("S3: a host renderer that is a METHOD keeps its `this`, as Pi calls it", () => {
+  const child = fakeCustomMessage(TYPE);
+  let seenThis: unknown;
+  child.customRenderer = function (this: unknown): unknown {
+    seenThis = this;
+    return { render: (): readonly string[] => ["host frame"] };
+  };
+  registerMessageDesign(design({ apply: (lines: readonly string[]) => [...lines] }));
+  setMessageDesignSelection(TYPE, "loon.budget");
+
+  adoptCustomMessages(container([child]));
+  child.render(40);
+
+  assert.equal(seenThis, child, "the component Pi would have passed as `this`");
+});
+
+test("S3: with a host renderer, switching to `default` rebuilds nothing", () => {
+  const child = fakeCustomMessage(TYPE, () => ["host frame"]);
+  registerMessageDesign(design());
+  setMessageDesignSelection(TYPE, "loon.budget");
+  adoptCustomMessages(container([child]));
+  assert.equal(child.invalidations, 1, "the adoption itself");
+
+  setMessageDesignSelection(TYPE, "native");
+  const pass = adoptCustomMessages(container([child]));
+
+  assert.equal(pass.already, 1);
+  assert.equal(
+    child.invalidations,
+    1,
+    "the renderer reads the live selection, so a host-backed switch needs no rebuild",
+  );
+  assert.deepEqual(child.render(40), ["host frame@40"]);
+});
+
+test("S3: a component that cannot be marked is never half-adopted, so passes cannot stack", () => {
+  const child = fakeCustomMessage(TYPE, () => ["host frame"]);
+  const original = child.customRenderer;
+  registerMessageDesign(design());
+  // A real Pi component this pass may not add an own symbol to: sealing it must be discovered
+  // BEFORE the renderer is replaced, or every pass wraps the same message again.
+  Object.preventExtensions(child);
+
+  const first = adoptCustomMessages(container([child]));
+  const second = adoptCustomMessages(container([child]));
+
+  assert.equal(first.failed, 1);
+  assert.equal(second.failed, 1, "still refused, never silently adopted twice");
+  assert.equal(child.customRenderer, original, "the host's renderer was never replaced");
+});
+
+test("S4: disposing the last design restores the host's renderer and stops paying per pass", () => {
+  const child = fakeCustomMessage(TYPE, () => ["host frame"]);
+  const original = child.customRenderer;
+  const dispose = registerMessageDesign(design());
+  setMessageDesignSelection(TYPE, "loon.budget");
+  adoptCustomMessages(container([child]));
+  assert.notEqual(child.customRenderer, original, "adopted");
+
+  dispose();
+  adoptCustomMessages(container([child]));
+
+  assert.equal(child.customRenderer, original, "the host's renderer, back in place");
+  assert.deepEqual(child.render(40), ["host frame@40"]);
+
+  resetMessageDesignSelectionReads();
+  child.render(40);
+  assert.equal(
+    getMessageDesignSelectionReads(),
+    0,
+    "no live claim: a render must not read the store any more",
+  );
 });

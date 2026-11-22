@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { resetBusForTests, snapshotProviders } from "../src/bus.ts";
+import { registerRows, resetBusForTests, snapshotProviders } from "../src/bus.ts";
 import { adoptCustomMessages, resetMessageDesignAdoptionForTests } from "../src/message-design-adoption.ts";
 import {
   MESSAGE_DESIGN_ROWS_PROVIDER_ID,
@@ -348,4 +348,22 @@ test("the messages the adoption pass replaced are reported per custom type", () 
     "message design adoption: 1 type, 2 messages",
     `  - ${TYPE}: 2 messages`,
   ]);
+});
+
+test("S4: a PLUGIN's rows provider is listed even when its id matches the bridge's own", () => {
+  // The bridge's own provider is plumbing and is filtered out of `providers` — but the filter must
+  // never hide a provider a plugin registered through the public `registerRows`, which is what an id
+  // comparison does. The bridge's own object is the only thing that may disappear.
+  registerRows({
+    id: MESSAGE_DESIGN_ROWS_PROVIDER_ID,
+    category: "Cards",
+    rows: () => [],
+  });
+
+  const snapshot = collectStatus();
+  assert.deepEqual(
+    snapshot.providers,
+    [{ id: MESSAGE_DESIGN_ROWS_PROVIDER_ID, category: "Cards" }],
+    "the plugin's provider, listed",
+  );
 });

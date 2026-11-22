@@ -1995,17 +1995,31 @@ A design never replaces the host's frame silently (S3).
 `gentle-pi.verifier-settle-reminder` are the case that motivates the surface: they are custom types
 sent by an extension that registers no renderer for them, so Pi draws its own default box and no card
 style ever reaches them. There is no frame to preserve, so the design OWNS the box (S2) and draws
-everything: it receives **`[]`** — no rows at all, because there is nothing the bridge may invent on
-the host's behalf — and `ctx.render.message`, `ctx.width` and `ctx.cardStyle` are what it draws from.
+everything around the body: it receives the message's **own body, plainly** — its `[customType]`
+label, a blank row and its text — never a picture of Pi's styled box, because the design is about to
+frame it and the bridge has no business choosing colours. `ctx.render.message`, `ctx.width` and
+`ctx.cardStyle` are what it draws from, and the body it was handed is also what a FAILING design falls
+back to: a message whose body the agent must read is never the thing that gets dropped.
 
 `apply(lines, ctx)` returns `string[]`: the rows to draw. Rows are handed over as a COPY, so a design
 that mutates its input cannot corrupt rows the host still owns. A design that throws, or that returns
 anything other than an array of strings, loses only its own output — the host's rows (or Pi's own box)
 stay on screen — and is reported in `/bridge-status` once per (custom type, design id, message).
 
+The fallback of a failing design is the host's own answer, not an invented one: a type WITH a host
+renderer keeps that renderer's rows, and a message Pi built keeps its own default box
+(`CustomMessageComponent.box`) rendered at the width the design failed at. The plain body is the last
+resort when there is no box to ask.
+
 Two consequences are deliberate rather than incidental: a design receives rows, never a renderer
 object, so it cannot wrap, delay or re-enter the host's component; and it never sees a byte of the
 chrome, so the bridge never re-frames, re-measures or clips what it draws.
+
+The renderer clips nothing. Two things downstream can still cut a long row and neither is a policy of
+this surface: a registered TRANSCRIPT transform's output is clipped to the terminal width by the
+transform pipeline (pre-existing, `src/transform-pipeline.ts`'s `clipResult`), and Pi clips at
+compositing. A design that wants its body wrapped must wrap it itself; what the bridge guarantees is
+that no row is withheld, and that a 190-column row at width 24 reaches the screen as a 190-column row.
 
 ### Selection, and the default
 
@@ -2052,8 +2066,10 @@ message and must obey the user's switch instead of guessing:
   never silently paints a message it never claimed.
 
 It never throws — an unreadable or malformed store reads as `native` — and it costs **one
-persisted-selection read per call**, whatever the number of lines, which is what one render pass
-already pays. A caller may ask on every frame for the message it is painting; asking for every type on
+persisted-selection read per call**, whatever the number of lines. That is per CALL and not per frame:
+a steady frame with two messages of one type measured three reads — one per message render plus one
+for the adoption pass's per-type check — so a caller should ask for the message it is painting rather
+than for every type on every frame. A caller may ask on every frame for the message it is painting; asking for every type on
 every frame multiplies that count, and nothing here caches the answer, because a selection can change
 between frames. The raw stored value is deliberately not on the contract: an id alone would push the
 resolution rule onto every consumer, and two copies of that rule drift.

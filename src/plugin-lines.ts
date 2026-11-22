@@ -97,7 +97,13 @@ export const HOST_OWN_STATUS_KEYS: readonly string[] = [
 ];
 
 /** Which surface a plugin registered. Diagnostics only: the footer never shows it. */
-export type PluginSurface = "rows" | "section" | "card style" | "transform" | "tool design";
+export type PluginSurface =
+  | "rows"
+  | "section"
+  | "card style"
+  | "transform"
+  | "tool design"
+  | "message design";
 
 /** One registration the bridge refused, reported by `/bridge-status` (I4). */
 export interface PluginRejection {

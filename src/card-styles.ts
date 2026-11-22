@@ -107,7 +107,7 @@
 import { snapshotCardStyles } from "./bus.ts";
 import { CARD_STYLE_NATIVE } from "./card-style-line.ts";
 import { createStore } from "./store.ts";
-import type { CardStyleRegistration } from "./types.ts";
+import type { CardStyleSelection } from "./types.ts";
 
 /**
  * The bridge's own plugin id for the selection: one namespaced file, never the host's
@@ -138,17 +138,11 @@ export function setCardStyleSelection(id: string): void {
 }
 
 /**
- * What the stored selection means right now.
- *
- * `missing` is a first-class answer, never an error: a style that was disposed while it was
- * selected (a plugin unloaded, a `/reload`) leaves a stored id nobody owns, and the bridge must
- * degrade to `native` and say so rather than render chrome that no longer exists (S12). Resolving
- * never throws for any stored value.
+ * What the stored selection means right now: defined with the other registrations in
+ * `./types.ts`, because a tool design reads it from its own context (S22); re-exported here so the
+ * card-style module keeps answering with one name.
  */
-export type CardStyleSelection =
-  | { kind: "native" }
-  | { kind: "style"; style: CardStyleRegistration }
-  | { kind: "missing"; id: string };
+export type { CardStyleSelection } from "./types.ts";
 
 /** Resolve the persisted selection against the live registry. */
 export function resolveCardStyleSelection(): CardStyleSelection {

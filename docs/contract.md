@@ -1292,8 +1292,8 @@ reported, and its `tools` set is the later one's (D2).
 right-aligned hint, the frame's rails, everything — and returns the rows to draw. `ctx` is
 `{ width, tool, theme, part, render? }`: the width the host asked its own component to render at, the tool
 name the design was declared for, the host's opaque theme object, which half of the card this pass is
-drawing (`"call"` for `renderCall`, `"result"` for `renderResult`), and what the host knows about THIS
-call (`render`, below).
+drawing (`"call"` for `renderCall`, `"result"` for `renderResult`), what the host knows about THIS
+call (`render`, below), and the card style the user has selected (`cardStyle`, below).
 
 **`part` is what tells the call from the result.** A card has two components and the host draws both
 with the same chrome, so the rows alone cannot distinguish a heading from output: under the `float`
@@ -1332,6 +1332,40 @@ interface ToolDesignRender {
   owns that cache's lifetime.
 - **Per-tool shapes differ.** `args` for `bash` is `{ command }`, for `write` `{ path, content }`: a design
   shared across tools branches on `ctx.tool`.
+
+**`cardStyle` is what lets a design honour the style on a card the host does not style.** gentle-shell
+draws `bash` through its own renderers, so `float` and `neon` are resolved there. A tool registered by
+another extension — `bash_background`, `monitor`, `job_stop`, `job_list` — has no host card at all, so
+Pi draws its default box and no style ever reaches it. A design is the only surface from which a plugin
+can decorate that card, and this field is how the design knows which chrome the user selected:
+
+```ts
+type CardStyleSelection =
+  | { kind: "native" }                              // nothing chosen: draw the design's own default
+  | { kind: "style"; style: CardStyleRegistration }  // the live registration to honour
+  | { kind: "missing"; id: string };                 // the chosen style was disposed
+```
+
+- **`native` is "the user chose nothing", not "no bridge".** It is the default, and the design draws
+  what it draws with no style at all.
+- **`missing` is an answer, not an error.** A style disposed while it was selected (a plugin unloaded, a
+  `/reload`) leaves a stored id nobody owns: the design degrades to its `native` chrome, and the
+  `id` says what went missing. Resolving never throws, for any stored value.
+- **Read on ACCESS, at most once per pass.** A design that never touches `ctx.cardStyle` performs no
+  store read, walks no registry and draws exactly the rows it drew before the field existed; one that
+  reads it three times gets ONE answer, so a switch landing between two reads cannot draw a card that is
+  half of each.
+- **Live, never captured.** The answer comes from the registry on the pass, so a style selected after
+  the card was built still reaches it.
+- **Outside a design, the same answer.** `resolveCardStyleSelection()` is exported by the package entry,
+  so a plugin (a transform, a section, a row label) reads the active style without a card in hand.
+
+```ts
+apply(lines, ctx) {
+  const chosen = ctx.cardStyle?.kind === "style" ? ctx.cardStyle.style.id : "native";
+  return chosen === "neon" ? paintNeon(lines, ctx.width) : [...lines];
+}
+```
 
 **The frame is the host's, so the card style is preserved by construction.** With `Card style` on
 `neon` the card is still neon, with `float` it is still float, because the chrome was drawn before the
@@ -1903,7 +1937,8 @@ wrappers, and why a plugin must never call `pi.registerToolRenderer` itself for 
   object and never the theme's shape. `part` is one of two literals; a design that ignores it is
   byte-identical to one written before the field existed, and a context produced by an older copy of
   the bridge carries no `part` at all — a design reads it as unknown (`ctx.part === "result"` is
-  simply false) and keeps working.
+  simply false) and keeps working. `cardStyle` is the same kind of field for the style: read on
+  access, absent on an older copy, and irrelevant to a design that never reads it.
 - A transform is a per-frame pass, so a slow transform is a slow frame; the bridge isolates its
   failures and clips its width, and can bound nothing else. It sees lines, never tool metadata.
 - The API is released (`0.9.0`). The `v1` symbol is the compatibility boundary: a breaking

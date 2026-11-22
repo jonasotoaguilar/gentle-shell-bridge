@@ -718,45 +718,82 @@ function removeInjectedTail(early: EarlyInjection): string | undefined {
   const { array, original, rows } = early;
   if (rows.length === 0) return undefined;
   const start = original.length;
-  if (array.length < start + rows.length) return undefined;
-  for (let index = 0; index < rows.length; index += 1) {
-    if (array[start + index] !== rows[index]) {
-      return "the host changed the appended rows before the rollback";
-    }
-  }
-  const target = start + rows.length;
-  if (array.length === target) {
-    const length = Object.getOwnPropertyDescriptor(array, "length");
-    if (length !== undefined && length.writable === false) return "the host array's length is read-only";
-    try {
-      array.length = start;
-    } catch {
-      return "the host array refused the tail trim";
-    }
-    return array.length === start ? undefined : "the host array kept a phantom length";
-  }
-
-  // The host appended rows after ours: shift those rows left over the exact appended segment. Only
-  // indices >= `start` are written; retained host indices are never touched. Preflight every index
-  // `splice` will assign (it writes even an equal value), plus the length.
-  const nextLength = array.length - rows.length;
-  const length = Object.getOwnPropertyDescriptor(array, "length");
-  if (length !== undefined && length.writable === false) return "the host array's length is read-only";
-  for (let index = start; index < nextLength; index += 1) {
-    const descriptor = Object.getOwnPropertyDescriptor(array, String(index));
-    if (descriptor !== undefined && descriptor.writable === false) {
-      return `index ${index} is read-only`;
-    }
-    if (descriptor === undefined && !Object.isExtensible(array)) {
-      return `index ${index} cannot be written`;
-    }
-  }
   try {
-    array.splice(start, rows.length);
-  } catch {
-    return "the host array refused the tail removal";
+    const length = array.length;
+    const target = start + rows.length;
+    if (length < target) {
+      // The host already removed part of the append (for example through `pop()`). Report what is
+      // still there and how much of the build's work could not be undone.
+      const available = Math.max(0, Math.min(rows.length, length - start));
+      let found = 0;
+      for (let index = 0; index < available; index += 1) {
+        if (array[start + index] !== rows[index]) {
+          return (
+            "the host changed the appended rows before the rollback " +
+            `(found ${found} of ${rows.length} appended rows; ` +
+            `${rows.length - found} could not be removed)`
+          );
+        }
+        found += 1;
+      }
+      return (
+        "the host array no longer holds the appended segment " +
+        `(found ${found} of ${rows.length} appended rows; ` +
+        `${rows.length - found} could not be removed)`
+      );
+    }
+    for (let index = 0; index < rows.length; index += 1) {
+      if (array[start + index] !== rows[index]) {
+        return (
+          "the host changed the appended rows before the rollback " +
+          `(found ${index} of ${rows.length} appended rows; ` +
+          `${rows.length - index} could not be removed)`
+        );
+      }
+    }
+    if (length === target) {
+      const descriptor = Object.getOwnPropertyDescriptor(array, "length");
+      if (descriptor !== undefined && descriptor.writable === false) {
+        return `the host array's length is read-only (${rows.length} appended rows could not be removed)`;
+      }
+      array.length = start;
+      return array.length === start
+        ? undefined
+        : `the host array kept a phantom length (${rows.length} appended rows could not be removed)`;
+    }
+
+    // The host appended rows after ours: shift those rows left over the exact appended segment. Only
+    // indices >= `start` are written; retained host indices are never touched. Preflight every index
+    // `splice` will assign (it writes even an equal value), plus the length.
+    const nextLength = length - rows.length;
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(array, "length");
+    if (lengthDescriptor !== undefined && lengthDescriptor.writable === false) {
+      return `the host array's length is read-only (${rows.length} appended rows could not be removed)`;
+    }
+    for (let index = start; index < nextLength; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(array, String(index));
+      if (descriptor !== undefined && descriptor.writable === false) {
+        return `index ${index} is read-only (${rows.length} appended rows could not be removed)`;
+      }
+      if (descriptor === undefined && !Object.isExtensible(array)) {
+        return `index ${index} cannot be written (${rows.length} appended rows could not be removed)`;
+      }
+    }
+    try {
+      array.splice(start, rows.length);
+    } catch {
+      return `the host array refused the tail trim (${rows.length} appended rows could not be removed)`;
+    }
+    return array.length === nextLength
+      ? undefined
+      : `the host array kept a phantom length (${rows.length} appended rows could not be removed)`;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "unknown error";
+    return (
+      `the host array could not be inspected or changed (${detail}); ` +
+      `${rows.length} appended rows could not be removed`
+    );
   }
-  return array.length === nextLength ? undefined : "the host array kept a phantom length";
 }
 
 /**
@@ -799,7 +836,11 @@ function rollbackEarly(session: CaptureSession): void {
   }
   // The late path may now extend the line of the array IT picks; the splice runs once per build.
   session.extendedCardStyle = false;
-  Reflect.deleteProperty(array as object, CAPTURE_INJECTED);
+  try {
+    Reflect.deleteProperty(array as object, CAPTURE_INJECTED);
+  } catch {
+    // A hostile Proxy can refuse even the marker removal; the host's own error still surfaces.
+  }
 }
 
 /**

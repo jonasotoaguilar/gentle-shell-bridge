@@ -13,6 +13,7 @@ import test from "node:test";
 import { registerRows, resetBusForTests } from "../src/bus.ts";
 import { getCaptureDiagnostics, installCaptureBackend, resetCaptureStateForTests } from "../src/capture.ts";
 import { collectStatus, formatStatus } from "../src/status.ts";
+import { resetNoticesForTests, snapshotNotices } from "../src/notices.ts";
 import type { CustomizeRow } from "../src/types.ts";
 import { createFakeHost } from "./fake-host.ts";
 
@@ -53,6 +54,7 @@ const lateOnlyHost = (rows: CustomizeRow[]) => {
 test.beforeEach(() => {
   resetBusForTests();
   resetCaptureStateForTests();
+  resetNoticesForTests();
 });
 
 test("a row's own category is its block boundary, not the provider's declared category", () => {
@@ -370,4 +372,86 @@ test("a throwing rollback removes only its tail append and never writes a retain
   for (let index = 0; index < before.length; index += 1) {
     assert.equal(Object.hasOwn(rows, String(index)), true, `index ${index} is not a hole`);
   }
+});
+
+
+test("a pop'd appended row makes the rollback report what it found and could not remove", () => {
+  const rows = hostRows();
+  const originalError = new Error("factory exploded");
+  const ui = {
+    custom: (factory: (ui: unknown, theme: unknown, ...rest: unknown[]) => unknown): unknown =>
+      factory(ui, undefined),
+  };
+  const host = {
+    ui,
+    build: (): unknown =>
+      ui.custom(() => {
+        rows.map((row) => row.category ?? "Settings");
+        rows.pop(); // the host removes one row this build appended, before it throws
+        throw originalError;
+      }),
+  };
+  registerRows({
+    id: "loon.injected",
+    category: "Layout",
+    rows: () => [{ label: "Injected row", action: () => {} }],
+  });
+  installCaptureBackend(host.ui);
+
+  assert.throws(() => host.build(), (error) => error === originalError);
+
+  assert.deepEqual(
+    snapshotNotices().entries.map((entry) => entry.message),
+    [
+      "gentle-shell-bridge: could not fully roll back the provisional rows: the host array no " +
+        "longer holds the appended segment (found 0 of 1 appended rows; 1 could not be removed). " +
+        "The host menu was left as consistent as the array allowed.",
+    ],
+  );
+});
+
+test("a throwing length descriptor trap never replaces the factory's own error", () => {
+  const rows = hostRows();
+  const initialLength = rows.length;
+  let lengthDescriptorReads = 0;
+  const proxyRows = new Proxy(rows, {
+    getOwnPropertyDescriptor(target, property) {
+      if (property === "length" && target.length > initialLength) {
+        // `push` consults the descriptor once while it grows the array; the rollback's next read
+        // is the one that traps, exactly the "after the provisional append" shape.
+        lengthDescriptorReads += 1;
+        if (lengthDescriptorReads > 1) throw new Error("length descriptor exploded");
+      }
+      return Reflect.getOwnPropertyDescriptor(target, property);
+    },
+  });
+  const originalError = new Error("factory exploded");
+  const ui = {
+    custom: (factory: (ui: unknown, theme: unknown, ...rest: unknown[]) => unknown): unknown =>
+      factory(ui, undefined),
+  };
+  const host = {
+    ui,
+    build: (): unknown =>
+      ui.custom(() => {
+        proxyRows.map((row) => row.category ?? "Settings");
+        throw originalError;
+      }),
+  };
+  registerRows({
+    id: "loon.injected",
+    category: "Layout",
+    rows: () => [{ label: "Injected row", action: () => {} }],
+  });
+  installCaptureBackend(host.ui);
+
+  assert.throws(() => host.build(), (error) => error === originalError);
+  assert.ok(
+    snapshotNotices().entries.some(
+      (entry) =>
+        entry.message.includes("could not be inspected or changed") &&
+        entry.message.includes("length descriptor exploded"),
+    ),
+    "the guarded rollback reports why it could not remove the append",
+  );
 });

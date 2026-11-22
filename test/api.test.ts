@@ -36,6 +36,12 @@ import gentleShellBridge, {
   type BridgeSessionHandler,
 } from "../src/extension.ts";
 import { resetHookStateForTests } from "../src/hook.ts";
+import {
+  getMessageDesignConflicts,
+  messageDesignLines,
+  registerMessageDesign,
+  resetMessageDesignsForTests,
+} from "../src/message-designs.ts";
 import { resetNoticesForTests, snapshotNotices } from "../src/notices.ts";
 import { resetRowBuildStateForTests } from "../src/rows.ts";
 import {
@@ -125,6 +131,7 @@ test.beforeEach(() => {
   resetHookStateForTests();
   resetRowBuildStateForTests();
   resetToolDesignsForTests();
+  resetMessageDesignsForTests();
   disableCaptureBackend();
   disableSidebarBackend();
 });
@@ -147,6 +154,7 @@ test("publishing stores one frozen, versioned API object at the stable symbol", 
     "VERSION",
     "createStore",
     "registerCardStyle",
+    "registerMessageDesign",
     "registerRows",
     "registerSection",
     "registerToolDesign",
@@ -223,6 +231,34 @@ test("the published object answers which design a tool draws, one read per call"
     1,
     "one persisted-selection read per call, exactly what a render pass pays",
   );
+});
+
+test("the published object registers a message design through the same registry", () => {
+  const api = publishBridgeApi();
+  const register = api.registerMessageDesign;
+  assert.equal(
+    register,
+    registerMessageDesign,
+    "the published registration IS the working one, not a copy that could drift",
+  );
+  assert.equal(typeof register, "function");
+  if (typeof register !== "function") return;
+
+  const dispose = register({
+    customType: "gentle-pi.exploration-budget",
+    id: "odd.budget",
+    label: "budget",
+    apply: (lines) => [...lines],
+  });
+  assert.equal(getMessageDesignConflicts().length, 0, "the registration was accepted, not refused");
+  assert.deepEqual(
+    messageDesignLines().map((line) => line.types),
+    [["gentle-pi.exploration-budget"]],
+    "and it landed on the type's own line",
+  );
+
+  dispose();
+  assert.deepEqual(messageDesignLines(), [], "the disposer withdraws exactly what it added");
 });
 
 test("the shape gate accepts only the v1 surface it advertises", () => {

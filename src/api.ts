@@ -10,7 +10,8 @@
  * Symbol.for("gentle-shell-bridge/api/v1") → { schema, version, VERSION, registerRows,
  *                                              registerSection, registerCardStyle,
  *                                              registerTransform, registerToolDesign,
- *                                              createStore, requestRepaint }
+ *                                              registerMessageDesign, createStore,
+ *                                              requestRepaint }
  * ```
  *
  * A plugin registers from its own `session_start` handler. But Pi does NOT guarantee that this
@@ -60,6 +61,7 @@
  */
 
 import { registerCardStyle, registerRows, registerSection, registerTransform } from "./bus.ts";
+import { registerMessageDesign } from "./message-designs.ts";
 import { recordNotice } from "./notices.ts";
 import { requestRepaint } from "./repaint.ts";
 import { createStore } from "./store.ts";
@@ -193,6 +195,24 @@ export interface BridgeApi {
    * checks `typeof api.resolveToolDesignSelection === "function"` first.
    */
   readonly resolveToolDesignSelection?: typeof resolveToolDesignSelection;
+  /**
+   * A card DESIGN for one Pi custom message type (S1, S2, S3): the rows of the host's own message
+   * renderer in, the rows to draw out. A type with NO host renderer hands the design no rows
+   * (`[]`) and the design owns the box; a type that HAS one keeps it, and the design only rewrites
+   * its rows, so `float`/`neon` stay the host's. Nothing is installed for a type nobody claimed, so
+   * Pi's own output for it is byte-identical (S4).
+   *
+   * The bridge does not register anything into Pi's `registerMessageRenderer` map: that map belongs
+   * to the extension that registered, and the runner answers the FIRST renderer in load order with
+   * no `next()` chain. The bridge adopts the renderer Pi already resolved onto each message instead,
+   * which is why a message mounted before the first conversation pass is reached on the next one.
+   *
+   * Optional for the same reason as `registerCardStyle`: the slot is first-wins, so a mixed-copy
+   * process can hand back an object published before this member existed. A plugin that needs it
+   * checks `typeof api.registerMessageDesign === "function"`; demanding it in the gate would turn a
+   * working bridge into "absent" for every plugin that does not register one.
+   */
+  readonly registerMessageDesign?: typeof registerMessageDesign;
   readonly createStore: typeof createStore;
 }
 
@@ -288,6 +308,7 @@ const LOCAL_API: BridgeApi = Object.freeze({
   requestRepaint,
   registerToolDesign,
   resolveToolDesignSelection,
+  registerMessageDesign,
   createStore,
 });
 

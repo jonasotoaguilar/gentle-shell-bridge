@@ -20,6 +20,7 @@ constructed.
 
 The package's public entry exports exactly `registerRows`, `registerSection`,
 `registerCardStyle`, `registerTransform`, `registerToolDesign`, `resolveToolDesignSelection`,
+`registerMessageDesign`, `resolveMessageDesignSelection`,
 `createStore`, `STORE_SCHEMA_VERSION`, `VERSION`, the runtime helpers `bridgeApi`, `isBridgeApi`,
 `onBridgeApi`, the announcement channel `BRIDGE_READY_EVENT` (§9), and the
 row/provider/section/store/API types.
@@ -261,7 +262,8 @@ One command, `/bridge-status`, reporting:
 | Last repaint | the most recent repaint a bridge-owned write requested: the surfaces, the cause (`section "loon.music" → hidden`, `card style → loon.cute`) and `repainted` or `unavailable` with the reason. Omitted until such a write happens |
 | Row name rejections | every line name and row label the bridge refused (`rows`, `section` or `card style`), with the surface, the registration `id`, the field (`line name`/`row label`), the offending string VERBATIM and the rule it broke; omitted when nothing was rejected |
 | Tool designs | every tool with designs: the selection in force (`native` or a design id, `<id> (missing: not registered)` when it no longer exists, `<id> (not covered: …)` when the selected value does not paint that tool), the line that owns a grouped tool (`line "tools"`), whether the one resolver has mounted a card for it (`wrapper mounted on 2 cards` / `wrapper not mounted`), how many cards the post-construction adoption pass reached for it (`adopted 1 card`, S10), each registered design's id, label and description; then a line report for grouped lines (the line, the row name the menu shows, its tools, and each value's coverage, `default` included); then the resolver's last outcome and how many designs it registered, and any conflicts or failures. Omitted when the process registered no design; an ungrouped session prints exactly what it printed before lines existed |
-| Plugin lines | one entry per plugin that registered (`rows`, `section`, `card style`, `transform` or `tool design`): its row name and whether it was `derived from package "@acme/loon-kit"` or an `explicit name`, the registrations `accepted` and `rejected`, any later `name conflict` that declared a different name for the same plugin (with the name kept), and whether the line is `set` or, with the reason, `no line set`. The header also says when the host's `setStatus` was unavailable. Omitted when no plugin registered so far |
+| Plugin lines | one entry per plugin that registered (`rows`, `section`, `card style`, `transform`, `tool design` or `message design`): its row name and whether it was `derived from package "@acme/loon-kit"` or an `explicit name`, the registrations `accepted` and `rejected`, any later `name conflict` that declared a different name for the same plugin (with the name kept), and whether the line is `set` or, with the reason, `no line set`. The header also says when the host's `setStatus` was unavailable. Omitted when no plugin registered so far |
+| Message designs | every message line: the custom type (or the line id) whose switch paints it, the row name the menu shows (`Message exploration budget`), the value in force (`native`, a design id, or `<id> (missing: not registered)` when the design is gone), and every value with the custom types it covers, `default` first. Then, per custom type, how many messages the post-construction adoption pass replaced (`message design adoption: 1 type, 2 messages`, or `none`), and any conflicts (`replaced`, `type`) or failures. Omitted when the process registered no design, so a session that never claimed a custom type prints exactly what it printed before this surface existed (§15) |
 
 A menu that opened without the bridge's rows must show up here — armed-but-uncaptured,
 shape mismatch, or provider failure. A registered section that never appears must show up
@@ -378,6 +380,7 @@ Object.freeze({
   registerTransform,                 // since 0.3.0; optional on an older published object
   registerToolDesign,                // since 0.3.0; optional on an older published object
   resolveToolDesignSelection,        // since 0.7.0; optional on an older published object
+  registerMessageDesign,             // newer than the 0.10.0 object; optional on an older one
   requestRepaint,                    // since 0.3.0; optional on an older published object
   createStore,
 });
@@ -386,7 +389,8 @@ Object.freeze({
 Publication is **first wins**: a compatible object already in the slot is kept and never replaced,
 and the slot is never reset. A consumer gates on the schema string, `version === 1` and the three
 callable members below — `registerCardStyle`, `registerTransform`, `registerToolDesign`,
-`requestRepaint` and `resolveToolDesignSelection` are NOT part of the gate, so an object published
+`requestRepaint`, `resolveToolDesignSelection` and `registerMessageDesign` are NOT part of the gate, so
+an object published
 by an older copy is still a usable bridge for rows, sections and the store; a plugin that needs a
 later surface checks
 `typeof api.registerCardStyle === "function"` (or the same test on any later member) before
@@ -1876,10 +1880,265 @@ The bridge registers exactly ONE `pi.registerToolRenderer` resolver for the whol
 out to these designs. That is why two plugins contributing designs for the same tool do not stack
 wrappers, and why a plugin must never call `pi.registerToolRenderer` itself for a design.
 
+## 15. Message designs
+
+A **message design** decides how ONE Pi custom message is drawn: a custom type a plugin sends with
+`pi.sendMessage({ customType })`, which Pi renders through the renderer an extension registered for
+that type with `pi.registerMessageRenderer`, or through its own default box when nobody registered
+one. A design is declared per custom type, and it works on ROWS, exactly like a tool design:
+
+```ts
+api.registerMessageDesign({
+  customType: "gentle-pi.exploration-budget", // the message this design paints
+  id: "loon.budget-card",                     // the value the user selects; internal
+  label: "budget card",                       // the value on the Message line, not a row name
+  name: "Loon kit",                           // optional INTEGRATIONS name (see §8)
+  description: "draws the budget message as a compact card",
+  preview: () => ({ title: "Messages · budget card", sample: "budget  4 of 6 reads" }),
+  apply(lines, ctx) {                          // the host's rows in, the rows to draw out
+    return lines.map((line) => rewriteTheCount(line));
+  },
+});
+```
+
+A registration is either **ungrouped** (`customType`) or **grouped** (`line` + `types`), never both:
+
+```ts
+// ONE line, several messages: /gentle:customize draws `Message reminders  default | loud`.
+api.registerMessageDesign({
+  line: "reminders",
+  types: ["gentle-pi.exploration-budget", "gentle-pi.verifier-settle-reminder"],
+  id: "loon.reminders-loud",
+  label: "loud",
+  apply(lines, ctx) { /* ctx.customType says which message produced these rows */ },
+});
+```
+
+Exactly one of `customType` / (`line` + `types`) is required; mixing them is refused, and so is
+neither. `types` must be non-empty, deduplicated, and each entry a non-empty string. An ungrouped
+design gets its own implicit line, named after its type; several registrations naming the same `line`
+— from one plugin or two — join ONE line, whose type set is the union of their `types` and whose
+values are its designs in registration order. An array registration may mix both shapes and stays
+all-or-nothing: a refused design leaves none of them registered, and the ONE disposer removes exactly
+what that call added.
+
+**A custom type belongs to at most ONE line.** A second claim on the same type — from another line,
+or from an ungrouped design beside a grouped one — is refused WHOLE before anything is stored, throws
+at the call site, and is reported as a `type` conflict in `/bridge-status`. Two switches that could
+both paint one message would leave the user with a choice nothing can honour. The designs of the SAME
+line are not competing claims: they are the values of its one switch, so two of them may cover the
+same type.
+
+`(line, id)` is the value identity: a second registration of the same pair replaces the earlier one
+in place and is reported as a `replaced` conflict, so a takeover is never silent. `id` is validated
+like every other registration id, `label` must be a non-empty string, and `apply` must be a function.
+**`default` and `native` are reserved labels**: `default` is the value the bridge adds first and
+`native` is its stored identity, so a design carrying either is refused with a message naming the
+reserved word.
+
+`name` is optional and does the same job as `RowProvider.name` (§2): a plugin that contributes ONLY
+message designs is attributed like any other, with its registrations `accepted`/`rejected` in the
+report and its `name` sticky for the identity (§8).
+
+### The context: `MessageDesignContext`
+
+```ts
+type MessageDesignSelection =
+  | { kind: "native" }
+  | { kind: "design"; design: MessageDesignRegistration }
+  | { kind: "missing"; id: string }
+  | { kind: "not-covered"; id: string };
+
+interface MessageDesignRender {
+  expanded: boolean;   // the user pressed the host's expand key on this message
+  outputPad: number;   // the host's own output padding for the message component
+  message: unknown;    // the custom message itself, BY REFERENCE: read it per pass, never cache it
+}
+
+interface MessageDesignContext {
+  width: number;                     // the width the host asked the message component to render at
+  customType: string;                // the type this design was declared for
+  theme?: unknown;                   // the host's opaque theme object
+  cardStyle?: CardStyleSelection;    // the bridge's `Card style` selection, read on ACCESS
+  render: MessageDesignRender;       // Pi's own render options, plus the message
+}
+```
+
+- **`render` is not optional.** Pi hands a message renderer its `{ expanded, outputPad }` options and
+the message at construction, so there is no "context arrived late" state to model. `message` is
+forwarded by reference (Pi keeps it live); `expanded` and `outputPad` are copied by value when they
+carry the documented type, and Pi's defaults (`false`, `1`) answer otherwise.
+- **`cardStyle` is the same kind of field a tool design reads** (§14): resolved on ACCESS, at most
+once per pass, so a design that never reads it pays nothing and one that reads it twice cannot draw a
+message that is half of each style. `native`, a registered style and `missing` mean exactly what they
+mean there. It is the BRIDGE's `Card style` selection — native, a registered style, or missing — and
+**not** the host's own `float`/`neon` chrome: a custom message nobody styles has no styled frame to
+preserve, so a design that wants that chrome draws it from the host's own setting, which this context
+does not read.
+
+### The rule: the host frame, or the box
+
+```text
+Pi rebuild() → the bridge's renderer → the host's renderer(message, options, theme) → host component
+             → [live selection] → design.apply(host rows, ctx) → rows
+```
+
+The design's case is decided by the TYPE, and the rows it receives say which case it is in:
+
+- **The type HAS a host renderer.** That renderer runs FIRST and is the only source of the frame: a
+design receives the rows the host's own component produced, at the width the host asked for, and
+returns the rows to draw. Everything it does not deliberately change comes back byte-identical —
+ansi runs, padding, the host's rails, its chrome — so `float` stays `float` and `neon` stays `neon`.
+A design never replaces the host's frame silently (S3).
+
+- **The type has NO host renderer.** `gentle-pi.exploration-budget` and
+`gentle-pi.verifier-settle-reminder` are the case that motivates the surface: they are custom types
+sent by an extension that registers no renderer for them, so Pi draws its own default box and no card
+style ever reaches them. There is no frame to preserve, so the design OWNS the box (S2) and draws
+everything: it receives **`[]`** — no rows at all, because there is nothing the bridge may invent on
+the host's behalf — and `ctx.render.message`, `ctx.width` and `ctx.cardStyle` are what it draws from.
+
+`apply(lines, ctx)` returns `string[]`: the rows to draw. Rows are handed over as a COPY, so a design
+that mutates its input cannot corrupt rows the host still owns. A design that throws, or that returns
+anything other than an array of strings, loses only its own output — the host's rows (or Pi's own box)
+stay on screen — and is reported in `/bridge-status` once per (custom type, design id, message).
+
+Two consequences are deliberate rather than incidental: a design receives rows, never a renderer
+object, so it cannot wrap, delay or re-enter the host's component; and it never sees a byte of the
+chrome, so the bridge never re-frames, re-measures or clips what it draws.
+
+### Selection, and the default
+
+The selected design per line is a row in `/gentle:customize` → `Cards`, named `Message <line>` — never
+`Card <line>`, so a message surface and a tool surface never read alike — with the same shape a
+`Card <line>` row has:
+
+1. `default` — **the host's own output, always first and the default**. It is what the row SHOWS; the
+   stored value stays `native`, because the selection is identity and a saved choice must survive the
+   wording; and
+2. every design of that line, in registration order, each shown by its `label`.
+
+`default` appears before the first design, and the line is installed the moment a design EXISTS — at
+registration, or when the bridge arms if one was already registered — and never before. So a session
+that never registers one has no provider, no row and nothing to pay per menu build (S4). A line's name
+is derived from its custom type (`gentle-pi.exploration-budget` → `Message exploration budget`) or
+from its line id (`reminders` → `Message reminders`), clamped to one to three plain words by the same
+rule every row name obeys (`src/row-names.ts`), and two lines that derive the same name are told apart
+with an ordinal. The name is not identity: the store is keyed by the custom type or the line id, and a
+value is the design's `id`, so renaming a label moves nothing but the text the user reads.
+
+**Where the value is stored.** The bridge's own file, `bridge-message-designs` → `selections`, flat for
+the ungrouped case (`{ "gentle-pi.exploration-budget": "<id>" }`) and the grouped values under the
+reserved `$lines` key in the same document (`{ "$lines": { "reminders": "<id>" } }`), so ONE read
+serves both and a frame reads the file once. `$lines` is written only once a line has a value, so a
+session that never groups a line gains nothing.
+
+### Asking which design a message draws: `resolveMessageDesignSelection(customType)`
+
+```ts
+resolveMessageDesignSelection(customType: string): MessageDesignSelection;
+```
+
+The same answer the bridge's own renderer acts on, for a plugin that paints its own chrome around a
+message and must obey the user's switch instead of guessing:
+
+- `native` — the host's own output; nothing claimed this type, or the line's value is `default`;
+- `design` — the LIVE registration, so a caller reads its `id` and `label` rather than re-deriving
+  them;
+- `missing` — the stored value names a design that is no longer registered (it was disposed, or the
+  plugin was unloaded). The wiring draws the host's own output, and `/bridge-status` names the missing
+  id while its line still has a live design, so a disposed design never quietly reads as `default`;
+- `not-covered` — the line's value is a design that does not list THIS type. A grouped line therefore
+  never silently paints a message it never claimed.
+
+It never throws — an unreadable or malformed store reads as `native` — and it costs **one
+persisted-selection read per call**, whatever the number of lines, which is what one render pass
+already pays. A caller may ask on every frame for the message it is painting; asking for every type on
+every frame multiplies that count, and nothing here caches the answer, because a selection can change
+between frames. The raw stored value is deliberately not on the contract: an id alone would push the
+resolution rule onto every consumer, and two copies of that rule drift.
+
+A plugin on an older bridge checks `typeof api.registerMessageDesign === "function"` before use (§9);
+with no member there is no design surface to register on, which is the pre-switch behaviour.
+
+### Nothing claimed, nothing touched (S4)
+
+With no design registered for a type, the bridge does nothing at all to it: the adoption pass
+recognises a message by CLAIM, never by the frame it drew, and a type no live design claims is
+`ignored` — no renderer replaced, no repaint requested, no store read. Pi's own output for it is
+byte-identical, no pass pays for this surface, and `/bridge-status` prints no block for it: the
+report a session had before this surface existed is the report it keeps, exactly.
+
+### Diagnostics
+
+`/bridge-status` gains a `message designs:` block the moment a design is registered, and none before
+(disposing the last one removes it again — a stored value alone never adds a block):
+
+```text
+message designs: 1 line
+  - gentle-pi.exploration-budget "Message exploration budget": loon.budget-card
+      native "default": covers gentle-pi.exploration-budget
+      loon.budget-card "budget card": covers gentle-pi.exploration-budget
+message design adoption: none
+```
+
+- **The line** prints its selection key, the row name the menu shows and the value in force: a design
+  id, `native`, or `<id> (missing: not registered)` when the value names a design that is gone.
+- **The values** print `default` first, then each design with the types it paints, so "my design is
+  selected but this message is unchanged" is answerable — the design may not cover that type.
+- **`message design adoption:`** counts, per custom type, the messages the post-construction pass
+  replaced. `none` means no message of a claimed type has been through a conversation render yet.
+- **`message design conflicts:`** and **`message design failures:`** list what the registry refused or
+  replaced and what a paint threw, with the type, the design id and the message, and appear only when
+  there is something to list.
+
+The bridge's own row provider (`bridge.message-designs`) is plumbing, not a plugin provider: like the
+`Sections` and `Card style` providers it is never listed in `providers`, and its effect is the block
+above.
+
+### The mechanism, and the evidence
+
+`pi.registerMessageRenderer(customType, renderer)` writes into THAT extension's own `messageRenderers`
+map (`dist/core/extensions/loader.js:284-287`): every extension gets its own `pi` object with its own
+closure. The runner answers `getMessageRenderer(customType)` by scanning the loaded extensions in LOAD
+ORDER and returning the FIRST one that has the type (`dist/core/extensions/runner.js:534-540`), with
+no `next()` chain — unlike tool renderers (`:550-553`). So there is no composition to join: a bridge
+that registered a renderer for a type another extension already renders would either steal the slot or
+be silently ignored, and it could not delegate in either case, because the other renderer is
+unreachable. For the same reason a plugin must never call `pi.registerMessageRenderer` itself for a
+type it gives this bridge a design for.
+
+The capture point Pi does offer is the component. `CustomMessageComponent` keeps the renderer Pi
+resolved for its message in `customRenderer`, calls it again on every `rebuild()`, and falls back to
+its own box when the renderer answers `undefined`
+(`dist/modes/interactive/components/custom-message.js`). The conversation pass the bridge already runs
+for card styles and tool cards therefore replaces that field with the rule above, marks the component
+so a reload or a second loaded copy of this package cannot stack two renderers on one message, and
+calls `invalidate()` ONCE so the stored renderer is resolved again through the design. Pi keeps its
+frame, its box, its padding and its theme; what the design rewrote is the rows.
+
+The decision is read LIVE on every render pass, never captured with the renderer: a design selected
+after the message was drawn still reaches it, and `default` restores the host's own rows untouched.
+One rebuild is unavoidable and deliberate: a type with NO host renderer answers `undefined` (Pi's own
+box) or a component, and those are different answers from one renderer, so a message of such a type is
+rebuilt once when that shape changes — and never twice for the same shape.
+
+Two limits belong to the contract, not to the implementation:
+
+- **A message Pi mounted BEFORE the pass first runs is adopted on the next conversation render.** The
+  pass runs inside the conversation component the bridge already wraps; a message that arrives and is
+  drawn before that pass has run keeps Pi's own rendering until the next frame, and then draws through
+  the design. Nothing older is rewritten retroactively.
+- **`ctx.cardStyle` is the bridge's own `Card style` selection** — `native`, a registered style, or
+  `missing` — and NOT the host's own `float`/`neon` chrome. The bridge cannot read the host's style
+  setting for a message it never framed; a design that must match it paints from the host's own
+  setting, which this context never touches.
+
 ## Limits
 
 - `registerRows`, `registerSection`, `registerCardStyle`, `registerTransform`,
-  `registerToolDesign`, `resolveToolDesignSelection`, `requestRepaint`,
+  `registerToolDesign`, `resolveToolDesignSelection`,
+  `registerMessageDesign`, `resolveMessageDesignSelection`, `requestRepaint`,
   `createStore`, `bridgeApi`, `isBridgeApi`, `onBridgeApi`
   and the `gentle-shell-bridge:ready` event are the contract; anything a plugin does inside `action()` beyond
   calling inline helpers is the plugin's own business.
@@ -1929,7 +2188,8 @@ wrappers, and why a plugin must never call `pi.registerToolRenderer` itself for 
 - Card styles are proven against a fake conversation component that reproduces gentle-shell's
   `float` output, never in a running Pi TUI; the downstream-override conflict above is a property of
   a real session the fake cannot reproduce.
-- `registerCardStyle`, `registerTransform`, `registerToolDesign`, `resolveToolDesignSelection` and
+- `registerCardStyle`, `registerTransform`, `registerToolDesign`, `resolveToolDesignSelection`,
+  `registerMessageDesign` and
   `requestRepaint` are optional on the published object: an object published by a copy older than
   that surface passes the gate but lacks it, so a plugin that needs one checks
   `typeof api.registerCardStyle === "function"` (or the same test on any later member) first.

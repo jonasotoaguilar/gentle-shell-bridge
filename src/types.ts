@@ -586,3 +586,102 @@ export type CardStyleSelection =
   | { kind: "native" }
   | { kind: "style"; style: CardStyleRegistration }
   | { kind: "missing"; id: string };
+
+/**
+ * What Pi's render context says about ONE custom message, read on every pass (S1). The message is the
+ * HOST's own object, forwarded by reference exactly like `ToolDesignRender.args`: treat it as
+ * read-only. `expanded` and `outputPad` are Pi's own render options, so a design can honour the
+ * user's collapse choice instead of guessing from drawn text.
+ */
+export interface MessageDesignRender {
+  /** The row is expanded: the user pressed the host's expand key on it. */
+  readonly expanded: boolean;
+  /** The host's own output padding for the message component. */
+  readonly outputPad: number;
+  /**
+   * The custom message Pi is drawing, forwarded BY REFERENCE and never cloned or frozen: its
+   * `customType`, its `content`, and whatever the sending extension put in it. Pi keeps it live, so
+   * read it per pass and never cache it.
+   */
+  readonly message: unknown;
+}
+
+/**
+ * Context handed to a message design's `apply` on EVERY pass of the message's component (S1).
+ *
+ * It is the tool-design context for a message: `width` is the width the host asked the component to
+ * render at, `customType` is the type the design was declared for, `theme` is the host's opaque theme
+ * object, and `cardStyle` is the same resolved selection a tool design reads (S22).
+ *
+ * `render` is NOT optional here: Pi hands a message renderer its `{ expanded, outputPad }` options and
+ * the message itself at construction, so there is no "context arrived late" state to model. An older
+ * copy of the bridge knows no message designs at all, so a design never meets a context without it.
+ */
+export interface MessageDesignContext {
+  readonly width: number;
+  /** The custom type this design paints: one of its registration's `types`, or its `customType`. */
+  readonly customType: string;
+  readonly theme?: unknown;
+  /** The style the user has selected, resolved live on access, exactly as for a tool design. */
+  readonly cardStyle?: CardStyleSelection;
+  readonly render: MessageDesignRender;
+}
+
+/**
+ * A plugin's design for ONE custom message type, or for a line of several (S1).
+ *
+ * A custom message has no frame of the host's own to preserve: Pi draws a default box, or the
+ * registering extension's renderer does. So a design works on ROWS, exactly like a tool design, and
+ * what it receives says which case it is in:
+ *
+ * - the type HAS a host renderer: those rows, at the width Pi asked for, with the host's chrome
+ *   already painted around them. The design returns the rows to draw and everything it does not
+ *   deliberately change comes back byte for byte (S3);
+ * - the type has NO host renderer (`gentle-pi.exploration-budget`, `gentle-pi.verifier-settle-reminder`,
+ *   or any custom type nobody renders): the message's own body, plainly — its `[customType]` label, a
+ *   blank row and its text — never a picture of Pi's styled box. The design owns the frame around a
+ *   body it did not have to invent (S2), drawing from `ctx.render.message`, `ctx.width` and
+ *   `ctx.cardStyle`, and those same rows are what a FAILING design falls back to, so a message the
+ *   agent must read is never lost to a broken design.
+ *
+ * With NO design selected for a type the bridge does nothing at all: it never touches a message no
+ * design claims (S4), so Pi's own output is byte-identical and no pass pays for the surface.
+ */
+export interface MessageDesignRegistration {
+  /**
+   * The custom type this design paints, for an UNGROUPED registration: it gets its own
+   * `Message <type>` line. Exactly one of `customType` / (`line` + `types`) is required; mixing them
+   * is refused.
+   */
+  customType?: string;
+  /**
+   * The line this design joins, for a GROUPED registration. Several registrations naming the same line
+   * — from one plugin or two — join ONE `Message <line>` line, whose values are its designs in
+   * registration order and whose type set is the union of their `types`.
+   */
+  line?: string;
+  /**
+   * The custom types a GROUPED design paints. Required with `line`, refused with `customType`.
+   * Non-empty, deduplicated, each a non-empty string. A type belongs to at most ONE line: a second
+   * claim on the same type — from another line, or from another ungrouped design — is refused whole and
+   * reported, so no two switches can ever disagree about one message.
+   */
+  types?: readonly string[];
+  /** Unique per line (or per type when ungrouped): the value the user selects and the key for replacement. */
+  id: string;
+  /** Optional display name for the plugin's INTEGRATIONS line; see `RowProvider.name`. */
+  name?: string;
+  /** The short text shown on the customize line as this design's value. */
+  label: string;
+  /** One line a preview can show about what the design does. */
+  description?: string;
+  /** Optional literal depiction of the design, drawn in the customize preview. */
+  preview?(): RowPreview;
+  /**
+   * The rows the bridge hands the design in, and the rows it draws out. A design receives a COPY: one
+   * that mutates its input cannot corrupt the rows the host still owns. A throw, or a return value that
+   * is not an array of strings, leaves the host's own output on screen and is reported in
+   * `/bridge-status`.
+   */
+  apply(lines: readonly string[], ctx: MessageDesignContext): string[];
+}

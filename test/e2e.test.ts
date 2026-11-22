@@ -18,6 +18,9 @@ import {
   type CardStyleRegistration,
   type CustomizeRow,
   type InlineHelpers,
+  type MessageDesignContext,
+  type MessageDesignRegistration,
+  type MessageDesignRender,
   type RowChoice,
   type RowContext,
   type RowLabel,
@@ -315,11 +318,13 @@ test("the public entry exports exactly the contract surface and no test seams", 
     "isBridgeApi",
     "onBridgeApi",
     "registerCardStyle",
+    "registerMessageDesign",
     "registerRows",
     "registerSection",
     "registerToolDesign",
     "registerTransform",
     "resolveCardStyleSelection",
+    "resolveMessageDesignSelection",
     "resolveToolDesignSelection",
   ]);
   for (const seam of [
@@ -364,6 +369,24 @@ test("the public entry exports exactly the contract surface and no test seams", 
     "setToolDesignLineSelection",
     "getToolDesignSelectionReads",
     "resetToolDesignSelectionReads",
+    "messageDesignLines",
+    "messageDesignRows",
+    "messageDesignLineNames",
+    "getMessageDesignSelection",
+    "getMessageDesignLineSelection",
+    "setMessageDesignSelection",
+    "setMessageDesignLineSelection",
+    "applyMessageDesign",
+    "getMessageDesignConflicts",
+    "getMessageDesignFailures",
+    "getMessageDesignSelectionReads",
+    "isMessageTypeClaimed",
+    "adoptCustomMessages",
+    "messageDesignRenderer",
+    "installMessageDesignRows",
+    "resetMessageDesignsForTests",
+    "resetMessageDesignAdoptionForTests",
+    "resetMessageDesignRowStateForTests",
   ]) {
     assert.equal(seam in publicApi, false, `${seam} must not be public`);
   }
@@ -420,6 +443,26 @@ test("the documented values and types are reachable from the public entry", () =
 
   assert.equal(provider.rows(context).length, 0);
   assert.equal(typeof publicApi.registerCardStyle, "function", "the entry exports the registration");
+  // The message-design surface: one registration and the context its `apply` receives.
+  const render: MessageDesignRender = { expanded: false, outputPad: 1, message: { customType: "x" } };
+  const messageContext: MessageDesignContext = { width: 5, customType: "x", render };
+  const messageDesign: MessageDesignRegistration = {
+    customType: "x",
+    id: "api.budget",
+    label: "budget",
+    apply: (lines: readonly string[], designCtx: MessageDesignContext) => [
+      ...lines,
+      `${designCtx.customType}@${designCtx.width}`,
+    ],
+  };
+  assert.equal(
+    typeof publicApi.registerMessageDesign,
+    "function",
+    "the entry exports the message-design registration",
+  );
+  assert.equal(typeof publicApi.resolveMessageDesignSelection, "function");
+  assert.deepEqual(messageDesign.apply(["row"], messageContext), ["row", "x@5"]);
+  assert.equal(render.expanded, false);
   assert.equal(
     typeof publicApi.registerTransform,
     "function",

@@ -25,6 +25,19 @@ import { getCardStyleWiringDiagnostics, type CardStyleWiringDiagnostics } from "
 import { resolveCardStyleSelection } from "./card-styles.ts";
 import { getCaptureDiagnostics, type CaptureOutcome } from "./capture.ts";
 import { getHookDiagnostics } from "./hook.ts";
+import { getMessageDesignAdoptionDiagnostics } from "./message-design-adoption.ts";
+import {
+  MESSAGE_DESIGN_DEFAULT_LABEL,
+  MESSAGE_DESIGN_NATIVE,
+  getMessageDesignConflicts,
+  getMessageDesignFailures,
+  getMessageDesignLineSelection,
+  messageDesignLines,
+  type MessageDesignConflict,
+  type MessageDesignFailure,
+  type MessageDesignLine,
+} from "./message-designs.ts";
+import { bridgeMessageDesignRowsProvider, messageDesignLineNames } from "./message-design-rows.ts";
 import { snapshotNotices, type NoticeLevel } from "./notices.ts";
 import {
   PAINT_SURFACES,
@@ -70,7 +83,7 @@ import { SECTION_ROWS_PROVIDER_ID } from "./sections-rows.ts";
 import { sectionRowLabels } from "./row-labels.ts";
 import { getRowNameRejections, type RowNameRejection } from "./row-names.ts";
 import { getStoreDiagnostics, type StoreProblem } from "./store.ts";
-import type { RowContext, RowProvider } from "./types.ts";
+import type { MessageDesignRegistration, RowContext, RowProvider } from "./types.ts";
 import {
   getSectionCollapsed,
   getSectionVisibility,
@@ -249,6 +262,46 @@ export interface StatusToolDesigns {
   failures: ToolDesignFailure[];
 }
 
+/** One message line's value, with the custom types it paints. */
+export interface StatusMessageDesignValue {
+  /** The stored identity: `native` for `default`, otherwise the design's id. */
+  id: string;
+  label: string;
+  /** The custom types of the line this value paints. `default` covers every type of the line. */
+  covers: string[];
+}
+
+/** One message line, as `/bridge-status` lists it: the row name, its types, the value in force. */
+export interface StatusMessageDesignLine {
+  /** `type` for a design's own implicit line, `line` for a registered line of several types. */
+  scope: "type" | "line";
+  /** The selection key: the custom type, or the registered line id. */
+  line: string;
+  /** The name the menu shows: `Message exploration budget`. */
+  rowName: string;
+  /** Every custom type of the line, in first-seen order. */
+  types: string[];
+  /** The stored value: a design id, `native`, or `<id> (missing: not registered)`. */
+  selection: string;
+  /** `default` first, then the line's designs in registration order. */
+  values: StatusMessageDesignValue[];
+}
+
+/** The message-design surface, reported only when the process registered a design (S4). */
+export interface StatusMessageDesigns {
+  lines: StatusMessageDesignLine[];
+  /**
+   * Per custom type, how many messages the post-construction adoption pass replaced. Empty when the
+   * pass has not reached a message yet — the answer to "why is the message already on screen
+   * unchanged".
+   */
+  adoptedMessages: Array<{ customType: string; messages: number }>;
+  /** Registrations that replaced another one or were refused, and why. */
+  conflicts: MessageDesignConflict[];
+  /** Designs that threw while painting (one entry per type, id and message). */
+  failures: MessageDesignFailure[];
+}
+
 /** One registered card style, as `/bridge-status` lists it: in the order its values appear. */
 export interface StatusCardStyleEntry {
   id: string;
@@ -356,6 +409,11 @@ export interface StatusSnapshot {
    */
   toolDesigns?: StatusToolDesigns;
   /**
+   * The message-design surface. Absent when no design is registered, so a session that never claimed
+   * a custom type keeps its historical output byte for byte (S4).
+   */
+  messageDesigns?: StatusMessageDesigns;
+  /**
    * Plugin row names the bridge rejected for breaking the row-name shape (N8), or a row category it refused as reserved (S15): the offending
    * string, verbatim, and the rule it broke. Absent when nothing was rejected, so a clean session
    * keeps its historical output exactly.
@@ -412,7 +470,11 @@ export function collectStatus(): StatusSnapshot {
         (provider) =>
           provider.id !== SECTION_ROWS_PROVIDER_ID &&
           provider.id !== CARD_STYLE_ROWS_PROVIDER_ID &&
-          provider.id !== TOOL_DESIGN_ROWS_PROVIDER_ID,
+          provider.id !== TOOL_DESIGN_ROWS_PROVIDER_ID &&
+          // The message line is ours by IDENTITY, not by id: a plugin may legally register a provider
+          // with this id through the public `registerRows`, and hiding that would be the report lying
+          // about a provider the user really has.
+          provider !== bridgeMessageDesignRowsProvider(),
       )
       .map((provider) => ({ id: provider.id, category: provider.category })),
     backend,
@@ -493,6 +555,8 @@ export function collectStatus(): StatusSnapshot {
   if (cardStyles !== undefined) snapshot.cardStyles = cardStyles;
   const toolDesigns = describeToolDesigns();
   if (toolDesigns !== undefined) snapshot.toolDesigns = toolDesigns;
+  const messageDesigns = describeMessageDesigns();
+  if (messageDesigns !== undefined) snapshot.messageDesigns = messageDesigns;
   const lastRepaint = describeLastRepaint();
   if (lastRepaint !== undefined) snapshot.lastRepaint = lastRepaint;
   // The transform pipeline, in the order the wrapper runs it. Nothing here calls a transform: the
@@ -703,6 +767,73 @@ function describeToolDesignLines(): StatusToolDesignLine[] {
         ],
       };
     });
+}
+
+/**
+ * The message-design block, or `undefined` when this process registered no design (S4).
+ *
+ * The guard is the same discipline as every other block: a session that never claimed a custom type
+ * keeps its historical report exactly, so the surface costs one registry walk and not one line.
+ * Once a design exists, the line's stored value answers "which design does this message draw right
+ * now", and the adoption count answers the other question a stuck user has: "the message is already
+ * on screen — has anything reached it?".
+ *
+ * Nothing here calls an `apply`: the lines, the values, the selection and the records are the live
+ * registry, the persisted value and the failures the last passes already made.
+ */
+function describeMessageDesigns(): StatusMessageDesigns | undefined {
+  const lines = messageDesignLines();
+  if (lines.length === 0) return undefined;
+  const names = messageDesignLineNames();
+  return {
+    lines: lines.map((line) => {
+      const named = names.find(
+        (candidate) => candidate.scope === line.scope && candidate.line === line.line,
+      );
+      return {
+        scope: line.scope,
+        line: line.line,
+        // The name the menu shows, assigned by the same derivation the rows use (N2): the report
+        // explains what the user reads instead of recomputing it differently.
+        rowName: named?.name ?? line.line,
+        types: [...line.types],
+        selection: messageSelectionOf(line),
+        values: [
+          { id: MESSAGE_DESIGN_NATIVE, label: MESSAGE_DESIGN_DEFAULT_LABEL, covers: [...line.types] },
+          ...line.designs.map((design) => ({
+            id: design.id,
+            label: design.label,
+            covers: coveredTypesOf(line, design),
+          })),
+        ],
+      };
+    }),
+    adoptedMessages: getMessageDesignAdoptionDiagnostics().adoptedMessages,
+    conflicts: getMessageDesignConflicts(),
+    failures: getMessageDesignFailures(),
+  };
+}
+
+/**
+ * The stored value of one line, with the one degrade the report names: `<id> (missing: not
+ * registered)`, so a design disposed while it was selected never reads as the user's `default`.
+ */
+function messageSelectionOf(line: MessageDesignLine): string {
+  const stored = getMessageDesignLineSelection(line.scope, line.line);
+  if (stored === MESSAGE_DESIGN_NATIVE) return MESSAGE_DESIGN_NATIVE;
+  return line.designs.some((design) => design.id === stored)
+    ? stored
+    : `${stored} (missing: not registered)`;
+}
+
+/** The custom types one design of a line paints: its own `types`, or its `customType`. */
+function coveredTypesOf(
+  line: MessageDesignLine,
+  design: MessageDesignRegistration,
+): string[] {
+  if (Array.isArray(design.types)) return [...design.types];
+  if (typeof design.customType === "string") return [design.customType];
+  return [...line.types];
 }
 
 /**
@@ -1111,6 +1242,52 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
       lines.push(`tool design failures: ${designs.failures.length}`);
       for (const failure of designs.failures) {
         lines.push(`  - ${failure.tool} / ${failure.designId}: ${failure.message}`);
+      }
+    }
+  }
+
+  if (snapshot.messageDesigns !== undefined) {
+    const designs = snapshot.messageDesigns;
+    lines.push(
+      `message designs: ${designs.lines.length} ${designs.lines.length === 1 ? "line" : "lines"}`,
+    );
+    for (const entry of designs.lines) {
+      // The line's own entry answers both questions: which design resolves NOW for these messages,
+      // and which values the menu offers for them.
+      lines.push(`  - ${entry.line} "${entry.rowName}": ${entry.selection}`);
+      for (const value of entry.values) {
+        lines.push(`      ${value.id} "${value.label}": covers ${value.covers.join(", ")}`);
+      }
+    }
+    // S4's other half: a design for a message Pi already mounted only reaches it on the next
+    // conversation render, so "nothing adopted yet" is an answer, not an empty block.
+    if (designs.adoptedMessages.length === 0) {
+      lines.push("message design adoption: none");
+    } else {
+      const total = designs.adoptedMessages.reduce((sum, entry) => sum + entry.messages, 0);
+      const types = designs.adoptedMessages.length;
+      lines.push(
+        `message design adoption: ${types} ${types === 1 ? "type" : "types"}, ` +
+          `${total} ${total === 1 ? "message" : "messages"}`,
+      );
+      for (const entry of designs.adoptedMessages) {
+        lines.push(
+          `  - ${entry.customType}: ${entry.messages} ${entry.messages === 1 ? "message" : "messages"}`,
+        );
+      }
+    }
+    if (designs.conflicts.length > 0) {
+      lines.push(`message design conflicts: ${designs.conflicts.length}`);
+      for (const conflict of designs.conflicts) {
+        lines.push(
+          `  - ${conflict.customType} / ${conflict.id} (${conflict.kind}): ${conflict.message}`,
+        );
+      }
+    }
+    if (designs.failures.length > 0) {
+      lines.push(`message design failures: ${designs.failures.length}`);
+      for (const failure of designs.failures) {
+        lines.push(`  - ${failure.customType} / ${failure.designId}: ${failure.message}`);
       }
     }
   }

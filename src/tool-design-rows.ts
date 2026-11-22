@@ -41,7 +41,7 @@
  * This module is internal: `src/index.ts` does not re-export it.
  */
 
-import { registerRows } from "./bus.ts";
+import { registerBridgeRows } from "./bus.ts";
 import { HOST_CARD_STYLE_CATEGORY } from "./card-style-line.ts";
 import { requestRepaint } from "./repaint.ts";
 import { deriveRowLabel } from "./row-labels.ts";
@@ -281,7 +281,7 @@ function rowsState(): ToolDesignRowsState {
 export function installToolDesignRows(): () => void {
   const state = rowsState();
   if (state.dispose === undefined) {
-    state.dispose = registerRows({
+    state.dispose = registerBridgeRows({
       id: TOOL_DESIGN_ROWS_PROVIDER_ID,
       category: HOST_CARD_STYLE_CATEGORY,
       // Rebuilt per build, never cached: a design registered later shows up with no re-registration.

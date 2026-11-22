@@ -66,6 +66,7 @@ import { transformCardLines } from "./card-style-transform.ts";
 import { getRepaintHost, recordSurfaceReach, type PaintSurface } from "./repaint.ts";
 import { isRecord } from "./rows.ts";
 import { rowOrigins } from "./row-origin.ts";
+import { adoptCustomMessages } from "./message-design-adoption.ts";
 import { adoptToolCards } from "./tool-design-adoption.ts";
 import { applyTransforms } from "./transform-pipeline.ts";
 
@@ -327,6 +328,10 @@ function wrapComponent(component: Renderable, surface: PaintSurface): InstallCar
     if (surface === "conversation" && wiringState().generation === generation) {
       try {
         adoptToolCards(component);
+        // The message designs' capture point, on the same pass and for the same reason: Pi holds a
+        // custom message's renderer on the component it built, and this is the only place the bridge
+        // can reach it. It touches a message only when a live design claims its type (S4).
+        adoptCustomMessages(component);
       } catch {
         // `adoptToolCards` is written not to throw, and this is the last line of defence: a failure
         // in the adoption path must never take the host's render loop down. The host's own rows are

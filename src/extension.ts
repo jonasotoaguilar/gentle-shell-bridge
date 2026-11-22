@@ -44,6 +44,7 @@ import { installSidebarBackend, noteSidebarUnavailable, type SidebarTuiLike } fr
 import { setRepaintHost } from "./repaint.ts";
 import { clearPluginStatus, installPluginStatus } from "./plugin-lines.ts";
 import { installSectionRail } from "./sidebar-render.ts";
+import { installMessageDesignRows } from "./message-design-rows.ts";
 import { installToolDesignRows } from "./tool-design-rows.ts";
 import { installToolDesignResolver, type ToolDesignResolver } from "./tool-design-wiring.ts";
 import { collectStatus, formatStatus } from "./status.ts";
@@ -247,6 +248,10 @@ export default function gentleShellBridge(pi: BridgeExtensionApi): void {
     //   neither twice.
     installToolDesignRows();
     installToolDesignResolver(pi);
+    // The MESSAGE-design lines, at this same arming point and for the same reason: the rows need
+    // no `tui`, and a design registered later shows up on the next menu build. Installing twice is
+    // a no-op through a process-global marker.
+    installMessageDesignRows();
     armSidebar(ctx.ui);
     // The ONE INTEGRATIONS line each plugin gets (I1–I6). A plugin that registered before any `ui`
     // existed is painted here; a plugin that registers later repaints its own key in place. A host

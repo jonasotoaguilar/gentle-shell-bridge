@@ -99,6 +99,7 @@
  */
 
 import { recordObservedHostCategories, recordRowPlacementLandings } from "./bus.ts";
+import { recordNotice } from "./notices.ts";
 import { extendCardStyleLine } from "./card-style-rows.ts";
 import { findCardStyleLine } from "./card-style-line.ts";
 import {
@@ -705,13 +706,67 @@ function placeEarlyBlocks(early: EarlyInjection): string | undefined {
 }
 
 /**
+ * Remove exactly the rows this build appended, without writing a retained host index (S10).
+ *
+ * The normal case is the unchanged array `original + rows`: shrinking `length` removes the tail
+ * append and writes no element, so a retained read-only index is never touched and no hole can
+ * appear. If the host appended its own rows after ours, only the indices at or after the append point
+ * are rewritten, again guarded and preflighted as one change. Anything that cannot be done leaves the
+ * array consistent and returns the reason for the notice.
+ */
+function removeInjectedTail(early: EarlyInjection): string | undefined {
+  const { array, original, rows } = early;
+  if (rows.length === 0) return undefined;
+  const start = original.length;
+  if (array.length < start + rows.length) return undefined;
+  for (let index = 0; index < rows.length; index += 1) {
+    if (array[start + index] !== rows[index]) {
+      return "the host changed the appended rows before the rollback";
+    }
+  }
+  const target = start + rows.length;
+  if (array.length === target) {
+    const length = Object.getOwnPropertyDescriptor(array, "length");
+    if (length !== undefined && length.writable === false) return "the host array's length is read-only";
+    try {
+      array.length = start;
+    } catch {
+      return "the host array refused the tail trim";
+    }
+    return array.length === start ? undefined : "the host array kept a phantom length";
+  }
+
+  // The host appended rows after ours: shift those rows left over the exact appended segment. Only
+  // indices >= `start` are written; retained host indices are never touched. Preflight every index
+  // `splice` will assign (it writes even an equal value), plus the length.
+  const nextLength = array.length - rows.length;
+  const length = Object.getOwnPropertyDescriptor(array, "length");
+  if (length !== undefined && length.writable === false) return "the host array's length is read-only";
+  for (let index = start; index < nextLength; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(array, String(index));
+    if (descriptor !== undefined && descriptor.writable === false) {
+      return `index ${index} is read-only`;
+    }
+    if (descriptor === undefined && !Object.isExtensible(array)) {
+      return `index ${index} cannot be written`;
+    }
+  }
+  try {
+    array.splice(start, rows.length);
+  } catch {
+    return "the host array refused the tail removal";
+  }
+  return array.length === nextLength ? undefined : "the host array kept a phantom length";
+}
+
+/**
  * Take a provisional injection back out, exactly.
  *
  * Three things were written and all three are undone in place, on the SAME array object the host
- * holds: the providers' rows (by identity, wherever they sit now), the `Card style` values the
- * provisional splice inserted into the host's own line, and the injection marker. If the host itself
- * moved those elements the rollback leaves them alone rather than guessing — but the marker still
- * comes off, so nothing is left claiming this array was served.
+ * holds: the appended provider rows (removed from their tail segment, never by filtering identities),
+ * the `Card style` values the provisional splice inserted into the host's own line, and the injection
+ * marker. A retained index the build never changed is never written (S10); if the host moved the
+ * appended rows the rollback reports that instead of guessing, but the marker still comes off.
  */
 function rollbackEarly(session: CaptureSession): void {
   const early = session.earlyInjection;
@@ -722,16 +777,13 @@ function rollbackEarly(session: CaptureSession): void {
   // Every step is best effort and none may throw (E10): the host can freeze, seal or proxy its array
   // between our push and this rollback, and a rollback that threw would replace the host's own error
   // and skip the steps after it. An array we cannot restore is left as the host made it.
-  try {
-    // Restore the recorded contents EXACTLY. Never filter by identity: a provider may hand back a
-    // host row object, and deleting every element with that identity would delete the host's own
-    // row as well (S6). The snapshot is the array as it was before this build's append.
-    const alreadyExact =
-      array.length === early.original.length &&
-      early.original.every((row, index) => array[index] === row);
-    if (!alreadyExact) array.splice(0, array.length, ...early.original);
-  } catch {
-    // frozen, sealed or exotic: nothing more can be taken back from this array
+  const rollbackProblem = removeInjectedTail(early);
+  if (rollbackProblem !== undefined) {
+    recordNotice(
+      `gentle-shell-bridge: could not fully roll back the provisional rows: ${rollbackProblem}. ` +
+        "The host menu was left as consistent as the array allowed.",
+      "error",
+    );
   }
   // Reverse order of the writes: the preview patch was applied after the `Card style` splice, so it
   // goes back FIRST, while its recorded indices still describe the array it edited.

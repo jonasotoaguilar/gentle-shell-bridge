@@ -269,6 +269,17 @@ export interface RowPlacementPlan {
   optsIn: boolean;
 }
 
+/** The provider id inside a resolver anchor phrase (`"loon.news"`), or undefined for start/end. */
+function anchoredProviderId(anchor: string): string | undefined {
+  if (!anchor.startsWith('"')) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(anchor);
+    return typeof parsed === "string" ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Place a build's provider blocks into the host array (S4, S5, S6).
  *
@@ -286,6 +297,8 @@ export interface RowPlacementPlan {
  * - the two fields ARE the opt-in: a provider that names neither keeps the pre-feature tail append
  *   exactly, in subscription order, while only opted-in providers are placed (S6). With no opted-in
  *   provider the plan is byte-for-byte the old `[...host, ...built rows]`;
+ * - an `after X` follower of an unopted X follows that provider's block IN THE TAIL, because the
+ *   anchor's rows really are there (S9); chains keep the resolver's order;
  * - host rows are never split: an insertion point is a block boundary, so a consecutive
  *   `choice.setting` pair stays consecutive.
  */
@@ -308,7 +321,6 @@ export function planRowPlacement(
     }
   }
 
-  const providerById = new Map(providers.map((provider) => [provider.id, provider]));
   const categoriesByProvider = new Map<string, string[]>();
   const rowsByProviderCategory = new Map<string, Map<string, CustomizeRow[]>>();
   for (const block of blocks) {
@@ -335,10 +347,11 @@ export function planRowPlacement(
       .filter((provider) => provider.placement !== undefined || provider.order !== undefined)
       .map((provider) => provider.id),
   );
+  const tailSegments = blocks
+    .filter((block) => !optedIn.has(block.providerId))
+    .map((block) => ({ providerId: block.providerId, rows: block.rows }));
   const unoptedRows: CustomizeRow[] = [];
-  for (const block of blocks) {
-    if (!optedIn.has(block.providerId)) unoptedRows.push(...block.rows);
-  }
+  for (const segment of tailSegments) unoptedRows.push(...segment.rows);
 
   if (optedIn.size === 0) {
     // S6: no placement and no order anywhere is the pre-feature path, verbatim.
@@ -368,9 +381,47 @@ export function planRowPlacement(
   }
 
   const byCategory = new Map<string, RowPlacementResolution[]>();
+  const resolutionByKey = new Map<string, RowPlacementResolution>();
+  const resolutionKey = (providerId: string, category: string): string =>
+    JSON.stringify([providerId, category]);
   for (const resolution of resolutions) {
     const list = byCategory.get(resolution.category);
     if (list === undefined) byCategory.set(resolution.category, [resolution]);
+    else list.push(resolution);
+    resolutionByKey.set(resolutionKey(resolution.provider.id, resolution.category), resolution);
+  }
+
+  // An unopted provider's rows live in the tail, so a follower that asks for `after X` has to land
+  // in that tail too. Walk the resolver's own anchors: the follower must stay there only while every
+  // hop is an honoured provider anchor; a fallback reason ends the walk, because the resolver already
+  // placed that block at its category end.
+  const unoptedIds = new Set(
+    providers.filter((provider) => !optedIn.has(provider.id)).map((provider) => provider.id),
+  );
+  const tailRootOf = (resolution: RowPlacementResolution): string | undefined => {
+    const seen = new Set<string>();
+    let current = resolution.provider.id;
+    while (!seen.has(current)) {
+      if (unoptedIds.has(current)) return current;
+      seen.add(current);
+      const hop = resolutionByKey.get(resolutionKey(current, resolution.category));
+      if (hop === undefined || hop.reason !== undefined) return undefined;
+      const next = anchoredProviderId(hop.anchor);
+      if (next === undefined) return undefined;
+      current = next;
+    }
+    return undefined;
+  };
+  const tailFollowers = new Map<string, RowPlacementResolution[]>();
+  const tailFollowerKeys = new Set<string>();
+  for (const resolution of resolutions) {
+    if (!optedIn.has(resolution.provider.id)) continue;
+    if (rowsOf(resolution).length === 0) continue;
+    const root = tailRootOf(resolution);
+    if (root === undefined) continue;
+    tailFollowerKeys.add(resolutionKey(resolution.provider.id, resolution.category));
+    const list = tailFollowers.get(root);
+    if (list === undefined) tailFollowers.set(root, [resolution]);
     else list.push(resolution);
   }
 
@@ -386,6 +437,9 @@ export function planRowPlacement(
     for (const resolution of list) {
       if (resolution.anchor === "end") side = "end";
       if (!optedIn.has(resolution.provider.id)) continue;
+      if (tailFollowerKeys.has(resolutionKey(resolution.provider.id, resolution.category))) {
+        continue;
+      }
       const rows = rowsOf(resolution);
       if (rows.length === 0) continue;
       if (side === "start") startRows.push(...rows);
@@ -436,9 +490,22 @@ export function planRowPlacement(
     planned.push(...append);
     inserted.push(...append);
   }
-  if (unoptedRows.length > 0) {
-    planned.push(...unoptedRows);
-    inserted.push(...unoptedRows);
+  const tailRows: CustomizeRow[] = [];
+  for (const segment of tailSegments) {
+    tailRows.push(...segment.rows);
+    for (const follower of tailFollowers.get(segment.providerId) ?? []) {
+      tailRows.push(...rowsOf(follower));
+    }
+  }
+  // An anchor with no surviving block has no tail segment to follow; keep its rows rather than drop
+  // them, at the tail's end, and leave the resolver's landing text unchanged for the report.
+  for (const [root, followers] of tailFollowers) {
+    if (tailSegments.some((segment) => segment.providerId === root)) continue;
+    for (const follower of followers) tailRows.push(...rowsOf(follower));
+  }
+  if (tailRows.length > 0) {
+    planned.push(...tailRows);
+    inserted.push(...tailRows);
   }
   return { rows: inserted, planned, hostCategories, landings, optsIn: true };
 }

@@ -306,3 +306,68 @@ test("a recorded landing keeps the resolver's exact fallback reason", () => {
     "the verifier-pinned reason survives the landing report",
   );
 });
+
+test("an after anchor naming an unopted provider lands after that provider's tail block", () => {
+  const rows = hostRows();
+  const host = lateOnlyHost(rows);
+  registerRows({
+    id: "loon.anchor",
+    // No placement and no order: this provider keeps the pre-feature tail append.
+    category: "Layout",
+    rows: () => [{ label: "Anchor row", action: () => {} }],
+  });
+  registerRows({
+    id: "loon.after",
+    category: "Layout",
+    placement: { after: "loon.anchor" },
+    rows: () => [{ label: "After row", action: () => {} }],
+  });
+  installCaptureBackend(host.ui);
+
+  host.build();
+
+  assert.deepEqual(page(rows, "Layout"), ["Layout: builtin", "Anchor row", "After row"]);
+  const placement = collectStatus().providers.find((provider) => provider.id === "loon.after")
+    ?.placement;
+  assert.equal(placement?.requested, 'after "loon.anchor"');
+  assert.equal(placement?.landed, 'after "loon.anchor"');
+  assert.equal(placement?.reason, undefined);
+  assert.ok(
+    formatStatus(collectStatus()).some((line) =>
+      line.includes(
+        'loon.after (Layout), placement after "loon.anchor" → after "loon.anchor"',
+      ),
+    ),
+    "the report agrees with the rendered tail order",
+  );
+});
+
+test("a throwing rollback removes only its tail append and never writes a retained read-only index", () => {
+  const rows = hostRows();
+  Object.defineProperty(rows, "1", {
+    value: rows[1],
+    writable: false,
+    enumerable: true,
+    configurable: true,
+  });
+  const before = [...rows];
+  const host = createFakeHost({ rows, throwInsideFactory: true });
+  registerRows({
+    id: "loon.injected",
+    category: "Layout",
+    rows: () => [{ label: "Injected row", action: () => {} }],
+  });
+  installCaptureBackend(host.ui);
+
+  assert.throws(() => host.buildMenu(), /factory exploded/u);
+
+  assert.equal(rows.length, before.length, "the baseline length comes back exactly");
+  assert.ok(
+    rows.every((row, index) => row === before[index]),
+    "every retained host row keeps its exact element and index",
+  );
+  assert.equal(Object.hasOwn(rows, String(before.length)), false, "no phantom tail index");
+  for (let index = 0; index < before.length; index += 1) {
+    assert.equal(Object.hasOwn(rows, String(index)), true, `index ${index} is not a hole`);
+  }
+});

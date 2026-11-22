@@ -489,7 +489,7 @@ told once, on Pi's cross-extension bus.
 Object.freeze({
   schema: "gentle-shell-bridge/api", // identity, so a foreign payload is never mistaken for ours
   version: 1,                        // the major; a breaking change is a NEW symbol key
-  VERSION: "0.14.0",                 // the publishing release; informational only
+  VERSION: "0.16.0",                 // the publishing release; informational only
   registerRows,
   registerSection,
   registerCardStyle,                 // since 0.2.0; optional on an older published object
@@ -574,7 +574,7 @@ When this package publishes its object, it emits one event on Pi's cross-extensi
 
 ```ts
 pi.events.on("gentle-shell-bridge:ready", (payload) => {
-  // { schema: "gentle-shell-bridge/api", version: 1, VERSION: "0.14.0" }
+  // { schema: "gentle-shell-bridge/api", version: 1, VERSION: "0.16.0" }
 });
 ```
 
@@ -2443,6 +2443,6 @@ Three limits belong to the contract, not to the implementation:
   access, absent on an older copy, and irrelevant to a design that never reads it.
 - A transform is a per-frame pass, so a slow transform is a slow frame; the bridge isolates its
   failures and clips its width, and can bound nothing else. It sees lines, never tool metadata.
-- The API is released (`0.14.0`). The `v1` symbol is the compatibility boundary: a breaking
+- The API is released (`0.16.0`). The `v1` symbol is the compatibility boundary: a breaking
   change takes a new key instead of mutating this one (§9). The `gentle-shell-bridge:ready` event is
   additive: a plugin that never subscribes loses nothing but the late-load case.

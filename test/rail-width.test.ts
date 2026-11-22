@@ -57,6 +57,7 @@ import { buildSectionContribution, installSectionRail, resetSectionFailuresForTe
 import { installSidebarBackend, resetSidebarStateForTests } from "../src/sidebar.ts";
 import { collectStatus, formatStatus } from "../src/status.ts";
 import { resetStoreStateForTests } from "../src/store.ts";
+import { RAIL_PARTS } from "../src/types.ts";
 import type { SectionContext, SidebarSection } from "../src/types.ts";
 import { resetSidebar } from "./fake-sidebar.ts";
 
@@ -311,9 +312,12 @@ test.beforeEach(() => {
 
 const ctx: SectionContext = { theme: undefined, configHome: "" };
 
+/** The footer part with every native part painted: where a contribution with no placement lands. */
+const FOOTER_RAIL = { part: "footer" as const, painted: RAIL_PARTS };
+
 function contribute(section: SidebarSection, width = GIVEN): string[] {
   registerSection(section);
-  return buildSectionContribution(width, ctx)?.lines ?? [];
+  return buildSectionContribution(width, ctx, FOOTER_RAIL)?.after?.lines ?? [];
 }
 
 /** The widest row, as the host reads it, with the row itself for the failure message. */

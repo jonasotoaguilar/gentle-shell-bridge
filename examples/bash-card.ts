@@ -322,6 +322,15 @@ interface SidebarSectionLike {
   lines(ctx: { theme: unknown; configHome: string }): Array<string | SectionRowLike>;
   defaultVisible?: boolean;
   order?: number;
+  /**
+   * Where the card sits in the rail: `"start"` (top), `"end"` (the default, after every native
+   * card), or `{ after: "<id>" }` — another section's id, or one of the host's own parts `todo`,
+   * `jobs`, `agents`, `footer`. Registration data like `order`: the bridge resolves it every frame,
+   * never stores it, and reports where the card really landed (with the reason) in
+   * `/bridge-status`. Absent or unrecognisable means `"end"`, so an older bridge draws this card
+   * exactly where it drew it before the field existed.
+   */
+  placement?: "start" | "end" | { after: string };
 }
 
 /**
@@ -1182,9 +1191,14 @@ function bashDesignSection(
     ],
     // Visible on install: a section needs no extra step from the plugin or the user.
     defaultVisible: true,
-    // After any section the host or another plugin leaves unordered; the host's own parts come
-    // first regardless.
+    // `order` is read INSIDE one placement slot: a finite order first, ascending, ties by id — never
+    // by load order, so two plugins cannot swap cards between sessions.
     order: 20,
+    // Where the card sits. `"end"` is the default (after every native card) and is spelled out here
+    // because it is the placement that reads best for a status card; `"start"` puts it above the
+    // host's own Todo card, and `{ after: "agents" }` right after the Agents card. A section placed
+    // after THIS one reads `{ after: SECTION_ID }`.
+    placement: "end",
   };
 }
 

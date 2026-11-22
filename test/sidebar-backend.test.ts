@@ -1,7 +1,7 @@
 /**
  * Rail interception (S4, S9), proven against the fake host.
  *
- * The host registers the `footer` part itself (`extensions/gentle-shell.ts:2681`), so our arming
+ * The host registers the `footer` part itself (`extensions/gentle-shell.ts:2827`), so our arming
  * may run before OR after it. This suite covers both orders, the pass-through of every field the
  * host's readers use (`digest` for the layout memo, `spend` for the Stats section), the mouse
  * delegation, idempotency across two installs / a rebind / a second package copy, the disable and
@@ -169,7 +169,7 @@ test("digest, spend, surface, summary, open, alert and invalidate reach their re
   assert.equal(wrapped.alert, rail.alert);
   assert.deepEqual(wrapped.alert?.(40), ["needs you"]);
 
-  // The host reads spend exactly like this (`gentle-shell.ts:2652`).
+  // The host reads spend exactly like this (`gentle-shell.ts:2798`).
   assert.deepEqual(fakeState().parts.get("agents")?.spend?.(), undefined);
   registerNativeRail("agents", { ...rail });
   install();
@@ -351,7 +351,7 @@ test("the contributor appends its lines and card groups after the host's own", (
   registerNativeFooter(nativeRail().rail);
   install();
   setRailContributor({
-    render: () => ({ lines: ["▾ EXTRA", "extra row"], groups: [{ start: 0, end: 2 }] }),
+    render: () => ({ after: { lines: ["▾ EXTRA", "extra row"], groups: [{ start: 0, end: 2 }] } }),
   });
 
   const wrapped = footer();
@@ -382,7 +382,7 @@ test("a host rail without cardGroups gets one synthesized group covering native 
   delete (native as { cardGroups?: unknown }).cardGroups;
   install();
   setRailContributor({
-    render: () => ({ lines: ["▾ EXTRA", "extra row"], groups: [{ start: 0, end: 2 }] }),
+    render: () => ({ after: { lines: ["▾ EXTRA", "extra row"], groups: [{ start: 0, end: 2 }] } }),
   });
 
   assert.deepEqual(footer()?.cardGroups?.(40), {
@@ -400,7 +400,7 @@ test("no host frame means no contribution: an empty render stays empty", () => {
   );
   install();
   setRailContributor({
-    render: () => ({ lines: ["▾ EXTRA", "extra row"], groups: [{ start: 0, end: 2 }] }),
+    render: () => ({ after: { lines: ["▾ EXTRA", "extra row"], groups: [{ start: 0, end: 2 }] } }),
   });
 
   assert.deepEqual(footer()?.render(40), [], "the host painted nothing, so neither do we");
@@ -458,14 +458,20 @@ test("a throwing contributor is recorded and leaves every host row rendering", (
   assert.equal(failure?.phase, "contribute");
 });
 
-test("the interception only wraps the footer part", () => {
+test("the interception wraps every painted part, and no key the layout never paints", () => {
   fakeState();
   install();
   const todo = nativeRail({ title: "TODO" }).rail;
   registerNativeRail("todo", todo);
   registerNativeFooter(nativeRail().rail);
+  // `header` and `statusbar` are parts the host registers but the rail never paints
+  // (`lib/shell-sidebar-layout.ts:344`); wrapping them would put our rows nowhere.
+  const header = nativeRail({ title: "HEADER" }).rail;
+  registerNativeRail("header", header);
 
-  assert.equal(fakeState().parts.get("todo"), todo, "another rail keeps its own identity");
+  assert.notEqual(fakeState().parts.get("todo"), todo, "a painted part is wrapped (a section may sit before it)");
+  assert.deepEqual(fakeState().parts.get("todo")?.render(40), todo.render(40), "and still renders the host's rows");
+  assert.equal(fakeState().parts.get("header"), header, "an unpainted key keeps its own identity");
   assert.notEqual(footer(), undefined);
   assert.deepEqual(cardTitles(), ["TODO", "FOOTER"]);
 });

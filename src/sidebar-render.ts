@@ -47,7 +47,7 @@
  * This module is internal: `src/index.ts` does not re-export it.
  */
 
-import { snapshotSections } from "./bus.ts";
+import { resolveSectionPlacements, snapshotSections } from "./bus.ts";
 import { hostColumns } from "./card-style-transform.ts";
 import { requestSurfaceRepaint } from "./repaint.ts";
 import { createRowContext } from "./rows.ts";
@@ -65,11 +65,15 @@ import { claimSectionHover, releaseSectionHover } from "./section-pointer.ts";
 import type {
   RailContribution,
   RailContributor,
+  RailContributorContext,
   RailContributionPosition,
   RailMouseResult,
+  RailPartContribution,
+  RailRowRange,
 } from "./sidebar.ts";
 import { setRailContributor } from "./sidebar.ts";
-import type { SectionContext, SidebarSection } from "./types.ts";
+import { RAIL_PARTS } from "./types.ts";
+import type { RailPart, SectionContext, SidebarSection } from "./types.ts";
 import {
   getSectionCollapsed,
   getSectionVisibility,
@@ -109,9 +113,17 @@ export interface SectionRowHit {
 
 interface SectionFrame {
   width: number;
-  hits: SectionRowHit[];
-  /** The widest row this frame produced, measured the way the host measures (N20). */
+  /** One block of contributed rows per (part, side), so a pointer event can be mapped to what it hit. */
+  blocks: SectionBlock[];
+  /** The widest row any part produced at this width, measured the way the host measures (N20). */
   widest: number;
+}
+
+/** One block of contributed rows: the rows this contributor drew on one side of one part. */
+interface SectionBlock {
+  part: RailPart;
+  side: "before" | "after";
+  hits: SectionRowHit[];
 }
 
 const SECTION_RENDER_STATE = Symbol.for("gentle-shell-bridge.sections.render.v1");
@@ -123,6 +135,12 @@ interface SectionRenderState {
   frame?: SectionFrame;
   /** The hovered row's key, or absent when the pointer is not on one of ours. */
   hovered?: string;
+  /**
+   * The paint index of the part rendered last. The layout renders the parts in paint order, so a
+   * part at or before the previous index means a NEW frame began — which is how one report of
+   * failures and one frame of row ranges survive across the four parts of the same pass.
+   */
+  lastPartIndex?: number;
 }
 
 function renderStateHost(): Record<symbol, SectionRenderState | undefined> {
@@ -173,45 +191,117 @@ export function resetSectionFailuresForTests(): void {
 }
 
 /**
- * Build one frame's contribution: a card group per visible section, in the registry's order, after
- * whatever the host's own part already rendered.
+ * Build one part's contribution: its cards, in the order the placement resolver decided, split into
+ * the block ABOVE the host's own rows and the block below them (S1–S3, S5).
+ *
+ * The placement list is recomputed per part from the registry and the painted parts, so no frame
+ * state can make one part disagree with another: the same registrations and the same painted set
+ * always produce the same rows in the same place.
  */
 export function buildSectionContribution(
   width: number,
   ctx: SectionContext,
-): RailContribution | undefined {
+  rail: RailContributorContext,
+): RailPartContribution | undefined {
   // A part rendered at zero width has no room for a heading or a body row. Contributing nothing
   // keeps the host's own shape untouched instead of returning a row wider than the width.
   if (!Number.isFinite(width) || width < 1) return undefined;
 
   const state = sectionRenderState();
-  // Failures describe the frame, not history: a section that stops throwing stops being reported.
-  state.lastFailures = [];
-
+  const frame = beginPartFrame(state, rail.part, width);
   const visibility = getSectionVisibility();
   const collapsedMap = getSectionCollapsed();
   const theme = getSectionTheme();
   const hovered = state.hovered;
+  const placements = resolveSectionPlacements(snapshotSections(), rail.painted);
+
+  const blocks: SectionBlock[] = [];
+  const contribution: RailPartContribution = {};
+  for (const side of ["before", "after"] as const) {
+    const sections = placements
+      .filter((entry) => entry.part === rail.part && entry.side === side)
+      .map((entry) => entry.section);
+    if (sections.length === 0) continue;
+    const built = buildBlock(sections, {
+      width,
+      theme,
+      hovered,
+      visibility,
+      collapsedMap,
+      ctx,
+    });
+    if (built === undefined) continue;
+    blocks.push({ part: rail.part, side, hits: built.hits });
+    contribution[side] = built.contribution;
+  }
+
+  // This part's blocks replace its previous ones: a part re-rendered inside the same frame must not
+  // be counted twice, and a part that lost every section must lose its row ranges too.
+  frame.blocks = [...frame.blocks.filter((block) => block.part !== rail.part), ...blocks];
+  if (contribution.before === undefined && contribution.after === undefined) return undefined;
+  return contribution;
+}
+
+/**
+ * Start (or continue) the frame of one part. The layout renders the parts in paint order, so a part
+ * whose index is not after the previous one belongs to a NEW frame: that is where the failure list
+ * and the row ranges restart, once per pass instead of once per part.
+ */
+function beginPartFrame(
+  state: SectionRenderState,
+  part: RailPart,
+  width: number,
+): SectionFrame {
+  const index = RAIL_PARTS.indexOf(part);
+  const frame = state.frame;
+  const newFrame =
+    frame === undefined ||
+    frame.width !== width ||
+    state.lastPartIndex === undefined ||
+    index <= state.lastPartIndex;
+  if (newFrame) {
+    // Failures describe the frame, not history: a section that stops throwing stops being reported.
+    state.lastFailures = [];
+    state.frame = { width, blocks: [], widest: 0 };
+  }
+  state.lastPartIndex = index;
+  // SAFETY: every branch above leaves a frame in place.
+  return state.frame as SectionFrame;
+}
+
+/** One block of sections: their rows, their card groups and the pointer map over them. */
+function buildBlock(
+  sections: readonly SidebarSection[],
+  frame: {
+    width: number;
+    theme: PanelTheme | undefined;
+    hovered: string | undefined;
+    visibility: ReturnType<typeof getSectionVisibility>;
+    collapsedMap: ReturnType<typeof getSectionCollapsed>;
+    ctx: SectionContext;
+  },
+): { contribution: RailContribution; hits: SectionRowHit[] } | undefined {
   const lines: string[] = [];
   const hits: SectionRowHit[] = [];
   const groups: Array<{ start: number; end: number }> = [];
 
-  for (const section of snapshotSections()) {
+  for (const section of sections) {
     // Hidden means NOT BUILT (S7): no rows, no `lines()`, no `meta()`. Hiding is a user choice, not
-    // a request to compute something nobody will see.
-    if (!isSectionVisible(visibility, section)) continue;
+    // a request to compute something nobody will see — and it does NOT move the sections placed
+    // after this one, because their slot was decided from the registration, not from these rows.
+    if (!isSectionVisible(frame.visibility, section)) continue;
 
-    const collapsed = isSectionCollapsed(collapsedMap, section);
-    const meta = readMeta(section, ctx);
+    const collapsed = isSectionCollapsed(frame.collapsedMap, section);
+    const meta = readMeta(section, frame.ctx);
     // A meta failure drops the body too (S8's rule is about the section's BODY), while a body
     // failure keeps the heading so the user can still see that the section exists. A collapsed
     // section builds no body at all (N13) — folding must not cost the work of drawing.
-    const body = meta.ok && !collapsed ? readBody(section, ctx) : [];
+    const body = meta.ok && !collapsed ? readBody(section, frame.ctx) : [];
     const start = lines.length;
     const headerKey = `${section.id}#header`;
-    const headerHovered = hovered === headerKey;
+    const headerHovered = frame.hovered === headerKey;
     lines.push(
-      renderSectionHeader(theme, width, {
+      renderSectionHeader(frame.theme, frame.width, {
         title: section.title,
         ...(meta.text === undefined ? {} : { count: meta.text }),
         open: !collapsed,
@@ -229,7 +319,13 @@ export function buildSectionContribution(
     // its siblings' rows or its own heading. The validation in `readBody` catches the cases we know
     // about; this guard covers the ones we do not.
     try {
-      appendBody(section, body, { theme, width, hovered, lines, hits });
+      appendBody(section, body, {
+        theme: frame.theme,
+        width: frame.width,
+        hovered: frame.hovered,
+        lines,
+        hits,
+      });
     } catch (error) {
       recordFailure(section.id, "lines", error);
       lines.length = start + 1; // keep the heading, drop the broken body
@@ -238,14 +334,13 @@ export function buildSectionContribution(
     groups.push({ start, end: lines.length });
   }
 
-  if (lines.length === 0) {
-    delete state.frame;
-    return undefined;
+  if (lines.length === 0) return undefined;
+  // The frame's widest row, measured the way the host measures (N20).
+  const frameState = sectionRenderState().frame;
+  if (frameState !== undefined) {
+    for (const line of lines) frameState.widest = Math.max(frameState.widest, hostColumns(line));
   }
-  let widest = 0;
-  for (const line of lines) widest = Math.max(widest, hostColumns(line));
-  state.frame = { width, hits, widest };
-  return { lines, groups };
+  return { contribution: { lines, groups }, hits };
 }
 
 /** One section's body rows, each recorded for the pointer map as it is drawn. */
@@ -289,11 +384,12 @@ function appendBody(
  * resolved gentle-shell config home — so a section never re-derives a path.
  */
 export const sectionRailContributor: RailContributor = {
-  render: (width) => buildSectionContribution(width, createRowContext(getSectionTheme())),
+  render: (width, rail) =>
+    buildSectionContribution(width, createRowContext(getSectionTheme()), rail),
   // N14: the layout re-renders a part only when its digest moves, so the built rows are what the
   // signature is made of. Reading `meta()`/`lines()` here is the same trade the host's own parts
   // make (`extensions/gentle-agents.ts:2255-2260`): a live field has to be read to be noticed.
-  digest: () => sectionRailDigest(createRowContext(getSectionTheme())),
+  digest: (rail) => sectionRailDigest(createRowContext(getSectionTheme()), rail),
   handleMouse: (event, position) => handleSectionMouse(event, position),
 };
 
@@ -303,21 +399,25 @@ export const sectionRailContributor: RailContributor = {
  * same signature, so a change anywhere in it — a `meta` that moved (N14), a collapse, a hover —
  * reaches the host's memo as a new digest and repaints.
  */
-export function sectionRailDigest(ctx: SectionContext): string {
+export function sectionRailDigest(ctx: SectionContext, rail: RailContributorContext): string {
   const visibility = getSectionVisibility();
   const collapsedMap = getSectionCollapsed();
   const state = sectionRenderState();
   const sections: unknown[] = [];
-  for (const section of snapshotSections()) {
+  for (const resolved of resolveSectionPlacements(snapshotSections(), rail.painted)) {
+    const section = resolved.section;
+    // Where the card goes is part of what the frame draws: a new anchor or a native part that stops
+    // being painted has to reach the host's memo as a new signature, or the rows never move.
+    const slot = [section.id, resolved.part, resolved.side];
     if (!isSectionVisible(visibility, section)) {
-      sections.push([section.id, false]);
+      sections.push([...slot, false]);
       continue;
     }
     const collapsed = isSectionCollapsed(collapsedMap, section);
     const meta = readMeta(section, ctx);
     const body = meta.ok && !collapsed ? readBody(section, ctx) : [];
     sections.push([
-      section.id,
+      ...slot,
       section.title,
       meta.text ?? null,
       collapsed,
@@ -325,7 +425,14 @@ export function sectionRailDigest(ctx: SectionContext): string {
     ]);
   }
   const panel = getPanelReport();
-  return JSON.stringify([sections, state.hovered ?? null, panel.source, themeSignature()]);
+  return JSON.stringify([
+    sections,
+    rail.part,
+    rail.painted,
+    state.hovered ?? null,
+    panel.source,
+    themeSignature(),
+  ]);
 }
 
 /** One body row, flattened into a comparable string for the digest (N14). */
@@ -355,6 +462,10 @@ function themeSignature(): string {
  * Answer a pointer event the host mapped into the part's frame (N12). Only our own rows answer, and
  * only where they act: the header always does (it folds the section), a body row only when it
  * carries `onClick`.
+ *
+ * The position the backend hands over is the set of ROW RANGES of this part's frame, so a block may
+ * sit above the host's rows as well as below them (S7): the event is matched against the block that
+ * contains it, and never against "everything after the host's rows".
  */
 export function handleSectionMouse(
   event: unknown,
@@ -362,11 +473,16 @@ export function handleSectionMouse(
 ): RailMouseResult | undefined {
   const state = sectionRenderState();
   const frame = state.frame;
-  const startRow = position?.startRow;
-  if (frame === undefined || startRow === undefined) return undefined;
+  if (frame === undefined || position === undefined) return undefined;
   const pointer = readPointer(event);
   if (pointer === undefined) return undefined;
-  const hit = frame.hits.find((candidate) => candidate.row === pointer.y - startRow);
+  const block = blockAt(position, pointer.y);
+  if (block === undefined) return undefined;
+  const hits = frame.blocks.find(
+    (candidate) => candidate.part === position.part && candidate.side === block.side,
+  )?.hits;
+  if (hits === undefined) return undefined;
+  const hit = hits.find((candidate) => candidate.row === pointer.y - block.start);
   if (hit === undefined) return undefined;
 
   if (pointer.type === "move") {
@@ -396,6 +512,22 @@ export function handleSectionMouse(
     return { handled: true, render: true };
   }
 
+  return undefined;
+}
+
+/** Which of this contributor's two blocks the event's row falls in, and where that block starts. */
+function blockAt(
+  position: RailContributionPosition,
+  y: number,
+): { side: "before" | "after"; start: number } | undefined {
+  const inRange = (range: RailRowRange | undefined): boolean =>
+    range !== undefined && y >= range.start && y < range.end;
+  if (position.before !== undefined && inRange(position.before)) {
+    return { side: "before", start: position.before.start };
+  }
+  if (position.after !== undefined && inRange(position.after)) {
+    return { side: "after", start: position.after.start };
+  }
   return undefined;
 }
 

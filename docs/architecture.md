@@ -371,20 +371,31 @@ one interception, one place that reports why nothing appeared.
 - Rail state hangs on the **terminal** behind
   `Symbol.for("gentle-pi.experimental-sidebar.state")`, not in module scope
   (`lib/shell-sidebar.ts:6,78-80`), so separately loaded extensions share one rail.
-- `sidebarPart` writes the part into `state.parts` (`:88`) and deletes it on dispose (`:92-95`).
+- `sidebarPart` writes the part into `state.parts` (`lib/shell-sidebar.ts:91`) and deletes it on dispose (`:95-98`).
 - The layout paints a hard-coded key order — `["todo","jobs","agents","footer"]`
-  (`lib/shell-sidebar-layout.ts:344`) — so an unknown key never renders: appending to an
-existing part is the only way in, and the `footer` part is painted last.
+  (`lib/shell-sidebar-layout.ts:344`) — so an unknown key never renders: contributing rows to one of
+  those four parts is the only way in. That line also FILTERS `todo` when
+  `state.visibility?.todo === false`, and `sidebarPart` (`lib/shell-sidebar.ts:87-100`) renders `[]`
+  for a part the host is not painting (status hidden, compact work, the host owns the frame): "is
+  this part painted?" is a RENDER question, not a registration one.
+- The four parts are registered by four extensions, so any of them may exist before or after our
+  arm: `footer` at `extensions/gentle-shell.ts:2827`, `jobs` at `:2895`,
+  `todo` at `extensions/gentle-todo.ts:292`, `agents` at `extensions/gentle-agents.ts:2500`.
+- The host has a SECOND fixed order over the same map: the mobile `/gentle:panel` sheet reads
+  `parts.get(key).render(inner)` for `todo, jobs, agents, footer` (`SHEET_ORDER`,
+  `lib/shell-panel.ts:125-150`). Because the wrapper IS the map's value, the sheet paints the
+  bridge's rows with no extra work and no second interception — pinned by
+  `test/section-placement-rail.test.ts`, which renders the map values exactly the way that loop does.
 - A part's cards come from `cardGroups` (`:392-410`) fed into `sectionCardRows` (`:35-44`), which
   is why a wrapped rail can look native: the host draws the frame, we supply rows and ranges.
 - The status sections (`CHANGES`, `STATS`, `INTEGRATIONS`) are built inline in a closure
-  (`lib/shell-bar.ts:247,251-316`): unreachable, so no interleaving is possible.
-- The host's own `footer` part is registered at `extensions/gentle-shell.ts:2681`; readers reach
-  another part's `spend` through `parts.get("agents").spend()` (`:2652`), which is why every field
-  of the wrapped part is forwarded untouched. `digest` is the one field the wrapper owns, because the
-  layout memo re-renders a part only when its VALUE moves (`:114-119`): the host's own answer is
-  forwarded unchanged while nothing contributes rows, and the contributed rows' signature is
-  appended when they do (N14).
+  (`lib/shell-bar.ts:247,251-316`): unreachable, so no interleaving is possible — and the reason
+  `placement` offers native anchors at PART granularity only.
+- Readers reach another part's `spend` through `parts.get("agents").spend()`
+  (`extensions/gentle-shell.ts:2798`), which is why every field of the wrapped part is forwarded
+  untouched. `digest` is the one field the wrapper owns, because the layout memo re-renders a part
+  only when its VALUE moves (`:114-119`): the host's own answer is forwarded unchanged while nothing
+  contributes rows, and the contributed rows' signature is appended when they do (N14).
 
 ### The interception
 
@@ -393,16 +404,30 @@ subclassing it: every holder keeps the map it already has, so a part registered 
 still captured, and a part registered before it is wrapped on install. Two markers keep it
 idempotent across arms, rebinds and package copies: the map's own property holds the exact `set`
 function installed, and the wrapper rail holds the exact rail it wraps. A foreign wrapper already
-on the part is wrapped around, never replaced; `disableSidebarBackend()` restores the host's part
+on the part is wrapped around, never replaced; `disableSidebarBackend()` restores every host part
 and leaves any retained wrapper as a pass-through (a generation guard).
+
+ALL FOUR painted keys are wrapped (`RAIL_PARTS`), not just the footer: a section may sit before the
+first part or after a middle one. A key the layout never paints (`header`, `statusbar`) keeps its
+own identity — wrapping it would put our rows nowhere. The painted set is measured, not assumed:
+a part is painted when it is in the map, the host's own `state.visibility.todo` does not hide it,
+and its own `render` did not return an empty frame the last time it ran. That set is what
+`/bridge-status` prints as `rail parts: …` and what a `start` or native-part anchor resolves
+against.
 
 ### The renderer
 
-`src/sidebar-render.ts` contributes the section rows and their card groups per frame. A hidden
-section is not built at all, and neither is a COLLAPSED one: folding is a user choice, and a folded
-body costs nothing (its `lines()` is not called). A throwing `lines()`/`meta()`/`onClick`, a sparse
-array, or a row that is not a string and has no usable `label` loses only that section's body and is
-recorded for `/bridge-status`.
+`src/sidebar-render.ts` contributes the section rows and their card groups per frame, around ONE
+part's own rows: a `before` block above them and an `after` block below them. Which sections go in
+which block of which part is decided by the placement resolver (`resolveSectionPlacements`,
+`src/bus.ts`) from the registrations and the painted parts alone — a pure function, so the frame and
+`/bridge-status` cannot disagree.
+
+A hidden section is not built at all, and neither is a COLLAPSED one: folding is a user choice, and a
+folded body costs nothing (its `lines()` is not called). Hiding is also why a section's own placement
+is resolved BEFORE visibility is consulted: a hidden anchor keeps its slot, so its followers do not
+move. A throwing `lines()`/`meta()`/`onClick`, a sparse array, or a row that is not a string and has
+no usable `label` loses only that section's body and is recorded for `/bridge-status`.
 
 A plain string row is clipped to the width the host passes and the body is capped at 8 rows with a
 visible `… +N more` marker. Width is measured the way the HOST measures a row — `visibleWidth`,
@@ -462,11 +487,19 @@ rows are drawn uncoloured rather than guessed at, and the report says `theme mis
 Clicking is POSITIONAL in this host, not a row field. The layout maps a pointer event into the part's
 frame and calls the part's `handleMouse` with those coordinates (`lib/shell-sidebar-layout.ts:245-259`),
 and the wrapper already receives that call, so the bridge's own rows can answer it. The backend hands
-the contributor `position.startRow` — how many rows the host painted before the contribution, recorded
-by the render that preceded the event — and `src/sidebar-render.ts` maps `y - startRow` onto the rows
-it built. A row with `onClick` is clickable and highlights under the pointer; a row without it is
-inert and declines (so the host's own dispatch continues). The header is always actionable: it folds
-the section.
+the contributor ROW RANGES of that frame — `native`, `before` and `after`, each `{ start, end }`,
+recorded by the render that preceded the event — and `src/sidebar-render.ts` matches the event's `y`
+against the block that contains it, then maps it onto the rows it built. Ranges, not one offset:
+contributed rows can now sit on BOTH sides of the host's own, so "everything after the host's rows"
+is no longer the shape of a contribution. A row with `onClick` is clickable and highlights under the
+pointer; a row without it is inert and declines (so the host's own dispatch continues). The header is
+always actionable: it folds the section.
+
+Because a part's frame now starts with our rows as well as ending with them, the event the HOST sees
+is translated: its own `y` (minus our before-block) for a host row, and `nativeLength` — one past its
+last row, where an appended row already sat before this feature — for one of ours. So a host row keeps
+reaching the host's handler with the host's own coordinate with a card above it, and the host still
+never claims a row it did not draw (S7). Pinned by `test/section-placement-rail.test.ts`.
 
 The hover claim uses the host's own published slot rather than a private channel: `SidebarState.hover`
 is declared as "shared across separately loaded extensions" (`lib/shell-sidebar.ts:31`), and
@@ -475,30 +508,55 @@ owner's `clear()` runs when the owner changes, and the host's "pointer left the 
 (`setSidebarHover(tui)` with no owner) clears ours. `NativePointerRegion` itself is not reachable and
 is not needed: the dispatch it adapts is the one the bridge already receives.
 
-**Who sees a move first (S21).** The host's own region answers EVERY move inside its frame with
+**Who sees an event first (S21).** The host's own region answers EVERY move inside its frame with
 `{ handled: true }` — it looks the row up, paints the target and, with no target, clears and still
 reports handled (`lib/native-pointer-region.ts:80-88`, `extensions/gentle-shell.ts:2732-2741`). A click
 is the different path: with no target it returns `undefined` (`:2747-2757`), which is why folding a
 section worked while NOTHING in a contributed section ever highlighted. The wrapper used to offer the
 event to the host first and only ask the contributor when the host declined, so the host swallowed
-every move. It now offers a MOVE whose `y` falls inside the contribution's own row range —
-`[startRow, endRow)`, both recorded by the render that preceded the event — to the contributor first,
-and falls through to the host when the contributor declines, so the host still clears its own hover on
-our inert rows. Every other event keeps the host first. This cannot steal a host card's pointer: a host
-target only ever lives inside the host's own lines, which end where `startRow` begins. Pinned by
-`test/sidebar-hover.test.ts`, including "the host's own row keeps the pointer" and "one click, one
-call" (`N12`). Under tmux, zellij or screen the host forwards no plain move events at all
-(`lib/shell-hover.ts`'s platform note), so hover cannot be checked there.
+every move. It now offers any event whose `y` falls inside one of the contribution's row ranges — our
+before-block or our after-block, both recorded by the render that preceded the event — to the
+contributor FIRST, and falls through to the host when the contributor declines (with the translated
+`y` above), so the host still clears its own hover on our inert rows. Every other event keeps the
+host first, and the contributor is asked at most once. This cannot steal a host card's pointer: a host
+target only ever lives inside the host's own rows, which our ranges do not cover. Pinned by
+`test/sidebar-hover.test.ts` ("the host's own row keeps the pointer", "one click, one call") and
+`test/section-placement-rail.test.ts` (a host row under a contributed block), (`N12`, S7). Under tmux,
+zellij or screen the host forwards no plain move events at all (`lib/shell-hover.ts`'s platform note),
+so hover cannot be checked there.
 
 ### Repaint and the digest (N13, N14)
 
 A collapse persists to the bridge store and then asks for the frame synchronously, through the same
 two steps the host uses for a part-owner write (`invalidateSidebar` + `requestRender`, `src/repaint.ts`).
 A LIVE field needs nothing but the digest: the memo re-renders a part when its digest changes, so the
-contributed rows' signature (bodies, `meta`, collapse flags, the hovered row, and what the theme
-paints) is folded into the wrapper's `digest` and a changed `meta` reaches the screen on the next
-layout pass. Reading `meta()`/`lines()` from the digest is the same trade the host's own parts make
+contributed rows' signature (each section's slot and side, bodies, `meta`, collapse flags, the hovered
+row, the painted parts, and what the theme paints) is folded into the wrapper's `digest` and a changed
+`meta` — or a card that MOVED to another slot — reaches the screen on the next layout pass. Reading
+`meta()`/`lines()` from the digest is the same trade the host's own parts make
 (`extensions/gentle-agents.ts:2255-2260`).
+
+### Placement: one resolver, one report (S1–S5)
+
+`placement` is registration data, never persisted. `resolveSectionPlacements` (`src/bus.ts`) is a pure
+function of the registrations and the painted part list, and returns the sections in DRAW order, each
+with the part, the side of that part's own rows, the anchor it hangs off and, when it is not where the
+plugin asked, the reason. The renderer consumes it per part; `collectStatus()` consumes the SAME
+function, so `/bridge-status` reports exactly where the frame draws.
+
+The rule, in one place: every anchor is a slot (`"start"`, each native part, `"end"` and each section
+id), the input order is already the S2 order (finite `order` ascending, then by `id` — never by load
+order), and a slot's block is emitted at its anchor, followed by each member's own followers. `"end"`
+is the `footer` part itself, so a section with no `placement` draws exactly where it drew before.
+Fallbacks: a hidden anchor keeps its slot; anchors resolve transitively; a cycle falls back to the end;
+a native anchor the host does not paint falls forward to the next painted native part, ending at the
+footer; `"start"` with nothing painted falls back to the end. A malformed `placement` is refused at
+registration (`placement rejections:` in the report) and the card is placed at the end.
+
+Proven by `test/section-placement.test.ts` (the resolver alone: permutations, cycles, hidden and
+unknown anchors, native anchors, id collisions, malformed values) and
+`test/section-placement-rail.test.ts` (the same answers through the fake host: cards before and after
+the host's rows, the fallbacks, the pointer, the sheet order, arm/disable on four parts).
 
 ### The `Sections` toggle names
 

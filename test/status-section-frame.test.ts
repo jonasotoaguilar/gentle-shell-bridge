@@ -151,7 +151,9 @@ test("a collapsed section says so in the sections table", () => {
 
   assert.deepEqual(
     formatStatus(collectStatus()).filter((line) => line.includes('"MUSIC"')),
-    ['  - music "MUSIC": visible, collapsed, registration order, row "music"'],
+    [
+      '  - music "MUSIC": visible, collapsed, registration order, row "music", placement end → after footer',
+    ],
   );
   assert.equal(collectStatus().sections?.[0].collapsed, true);
 });

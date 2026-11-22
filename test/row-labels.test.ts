@@ -182,8 +182,10 @@ test("the derivation lowercases and joins words, and drops dots and punctuation"
 
   assert.deepEqual(host.toggleLines(), [
     "usage cost ● shown ○ hidden",
-    "bash card status ● shown ○ hidden",
+    // Sections sort by `id` inside one slot (section-placement S2), so the rows read in that order:
+    // `internal.one`, `internal.three`, `internal.two`.
     "music 2 ● shown ○ hidden",
+    "bash card status ● shown ○ hidden",
   ]);
 });
 
@@ -239,11 +241,16 @@ test("the collision is reported by /bridge-status, with ids and labels", () => {
   );
 
   const lines = formatStatus(snapshot);
-  assert.ok(lines.includes('  - loon.one "MUSIC": visible, registration order, row "music"'), lines.join("\n"));
+  assert.ok(
+    lines.includes(
+      '  - loon.one "MUSIC": visible, registration order, row "music", placement end → after footer',
+    ),
+    lines.join("\n"),
+  );
   assert.ok(
     lines.includes(
       '  - loon.two "MUSIC": visible, registration order, row "music 2" ' +
-        '(label collision with "music")',
+        '(label collision with "music"), placement end → after footer',
     ),
     lines.join("\n"),
   );

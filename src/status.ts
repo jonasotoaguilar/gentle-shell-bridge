@@ -9,7 +9,16 @@
  * fixed (docs/contract.md §6).
  */
 
-import { snapshotCardStyles, snapshotProviders, snapshotSections, snapshotTransforms } from "./bus.ts";
+import {
+  getSectionPlacementRejections,
+  placementLandingText,
+  resolveSectionPlacements,
+  snapshotCardStyles,
+  snapshotProviders,
+  snapshotSections,
+  snapshotTransforms,
+  type SectionPlacementRejection,
+} from "./bus.ts";
 import {
   CARD_STYLE_ROWS_PROVIDER_ID,
   cardStyleRowMode,
@@ -74,6 +83,7 @@ import {
 import { getLastRowBuild, type RowBuildRecord } from "./rows.ts";
 import {
   getSidebarDiagnostics,
+  observedPaintedParts,
   type SidebarDiagnostics,
   type SidebarFailure,
 } from "./sidebar.ts";
@@ -124,9 +134,24 @@ export interface StatusSectionEntry {
   order: number | "registration";
   /** The label the section's `Sections` row reads (N2). The id stays in `id`, never in a row. */
   rowLabel: string;
+  /** Where the card asked to sit and where it really draws (S1, S5). Always reported. */
+  placement: StatusSectionPlacement;
   /** Present when two sections wanted the same label: the label this one had to move away from. */
   rowLabelCollision?: string;
 }
+
+/** One section's placement, as `/bridge-status` lists it: what it asked for, where it landed, why. */
+export interface StatusSectionPlacement {
+  /** The request as a person reads it: `start`, `end`, `after "loon.news"`. */
+  requested: string;
+  /** Where the rows really draw: `before todo`, `after footer`, … */
+  landed: string;
+  /** Why it is not where it asked to be; absent when the request was honoured. */
+  reason?: string;
+}
+
+/** A `placement` a registration had to refuse, with the section it belonged to. */
+export type StatusSectionPlacementRejection = SectionPlacementRejection;
 
 /**
  * How the section frame is drawn and how the pointer reaches it (N11, N15): the answer to "is this
@@ -379,6 +404,11 @@ export interface StatusSnapshot {
   /** Absent when no section is registered, so a row-only run keeps its historical output. */
   sections?: StatusSectionEntry[];
   /**
+   * The rail parts the host paints, in paint order: the context a placement is resolved against (S5).
+   * Absent when no section is registered, so a row-only session keeps its historical output exactly.
+   */
+  sectionParts?: string[];
+  /**
    * How the section frame is drawn (N11) and what it could not reach (N15). Absent when no section
    * is registered, so a row-only session keeps its historical output exactly.
    */
@@ -426,6 +456,11 @@ export interface StatusSnapshot {
    * keeps its historical output exactly.
    */
   rowNames?: StatusRowNameRejection[];
+  /**
+   * `placement` values the bridge refused: the section still registered and was placed at the end.
+   * Absent when nothing was refused, so a clean session keeps its historical output exactly.
+   */
+  placementRejections?: StatusSectionPlacementRejection[];
   /**
    * Every registered transcript transform in pipeline order, with the last frame's outcome. Absent
    * when none is registered, so a session that never used the pipeline keeps its historical output
@@ -498,6 +533,8 @@ export function collectStatus(): StatusSnapshot {
   // registration or build already made, so the report matches what the menu shows.
   const rowNames = getRowNameRejections();
   if (rowNames.length > 0) snapshot.rowNames = rowNames;
+  const placementRejections = getSectionPlacementRejections();
+  if (placementRejections.length > 0) snapshot.placementRejections = placementRejections;
   const lastCapture = backend === "hook" ? hook.lastCapture : capture.lastOutcome;
   if (lastCapture !== undefined) snapshot.lastCapture = lastCapture;
 
@@ -524,18 +561,33 @@ export function collectStatus(): StatusSnapshot {
   if (sections.length > 0) {
     const visibility = getSectionVisibility();
     const collapsedMap = getSectionCollapsed();
-    snapshot.sections = sectionRowLabels(sections).map(({ section, label, collision }) => ({
-      id: section.id,
-      title: section.title,
-      visible: isSectionVisible(visibility, section),
-      ...(isSectionCollapsed(collapsedMap, section) ? { collapsed: true as const } : {}),
-      order:
-        typeof section.order === "number" && Number.isFinite(section.order)
-          ? section.order
-          : "registration",
-      rowLabel: label,
-      ...(collision === undefined ? {} : { rowLabelCollision: collision }),
-    }));
+    // The SAME resolver the renderer runs, against the parts the host last painted, so the report and
+    // the frame cannot disagree about where a card went (S5).
+    const painted = observedPaintedParts();
+    const placements = new Map(
+      resolveSectionPlacements(sections, painted).map((entry) => [entry.section.id, entry]),
+    );
+    snapshot.sections = sectionRowLabels(sections).map(({ section, label, collision }) => {
+      const resolved = placements.get(section.id);
+      return {
+        id: section.id,
+        title: section.title,
+        visible: isSectionVisible(visibility, section),
+        ...(isSectionCollapsed(collapsedMap, section) ? { collapsed: true as const } : {}),
+        order:
+          typeof section.order === "number" && Number.isFinite(section.order)
+            ? section.order
+            : "registration",
+        rowLabel: label,
+        ...(collision === undefined ? {} : { rowLabelCollision: collision }),
+        placement: {
+          requested: resolved?.requested ?? "end",
+          landed: resolved === undefined ? "after footer" : placementLandingText(resolved),
+          ...(resolved?.reason === undefined ? {} : { reason: resolved.reason }),
+        },
+      };
+    });
+    snapshot.sectionParts = [...painted];
     snapshot.sectionFrame = describeSectionFrame();
   }
   const sectionFailures = getSectionFailures();
@@ -959,7 +1011,7 @@ function describeSidebar(diagnostics: SidebarDiagnostics): StatusSidebarEntry | 
   if (diagnostics.interceptedMaps > 0) {
     return {
       state: "intercepted",
-      rail: diagnostics.wrappedRails > 0 ? "wrapped" : "pending",
+      rail: diagnostics.rail ?? (diagnostics.wrappedRails > 0 ? "wrapped" : "pending"),
     };
   }
   if (
@@ -1110,6 +1162,18 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
     }
   }
 
+  if (snapshot.placementRejections !== undefined) {
+    lines.push(`placement rejections: ${snapshot.placementRejections.length}`);
+    for (const rejection of snapshot.placementRejections) {
+      // The value is printed exactly as far as JSON can show it: the report is how the author finds
+      // the mistake, and the card was placed at the end instead of being dropped (S5).
+      lines.push(
+        `  - section ${JSON.stringify(rejection.sectionId)} placement ${rejection.value}: ` +
+          `${rejection.reason} (the section was placed at the end)`,
+      );
+    }
+  }
+
   if (snapshot.rowNames !== undefined) {
     lines.push(`row rejections: ${snapshot.rowNames.length}`);
     for (const rejection of snapshot.rowNames) {
@@ -1139,9 +1203,18 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
         section.rowLabelCollision === undefined
           ? `, row "${section.rowLabel}"`
           : `, row "${section.rowLabel}" (label collision with "${section.rowLabelCollision}")`;
+      // Where the card asked to sit and where it really lands (S5): a fallback is only actionable
+      // next to the request that caused it, so both are on the section's own line.
+      const placement = section.placement;
+      const placementText =
+        `${placement.requested} → ${placement.landed}` +
+        (placement.reason === undefined ? "" : ` (${placement.reason})`);
       lines.push(
-        `  - ${section.id} "${section.title}": ${visibility}${section.collapsed === true ? ", collapsed" : ""}, ${order}${row}`,
+        `  - ${section.id} "${section.title}": ${visibility}${section.collapsed === true ? ", collapsed" : ""}, ${order}${row}, placement ${placementText}`,
       );
+    }
+    if (snapshot.sectionParts !== undefined) {
+      lines.push(`rail parts: ${snapshot.sectionParts.length === 0 ? "none" : snapshot.sectionParts.join(", ")}`);
     }
   }
 

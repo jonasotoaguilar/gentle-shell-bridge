@@ -177,7 +177,8 @@ test("B1: a hole in the middle of the body is a per-section failure, not a crash
   registerSection(section("good", { title: "GOOD", lines: () => ["still here"] }));
   arm();
 
-  assert.deepEqual(cardTitles(), ["FOOTER", "HOLEY", "GOOD"]);
+  // Sections sort by `id` inside one slot (section-placement S2): "good" before "holey".
+  assert.deepEqual(cardTitles(), ["FOOTER", "GOOD", "HOLEY"]);
   assert.deepEqual(cardBody("HOLEY"), []);
   assert.deepEqual(cardBody("GOOD"), ["still here"]);
   assert.match(getSectionFailures().find((e) => e.sectionId === "holey")?.message ?? "", /sparse/u);

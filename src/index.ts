@@ -72,6 +72,7 @@ export type {
   RowProvider,
   SectionContext,
   SectionLine,
+  SectionPlacement,
   SectionRow,
   SidebarSection,
   Tone,

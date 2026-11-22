@@ -153,6 +153,24 @@ export interface SectionRow {
 export type SectionLine = string | SectionRow;
 
 /**
+ * The rail parts the host actually paints, in paint order (`lib/shell-sidebar-layout.ts:344`, host
+ * checkout `e4f8a4b29`): `todo`, `jobs`, `agents`, `footer`. A part outside this list never renders,
+ * so contributing to it would be invisible; a part that is absent, or whose render is empty, is not
+ * painted either.
+ */
+export const RAIL_PARTS = ["todo", "jobs", "agents", "footer"] as const;
+
+/** One painted rail part. `footer` is the host's last part, which is why `"end"` is `after footer`. */
+export type RailPart = (typeof RAIL_PARTS)[number];
+
+/**
+ * Where a section asks to sit (S1). Absent means `"end"`, the historical behaviour: after every
+ * native part. It is registration data, like `order` — never persisted, never a setting, and it
+ * names a PLACEMENT in the rail, never a rail key the plugin writes.
+ */
+export type SectionPlacement = "start" | "end" | { after: string };
+
+/**
  * A plugin's sidebar section: the analogue of `RowProvider` for the rail, mirroring the sidebar
  * spec's S2. The plugin writes content only — it never names a `setting`, a rail key or a card
  * frame; the bridge frames the section, draws the host's header and contributes the section's
@@ -184,10 +202,21 @@ export interface SidebarSection {
   /** Visible unless the user (or the plugin) says otherwise; defaults to `true`. */
   defaultVisible?: boolean;
   /**
-   * Optional integer. Sections with an `order` render first, ascending; sections without one
-   * follow in registration order.
+   * Optional integer, read INSIDE one placement slot: sections with an `order` render first,
+   * ascending; sections without one follow. Ties (equal `order`, or both missing) are broken by
+   * `id` — never by load order, so the same registrations in any order draw the same rail (S2).
    */
   order?: number;
+  /**
+   * Where the card sits in the rail (S1). Absent means `"end"`: after every native part, exactly as
+   * before this field existed. `"start"` sits before the first painted native part; `{ after: id }`
+   * sits right after that section, or after one of the native parts `todo`, `jobs`, `agents`,
+   * `footer`. An anchor that cannot be honoured (unknown, a cycle, a native part the host does not
+   * paint) falls back deterministically, and `/bridge-status` reports where the card really went and
+   * why. A malformed value is reported the way a rejected `rowLabel` is, and the card is placed at
+   * the end instead of vanishing.
+   */
+  placement?: SectionPlacement;
 }
 
 /** A plugin's contribution: rows for one category, built lazily per menu build. */

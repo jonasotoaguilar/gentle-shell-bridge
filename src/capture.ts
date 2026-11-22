@@ -745,7 +745,8 @@ function indexWriteProblem(
     return Object.isExtensible(array) ? undefined : `index ${index} cannot be written`;
   }
   if ("get" in descriptor || "set" in descriptor) {
-    return typeof descriptor.set === "function" ? undefined : `index ${index} is read-only`;
+    // A setter is code, not a write this preflight can verify: it may reject or swallow the value.
+    return `index ${index} is read-only`;
   }
   return descriptor.writable === true ? undefined : `index ${index} is read-only`;
 }

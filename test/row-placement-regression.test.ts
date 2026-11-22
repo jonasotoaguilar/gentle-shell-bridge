@@ -716,3 +716,54 @@ test("a getter-only earlier splice target makes the rollback write nothing", () 
       "3 could not be removed. The host menu was left as consistent as the array allowed.",
   ]);
 });
+
+test("a setter-bearing accessor is refused before any write", () => {
+  let buildLeft: CustomizeRow[] = [];
+  let getterIndex = -1;
+  let setterCalls = 0;
+  const scenario = throwingHostAfter(
+    [
+      { label: "Injected one", action: () => {} },
+      { label: "Injected two", action: () => {} },
+      { label: "Injected three", action: () => {} },
+    ],
+    (rows) => {
+      rows.push(
+        { label: "Host extra one", action: () => {} },
+        { label: "Host extra two", action: () => {} },
+      );
+      // A setter is code, not a verifiable write: this one accepts the assignment syntactically and
+      // throws the value away. It must never be reached.
+      getterIndex = rows.length - 4;
+      const value = rows[getterIndex] as CustomizeRow;
+      Object.defineProperty(rows, String(getterIndex), {
+        configurable: true,
+        enumerable: true,
+        get() {
+          return value;
+        },
+        set() {
+          setterCalls += 1;
+        },
+      });
+      buildLeft = [...rows];
+    },
+  );
+
+  assert.throws(() => scenario.host.build(), (error) => error === scenario.originalError);
+  assert.equal(getterIndex, 5);
+  assert.equal(setterCalls, 0, "the rollback never invokes the host setter");
+  assert.equal(scenario.rows.length, 9);
+  scenario.rows.forEach((row, index) => {
+    assert.equal(row, buildLeft[index], `index ${index} keeps its build-left identity and value`);
+  });
+  assert.equal(new Set(scenario.rows).size, scenario.rows.length, "no row identity is duplicated");
+  for (let index = 0; index < 9; index += 1) {
+    assert.equal(Object.hasOwn(scenario.rows, String(index)), true, `index ${index} is not a hole`);
+  }
+  assert.deepEqual(snapshotNotices().entries.map((entry) => entry.message), [
+    "gentle-shell-bridge: could not fully roll back the provisional rows: index 5 is " +
+      "read-only; appended 3 rows; 0 already removed by the host; 0 removed by the bridge; " +
+      "3 could not be removed. The host menu was left as consistent as the array allowed.",
+  ]);
+});

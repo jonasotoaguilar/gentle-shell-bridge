@@ -31,16 +31,24 @@ const host = () => ({ render: () => ['host'] });
 
 test.beforeEach(() => { process.env.GENTLE_PI_CONFIG_HOME = mkdtempSync(join(tmpdir(), 'gsb-message-regressions-')); });
 
-test('S4: a plugin with the same ID remains visible, and arming design rows cannot replace it', () => {
+test('S1/S4: the bridge owns its provider id, so no plugin can take the line off the menu', () => {
   const provider = { id: 'bridge.message-designs', category: 'Cards', rows: () => [] };
-  const off = registerRows(provider), disarm = installMessageDesignRows();
-  let before, survives;
+  const disarm = installMessageDesignRows();
   try {
-    before = formatStatus(collectStatus()).slice(1, 3);
+    assert.throws(() => registerRows(provider), /belongs to the bridge's own line/);
+    assert.equal(snapshotProviders().includes(provider), false, 'nothing stored');
     const drop = register('provider-collision', () => []);
-    try { survives = snapshotProviders().includes(provider); } finally { drop(); }
-    assert.deepEqual([before, survives], [['providers: 1', '  - bridge.message-designs (Cards)'], true]);
-  } finally { disarm(); off(); }
+    try {
+      assert.ok(
+        snapshotProviders().some((candidate) => candidate.id === 'bridge.message-designs'),
+        "the bridge's own line is what answers that id",
+      );
+    } finally {
+      drop();
+    }
+  } finally {
+    disarm();
+  }
 });
 
 test('S4: no live message design means the conversation adds no message inspection or store reads', () => {

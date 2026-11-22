@@ -350,20 +350,16 @@ test("the messages the adoption pass replaced are reported per custom type", () 
   ]);
 });
 
-test("S4: a PLUGIN's rows provider is listed even when its id matches the bridge's own", () => {
-  // The bridge's own provider is plumbing and is filtered out of `providers` — but the filter must
-  // never hide a provider a plugin registered through the public `registerRows`, which is what an id
-  // comparison does. The bridge's own object is the only thing that may disappear.
-  registerRows({
-    id: MESSAGE_DESIGN_ROWS_PROVIDER_ID,
-    category: "Cards",
-    rows: () => [],
-  });
-
-  const snapshot = collectStatus();
-  assert.deepEqual(
-    snapshot.providers,
-    [{ id: MESSAGE_DESIGN_ROWS_PROVIDER_ID, category: "Cards" }],
-    "the plugin's provider, listed",
+test("S4: the bridge's own provider id is refused, and a plugin provider is still listed", () => {
+  // The id belongs to the bridge's line. Reserving it is what keeps a plugin from taking the line off
+  // the menu, or from being silently replaced by it — the two ways a collision cost the user a switch.
+  assert.throws(
+    () => registerRows({ id: MESSAGE_DESIGN_ROWS_PROVIDER_ID, category: "Cards", rows: () => [] }),
+    /belongs to the bridge's own line/u,
   );
+  assert.deepEqual(snapshotProviders(), [], "a refused provider is never stored");
+
+  // Any other id is a plugin's, and the report lists it.
+  registerRows({ id: "loon.rows", category: "Cards", rows: () => [] });
+  assert.deepEqual(collectStatus().providers, [{ id: "loon.rows", category: "Cards" }]);
 });

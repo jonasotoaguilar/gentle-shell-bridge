@@ -19,7 +19,7 @@
  * This module is internal: `src/index.ts` does not re-export it.
  */
 
-import { registerRows, snapshotProviders } from "./bus.ts";
+import { registerBridgeRows, snapshotProviders } from "./bus.ts";
 import { HOST_CARD_STYLE_CATEGORY } from "./card-style-line.ts";
 import { recordNotice } from "./notices.ts";
 import { requestRepaint } from "./repaint.ts";
@@ -260,7 +260,7 @@ export function installMessageDesignRows(): () => void {
       rows: () => messageDesignRows(),
     };
     state.provider = provider;
-    state.dispose = registerRows(provider);
+    state.dispose = registerBridgeRows(provider);
   };
   setMessageDesignRowsInstaller(install);
   // The line is registered NOW when the id is free, and not only once a design exists: the bus answers

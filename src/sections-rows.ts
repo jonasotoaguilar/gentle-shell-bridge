@@ -31,7 +31,7 @@
  * This module is internal: `src/index.ts` does not re-export it.
  */
 
-import { registerRows, snapshotSections } from "./bus.ts";
+import { registerBridgeRows, snapshotSections } from "./bus.ts";
 import { refreshCardStyleSurfaces } from "./card-style-wiring.ts";
 import { requestSurfaceRepaint } from "./repaint.ts";
 import { sectionRowLabels } from "./row-labels.ts";
@@ -111,7 +111,7 @@ function toggleRow(section: SidebarSection, label: string, value: SectionValue):
  * section) always exists.
  */
 export function installSectionRows(): () => void {
-  return registerRows({
+  return registerBridgeRows({
     id: SECTION_ROWS_PROVIDER_ID,
     category: SECTIONS_CATEGORY,
     rows: () => {

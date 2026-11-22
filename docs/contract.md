@@ -5,6 +5,13 @@ What a plugin can rely on. The mechanism behind it is in
 
 ## 1. `registerRows(provider): () => void`
 
+**The bridge's own provider ids are reserved.** `bridge.sections`, `bridge.card-styles`,
+`bridge.tool-designs` and `bridge.message-designs` are refused with an error, and nothing is stored.
+They are this package's plumbing — their effect is the tables in `/bridge-status`, and the report never
+lists those exact objects under `providers`. A plugin that took one would take a line off the menu (the
+bus answers an id first-come) or be silently replaced by it. Register your rows under an id of your
+own, e.g. `"loon.rows"`.
+
 ```ts
 const dispose: () => void = registerRows(provider);
 ```
@@ -2114,7 +2121,8 @@ message design adoption: none
 
 The bridge's own row provider (`bridge.message-designs`) is plumbing, not a plugin provider: like the
 `Sections` and `Card style` providers it is never listed in `providers`, and its effect is the block
-above.
+above. Its id is **reserved** (§1), so no plugin can take the line off the menu or be silently replaced
+by it, and the line is installed when the bridge arms rather than only once a design exists.
 
 ### The mechanism, and the evidence
 
@@ -2149,6 +2157,12 @@ Two limits belong to the contract, not to the implementation:
   pass runs inside the conversation component the bridge already wraps; a message that arrives and is
   drawn before that pass has run keeps Pi's own rendering until the next frame, and then draws through
   the design. Nothing older is rewritten retroactively.
+- **A design that fails on a message whose host renderer DECLINED that build shows the message's body,
+  and Pi's own box from the next frame.** A conditional renderer (`(message, options) => options.expanded
+  ? undefined : component()`) leaves Pi's default box unpopulated: Pi only fills it on its own default
+  path, which a design bypasses. The bridge cannot render a box that was never built, so the failing
+  frame carries the plain body — never nothing — and Pi's box appears as soon as the message is rebuilt.
+  A design that throws on every frame therefore costs a readable frame, not a blank one.
 - **`ctx.cardStyle` is the bridge's own `Card style` selection** — `native`, a registered style, or
   `missing` — and NOT the host's own `float`/`neon` chrome. The bridge cannot read the host's style
   setting for a message it never framed; a design that must match it paints from the host's own

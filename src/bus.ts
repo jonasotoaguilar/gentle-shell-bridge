@@ -116,7 +116,49 @@ export function registerRows(provider: RowProvider): () => void {
   // Attribution is a wrapper, not part of the store: the plugin gets ONE INTEGRATIONS line from any
   // number of registrations (`./plugin-lines.ts`, I1), and `registerRowsStored` keeps doing exactly
   // what it did — including throwing a plugin's invalid id back at it.
+  return attributeRegistration("rows", provider, undefined, () => {
+    assertProviderIdIsFree(provider);
+    return registerRowsStored(provider);
+  });
+}
+
+/**
+ * Register one of THIS package's own providers: the same store, the same attribution, without the
+ * reservation check below. Internal — `src/index.ts` does not export it, so a plugin cannot reach it.
+ */
+export function registerBridgeRows(provider: RowProvider): () => void {
   return attributeRegistration("rows", provider, undefined, () => registerRowsStored(provider));
+}
+
+/**
+ * The provider ids this package owns. They are the bridge's own plumbing — its effect is the tables
+ * in `/bridge-status`, and the report filters those exact objects out of `providers`.
+ *
+ * A plugin that registers one of them is refused, for two reasons that both cost the user something
+ * real. The bus answers an id first-come, so a plugin taking `bridge.message-designs` before the
+ * bridge does either keeps the bridge's line off the menu until it lets go, or is silently replaced
+ * by it — and a plugin that takes the id and gives it back AFTER a design registered leaves the line
+ * uninstalled for the rest of the process. Refusing the id at the door is the only answer that cannot
+ * strand a switch.
+ */
+const RESERVED_ROW_PROVIDER_IDS: ReadonlySet<string> = new Set([
+  // The literals of `SECTION_ROWS_PROVIDER_ID`, `CARD_STYLE_ROWS_PROVIDER_ID`,
+  // `TOOL_DESIGN_ROWS_PROVIDER_ID` and `MESSAGE_DESIGN_ROWS_PROVIDER_ID`. Spelled here because those
+  // modules import THIS one, so importing their constants would close a cycle.
+  "bridge.sections",
+  "bridge.card-styles",
+  "bridge.tool-designs",
+  "bridge.message-designs",
+]);
+
+function assertProviderIdIsFree(provider: RowProvider): void {
+  if (!RESERVED_ROW_PROVIDER_IDS.has(provider.id)) return;
+  throw new Error(
+    `gentle-shell-bridge: cannot register row provider ${JSON.stringify(provider.id)}: that id ` +
+      "belongs to the bridge's own line, so a plugin using it would take that line off the menu or " +
+      "be silently replaced by it. Register your rows under an id of your own, e.g. " +
+      '"loon.rows".',
+  );
 }
 
 /**

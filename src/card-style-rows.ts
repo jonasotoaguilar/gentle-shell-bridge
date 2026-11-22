@@ -32,7 +32,7 @@
  * This module is internal: `src/index.ts` does not re-export it.
  */
 
-import { registerRows, snapshotCardStyles } from "./bus.ts";
+import { registerBridgeRows, snapshotCardStyles } from "./bus.ts";
 import {
   CARD_STYLE_NATIVE,
   HOST_CARD_STYLE_CATEGORY,
@@ -338,7 +338,7 @@ function disposeFallback(state: CardStyleRowState): void {
 /** Make the registered providers match the mode: one line, never two. */
 function sync(state: CardStyleRowState): void {
   if (state.wanted && state.mode === "separate") {
-    if (state.disposeFallback === undefined) state.disposeFallback = registerRows(fallbackProvider());
+    if (state.disposeFallback === undefined) state.disposeFallback = registerBridgeRows(fallbackProvider());
     return;
   }
   disposeFallback(state);

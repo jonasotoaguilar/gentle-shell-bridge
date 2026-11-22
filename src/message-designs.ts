@@ -578,51 +578,52 @@ export function setMessageDesignSelection(customType: string, id: string): void 
  */
 export function resolveMessageDesignSelection(customType: string): MessageDesignSelection {
   const state = messageDesignState();
-  // ONE snapshot serves the whole resolve: one logical store read per call (S4).
-  const selections = readSelections();
   const claim = state.entries.find((entry) => entry.types.includes(customType));
   if (claim === undefined) {
     // No live claim on the type. A value still stored for it names a design that was disposed, and
     // saying so is what lets the wiring draw the host's own output and REPORT it instead of quietly
-    // reading as the host's default (S4).
-    const orphan = storedId(selections.types, customType);
+    // reading as the host's default (S4). This is the one path that must open the document.
+    const orphan = storedId(readSelections().types, customType);
     return orphan === MESSAGE_DESIGN_NATIVE ? { kind: "native" } : { kind: "missing", id: orphan };
   }
   const lineEntries = state.entries.filter(
     (entry) => entry.scope === claim.scope && entry.line === claim.line,
   );
-  // A design that FOLLOWS a tool switch is decided by that switch, never by a message-side value the
-  // user never chose (S1, 0.12.0). It is answered first, live, and the first active one in
-  // registration order wins — the same rule the line's own values follow.
+  // A design that FOLLOWS a tool switch is decided by that switch and by nothing else (S1). It is
+  // answered FIRST, before the message document is even opened, because no stored value there may
+  // veto it — a stale id left by a design that is gone must not turn off a design whose switch is on.
+  // The first active follow in registration order wins, the same rule the line's own values follow.
   const activeFollow = lineEntries.find(
     (entry) =>
       entry.types.includes(customType) &&
       entry.design.follows !== undefined &&
       resolveMessageDesignFollow(entry.design.follows).active,
   )?.design;
+  if (activeFollow !== undefined) return { kind: "design", design: activeFollow };
 
+  // Nothing but follows claims this type, and none of them is on: the host's own output, and the
+  // message document is never opened. That is what keeps a claimed-but-inactive alert free (S4).
+  const ownEntries = lineEntries.filter(
+    (entry) => entry.types.includes(customType) && entry.design.follows === undefined,
+  );
+  if (ownEntries.length === 0) return { kind: "native" };
+
+  // From here a value the user really chose on the message's own line decides. ONE snapshot serves
+  // the rest of the resolve: one logical store read per call.
+  const selections = readSelections();
   const stored = storedId(
     claim.scope === "type" ? selections.types : selections.lines,
     claim.line,
   );
-  if (stored === MESSAGE_DESIGN_NATIVE) {
-    return activeFollow === undefined
-      ? { kind: "native" }
-      : { kind: "design", design: activeFollow };
-  }
-  const chosen = lineEntries.find((entry) => entry.design.id === stored);
+  if (stored === MESSAGE_DESIGN_NATIVE) return { kind: "native" };
+  // The stored value names a design of THIS line, whether or not it lists this type: a line that
+  // covers several types must answer `not-covered` rather than quietly painting a message it never
+  // claimed, and a value that names nothing live is `missing`.
+  const chosen = lineEntries.find(
+    (entry) => entry.design.id === stored && entry.design.follows === undefined,
+  );
   if (chosen === undefined) return { kind: "missing", id: stored };
   if (!chosen.types.includes(customType)) return { kind: "not-covered", id: stored };
-  if (chosen.design.follows !== undefined) {
-    // A following design that also carries a stored value: the follow still decides, and the stored
-    // value is what it falls back to if the follow is removed from the registration.
-    if (resolveMessageDesignFollow(chosen.design.follows).active) {
-      return { kind: "design", design: chosen.design };
-    }
-    return activeFollow === undefined
-      ? { kind: "native" }
-      : { kind: "design", design: activeFollow };
-  }
   return { kind: "design", design: chosen.design };
 }
 

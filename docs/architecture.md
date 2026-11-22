@@ -180,7 +180,9 @@ observes that `map`, provisionally, and the end of the factory decides.
   the notice counts host removals separately. Every source and target index that a length trim or
   splice will inspect or write is preflighted first, including host rows appended after the build; a
   locked or non-configurable index means nothing is written, so a host row is never duplicated and no
-  hole appears. When the appended segment was mutated beyond recognition, the bridge also removes
+  hole appears. An accessor is never a safe target, not even one carrying a setter: a setter is code,
+  and one that rejects its assignment would swallow the write after an earlier element had already been
+  changed. Only a writable data descriptor, or an index with no own descriptor yet, passes. When the appended segment was mutated beyond recognition, the bridge also removes
   nothing: that is the documented exception, and the notice reports it rather than guessing. The
   `Card style` values are undone by their own recorded splice, not by a snapshot. A session only ever
   rolls back its own array, so a nested factory's rollback cannot touch the outer menu's rows.

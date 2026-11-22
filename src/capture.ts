@@ -257,8 +257,18 @@ interface EarlyInjection {
   array: CustomizeRow[];
   /** The array exactly as it was before the provider blocks were placed, by identity. */
   original: readonly CustomizeRow[];
-  /** The provider rows appended, by identity, so a rollback can identify the provisional build. */
+  /** Every provider row this build added, by identity, for counting and diagnostics. */
   rows: readonly CustomizeRow[];
+  /**
+   * S21: the provider rows that went to the TAIL, in order, by identity. `removeInjectedTail` assumes
+   * a tail-shaped write, so it is given this and never `rows`.
+   */
+  tail: readonly CustomizeRow[];
+  /**
+   * S21: the mid-array insertions, each with the index it was made at and the identities it wrote,
+   * in the order they were applied. A rollback removes them in REVERSE, after checking every identity.
+   */
+  inserts: readonly { index: number; rows: readonly CustomizeRow[] }[];
   /** The plan: where the blocks go once the host's category map has finished. */
   plan: RowPlacementPlan;
   /** The in-place `Card style` splice, when one happened, so a rollback can undo it exactly. */
@@ -693,15 +703,17 @@ function pickLateTarget(session: CaptureSession): LatePick {
  */
 function placeEarlyBlocks(early: EarlyInjection): string | undefined {
   const { array } = early;
-  const expectedLength = early.original.length + early.rows.length;
+  const inserted = early.inserts.reduce((total, insert) => total + insert.rows.length, 0);
+  const expectedLength = early.original.length + early.tail.length + inserted;
   if (array.length !== expectedLength) return "the host array changed before the planned move";
   for (let index = 0; index < early.original.length; index++) {
     if (array[index] !== early.original[index]) return "the host array changed before the planned move";
   }
-  for (let index = 0; index < early.rows.length; index++) {
-    if (array[early.original.length + index] !== early.rows[index]) {
-      return "the host array changed before the planned move";
-    }
+  // The tail is no longer contiguous from `original.length`: a placed page sits inside the host's
+  // own rows. Every row this build wrote must still be at an index this build chose, by identity.
+  const written = [...early.inserts.flatMap((insert) => insert.rows), ...early.tail];
+  for (const row of written) {
+    if (!array.includes(row)) return "the host array changed before the planned move";
   }
   return applyRowPlacementPlan(array, early.plan.planned);
 }
@@ -809,6 +821,34 @@ function removeTailTo(array: CustomizeRow[], start: number): string | undefined 
     return "the host array refused the tail trim";
   }
   return array.length === start ? undefined : "the host array kept a phantom length";
+}
+
+/**
+ * S21: undo the mid-array insertions a rollback must remove, in reverse order.
+ *
+ * Every identity is checked before anything is removed: a region the host has since rearranged is
+ * left untouched, because removing a row the host wrote would be worse than leaving a bridge row
+ * behind. Returns the reason it could not finish, or `undefined`.
+ */
+function removeInsertedRows(early: EarlyInjection): string | undefined {
+  if (early.inserts.length === 0) return undefined;
+  const { array } = early;
+  for (const insert of early.inserts) {
+    for (let offset = 0; offset < insert.rows.length; offset++) {
+      if (array[insert.index + offset] !== insert.rows[offset]) {
+        return "the host changed the rows inserted before its own pages";
+      }
+    }
+  }
+  for (const insert of early.inserts) {
+    // Descending index order was kept when they were applied, so each insertion is still intact.
+    try {
+      array.splice(insert.index, insert.rows.length);
+    } catch {
+      return "the host array refused the removal of the inserted rows";
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -953,7 +993,15 @@ function rollbackEarly(session: CaptureSession): void {
   // Every step is best effort and none may throw (E10): the host can freeze, seal or proxy its array
   // between our push and this rollback, and a rollback that threw would replace the host's own error
   // and skip the steps after it. An array we cannot restore is left as the host made it.
-  const rollbackProblem = removeInjectedTail(early);
+  const insertProblem = removeInsertedRows(early);
+  if (insertProblem !== undefined) {
+    recordNotice(
+      `gentle-shell-bridge: could not fully roll back the provisional rows: ${insertProblem}. ` +
+        "The host menu was left as consistent as the array allowed.",
+      "error",
+    );
+  }
+  const rollbackProblem = removeInjectedTail({ ...early, rows: early.tail });
   if (rollbackProblem !== undefined) {
     recordNotice(
       `gentle-shell-bridge: could not fully roll back the provisional rows: ${rollbackProblem}. ` +
@@ -1011,51 +1059,71 @@ function observeRowMap(
   injectProvisionalRows(session, array, callback, thisArg);
 }
 
-/**
- * S21: put a block that OPENS a page where its provider asked, and append every other block.
- *
- * The order of this array is the order of the menu's pages: the host derives
- * `categories` from `options.rows.map(row => row.category)` (`lib/visual-customize-view.ts:387`),
- * and `new Set(...)` keeps the FIRST appearance of each category. The injection runs before that
- * `map`, so a block inserted after another category's rows opens its page right there.
- *
- * Only a block whose category the host does not already list opens a page; a block that joins an
- * existing page is appended exactly as before (its position inside that page is `placement`'s
- * business). A placement that cannot be honoured — no `categoryPlacement`, an unknown anchor, or the
- * provider's own category — appends, so the fallback is the behaviour that existed before S21.
- * Insertions run from the highest index down, so the earlier ones keep their indices.
- */
-function insertBuiltRows(array: CustomizeRow[], built: RowBuildResult): void {
-  const placements = new Map<string, { after: string }>();
-  for (const provider of built.providers) {
-    const asked = provider.categoryPlacement;
-    if (asked === null || typeof asked !== "object") continue;
-    if (typeof asked.after !== "string" || asked.after.length === 0) continue;
-    if (asked.after === provider.category) continue;
-    placements.set(provider.category, { after: asked.after });
-  }
-  const hostCategories = new Set(array.map((row) => row.category ?? HOST_DEFAULT_CATEGORY));
-  const appends: CustomizeRow[] = [];
-  const inserts: { index: number; rows: CustomizeRow[] }[] = [];
-  for (const block of built.blocks) {
-    const asked = placements.get(block.category);
-    const opensAPage = !hostCategories.has(block.category);
-    const index = asked === undefined || !opensAPage ? -1 : endOfCategory(array, asked.after);
-    if (index < 0) appends.push(...block.rows);
-    else inserts.push({ index, rows: block.rows });
-  }
-  inserts.sort((a, b) => b.index - a.index);
-  for (const insert of inserts) array.splice(insert.index, 0, ...insert.rows);
-  if (appends.length > 0) array.push(...appends);
-}
-
-/** The index right after the last row of one category in the captured array, or -1 when it has none. */
+/** The index right after the LAST row of one category, or -1 when the array has none. */
 function endOfCategory(array: CustomizeRow[], category: string): number {
   for (let index = array.length - 1; index >= 0; index -= 1) {
     if ((array[index]?.category ?? HOST_DEFAULT_CATEGORY) === category) return index + 1;
   }
   return -1;
 }
+
+/**
+ * S21: put the rows of a page that its provider asked to open where they belong, and return the
+ * writes it made.
+ *
+ * The order of this array is the order of the menu's pages: the host derives `categories` from
+ * `options.rows.map(row => row.category)` (`lib/visual-customize-view.ts:387`), and `new Set(...)`
+ * keeps the FIRST appearance of each category. The injection runs before that `map`, so rows
+ * inserted after another page's rows open their own page right there. "After the anchor page" means
+ * after the LAST row of that page, whatever else follows it.
+ *
+ * Per CATEGORY, never per block: a block's rows may each declare their own `category`
+ * (`src/rows.ts:326-338`), and moving a whole block would drag the first appearance of unrelated
+ * pages to the new index. Only the rows of the page being placed move; the block's other rows keep
+ * the pre-feature tail order.
+ *
+ * A page opened by two providers is placed once, by the lowest provider id — the same tiebreak every
+ * other tie in the contract uses — so the same registrations in any order draw the same menu. A page
+ * the host already lists is not placed: its position inside that page is `placement`'s business.
+ */
+function insertBuiltRows(
+  array: CustomizeRow[],
+  built: RowBuildResult,
+): { tail: CustomizeRow[]; inserts: { index: number; rows: CustomizeRow[] }[] } {
+  const asked = new Map<string, string>();
+  for (const provider of [...built.providers].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+    const placement = provider.categoryPlacement;
+    if (placement === null || typeof placement !== "object") continue;
+    if (typeof placement.after !== "string" || placement.after.length === 0) continue;
+    if (placement.after === provider.category) continue;
+    if (asked.has(provider.category)) continue;
+    asked.set(provider.category, placement.after);
+  }
+  const hostPages = new Set(array.map((row) => row.category ?? HOST_DEFAULT_CATEGORY));
+  const tail: CustomizeRow[] = [];
+  const inserts: { index: number; rows: CustomizeRow[] }[] = [];
+  for (const block of built.blocks) {
+    const perPage = new Map<string, CustomizeRow[]>();
+    for (const row of block.rows) {
+      const page = row.category ?? block.category;
+      const rows = perPage.get(page);
+      if (rows === undefined) perPage.set(page, [row]);
+      else rows.push(row);
+    }
+    for (const [page, rows] of perPage) {
+      const anchor = asked.get(page);
+      const index = anchor === undefined || hostPages.has(page) ? -1 : endOfCategory(array, anchor);
+      if (index < 0) tail.push(...rows);
+      else inserts.push({ index, rows });
+    }
+  }
+  // Highest index first, so the writes already planned keep their indices.
+  const ordered = [...inserts].sort((a, b) => b.index - a.index);
+  for (const insert of ordered) array.splice(insert.index, 0, ...insert.rows);
+  if (tail.length > 0) array.push(...tail);
+  return { tail, inserts: ordered };
+}
+
 
 /**
  * S18: give a brand-new page to the view before it fixes its page list — provisionally (S20).
@@ -1116,12 +1184,13 @@ function injectProvisionalRows(
       return;
     }
     const original = [...array];
-    // Append the PRE-FEATURE tail order, never splice in the middle: this runs while the host is
-    // inside its own `rows.map(...)`, whose length was captured before the callback. A new page is
-    // still in the array before `new Set(...)` reads it; the blocks move to their real slots once the
-    // factory returns, and if that move is refused they are already exactly where the old path put
-    // them (S6).
-    if (built.rows.length > 0) insertBuiltRows(array, built);
+    // S21: the rows of a page a provider placed go in BEFORE the host's own `map` reads this array,
+    // so its `new Set(...)` derives the page in the requested position; every other row is appended
+    // in the pre-feature tail order. Both writes are recorded, because the rollback below has to undo
+    // them and a mid-array insert is not a tail.
+    const placed = built.rows.length > 0
+      ? insertBuiltRows(array, built)
+      : { tail: [] as CustomizeRow[], inserts: [] as { index: number; rows: CustomizeRow[] }[] };
     Object.defineProperty(array as object, CAPTURE_INJECTED, {
       value: true,
       enumerable: false,
@@ -1131,6 +1200,8 @@ function injectProvisionalRows(
       array,
       original,
       rows: built.rows,
+      tail: placed.tail,
+      inserts: placed.inserts,
       plan,
       failures: built.failures,
     };

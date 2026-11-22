@@ -78,6 +78,12 @@ interface AdoptedMessage {
    * are different answers — `undefined` (Pi's box) or a component — so the message is rebuilt once.
    */
   hadHost: boolean;
+  /**
+   * The design that failed on this message. While it is the selected one, the renderer answers
+   * `undefined` so Pi runs its own default path: that is what populates the box Pi shows, and retrying
+   * a broken design on every frame would only fail again. A different selection clears it by id.
+   */
+  suppressedDesign?: string;
 }
 
 /**
@@ -344,12 +350,20 @@ function adoptMessage(child: unknown, perPass: Map<string, boolean>): MessageOut
     onBuild: (designSelected: boolean): void => {
       record.designAtBuild = designSelected;
     },
+    isSuppressed: (designId: string): boolean => record.suppressedDesign === designId,
+    onFailure: (designId: string): void => {
+      if (record.suppressedDesign === designId) return;
+      record.suppressedDesign = designId;
+      // One rebuild: Pi's own renderer, its own populated box, and no second failure on this frame.
+      invalidate(child, customType);
+    },
   });
   const record: AdoptedMessage = {
     designAtBuild: design,
     hostRenderer,
     hadHost: typeof hostRenderer === "function",
   };
+
 
   // The marker goes FIRST. A component that cannot take an own symbol (a sealed one) is reported and
   // never touched, because replacing its renderer without a marker would make every later pass wrap

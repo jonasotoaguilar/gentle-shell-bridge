@@ -71,13 +71,17 @@ test('S2: an own-the-box design failure restores the full fallback body and reco
   // stand-in below carries such a box; a component with no box at all falls back to the message's
   // plain body (label + content), which is the last resort and never an empty frame.
   const child = message('failed-panel');
-  child.box = { render: (width) => [`Pi box(${width}): ${child.message.content}`] };
+  // A row that fits: Pi's own box wraps its content, so the fallback never has to measure it.
+  child.box = { render: (width) => [`Pi box(${width})`] };
   const before = child.box.render(24);
   const drop = register('failed-panel', () => { throw Error('cannot draw panel'); });
   try {
     select('failed-panel'); adopt(frame(child));
+    // The frame that fails shows the box the message already had; the failed design is then not
+    // retried, so Pi takes its OWN default path and the box it populates is what every later frame
+    // shows. Nothing is drawn twice for the same failure.
     assert.deepEqual(child.render(24), before);
-    assert.deepEqual(child.render(24), before);
+    assert.deepEqual(child.render(24), [`Pi box: ${child.message.content}`]);
     assert.deepEqual(getMessageDesignFailures().filter(f => f.customType === 'failed-panel').map(f => f.message), ['cannot draw panel']);
   } finally { drop(); }
 });

@@ -196,6 +196,26 @@ function bodyLines(content: unknown): string[] {
 }
 
 /**
+ * Hard-wrap rows to `width`, by code point, for the rows THIS module fabricates. Nothing is dropped:
+ * a 190-column row at width 24 becomes eight rows. Only the plain body and Pi's box take this path —
+ * a design's own rows are handed back untouched, because the bridge does not measure what a design
+ * chose to draw (L7).
+ */
+function wrapToWidth(rows: readonly string[], width: number): string[] {
+  if (!Number.isFinite(width) || width <= 0) return [...rows];
+  const out: string[] = [];
+  for (const row of rows) {
+    const points = Array.from(row);
+    if (points.length <= width) {
+      out.push(row);
+      continue;
+    }
+    for (let at = 0; at < points.length; at += width) out.push(points.slice(at, at + width).join(""));
+  }
+  return out;
+}
+
+/**
  * The component a design draws through: the host's rows in, the design's rows out, the live
  * selection read on every pass.
  *
@@ -209,8 +229,12 @@ function designComponent(args: {
   theme: unknown;
   render: MessageDesignRender;
   fallbackRows?: (width: number) => string[] | undefined;
+  hooks?: {
+    isSuppressed?: (designId: string) => boolean;
+    onFailure?: (designId: string) => void;
+  };
 }): MessageComponentLike {
-  const { customType, host, theme, render, fallbackRows } = args;
+  const { customType, host, theme, render, fallbackRows, hooks } = args;
   return {
     render(width: number): string[] {
       const selection = selectionFor(customType);
@@ -236,13 +260,19 @@ function designComponent(args: {
       };
       const applied = applyMessageDesign(selection.design, rows, ctx);
       if (applied !== undefined) return applied;
+      // One degraded frame, then Pi's own: the pass rebuilds the message under Pi's renderer, which
+      // populates the box this design never filled. Nothing is retried while the selection stands.
+      hooks?.onFailure?.(selection.design.id);
       // The design failed: draw what the message would have drawn without it, which is the HOST's
       // rows when there are any (the frame this design was only allowed to rewrite). Only a host-less
       // message needs the box handed over by the adoption pass, because its `rows` are the plain body
       // and Pi's own frame is what the user would have seen. The plain body is the last resort, so a
       // message the agent must read is never the thing that gets dropped (S2 + L7).
       if (host !== undefined) return rows;
-      return fallbackRows?.(width) ?? rows;
+      // The rows this module fabricates are the only ones it may measure: Pi's main screen ABORTS the
+      // frame on a row wider than the terminal, and a message the agent must read cannot be the thing
+      // that crashes it. Wrapping withholds nothing; the design's own rows are never measured (L7).
+      return wrapToWidth(fallbackRows?.(width) ?? plain, width);
     },
     invalidate(): void {
       if (!isRecord(host)) return;
@@ -297,6 +327,10 @@ export function messageDesignRenderer(
      * host component while the design never draws again.
      */
     onBuild?: (designSelected: boolean) => void;
+    /** Whether this design already failed on this message; until the selection changes, Pi draws. */
+    isSuppressed?: (designId: string) => boolean;
+    /** A design failed on this message: ask the pass to rebuild it under Pi's own renderer. */
+    onFailure?: (designId: string) => void;
   },
 ): HostMessageRenderer {
   return function (message: unknown, options: unknown, theme?: unknown): unknown {
@@ -317,12 +351,19 @@ export function messageDesignRenderer(
     }
     // Nothing to draw through: the host's own answer, including `undefined` (S4).
     if (selection.kind !== "design") return hostComponent;
+    // A design that already failed here is not retried on every frame: answering `undefined` is what
+    // lets Pi run its OWN default path, which is the only thing that populates the box a message shows
+    // and the only answer that cannot throw twice for the same reason.
+    if (hooks?.isSuppressed?.(selection.design.id) === true) return undefined;
     return designComponent({
       customType,
       host: hostComponent,
       theme,
       render: snapshotRender(message, options),
       ...(hooks?.fallbackRows === undefined ? {} : { fallbackRows: hooks.fallbackRows }),
+      ...(hooks?.isSuppressed === undefined && hooks?.onFailure === undefined
+        ? {}
+        : { hooks: { isSuppressed: hooks.isSuppressed, onFailure: hooks.onFailure } }),
     });
   };
 }

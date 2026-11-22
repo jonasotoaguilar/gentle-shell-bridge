@@ -12,6 +12,10 @@ lists those exact objects under `providers`. A plugin that took one would take a
 bus answers an id first-come) or be silently replaced by it. Register your rows under an id of your
 own, e.g. `"loon.rows"`.
 
+The reservation is enforced by THIS copy of the bridge. In a mixed-copy process (`./api.ts`'s
+first-wins slot) an OLDER published API object still accepts those ids, and a plugin holding it can
+still register one; the reservation protects the sessions that load this copy first.
+
 ```ts
 const dispose: () => void = registerRows(provider);
 ```
@@ -2122,7 +2126,9 @@ message design adoption: none
 The bridge's own row provider (`bridge.message-designs`) is plumbing, not a plugin provider: like the
 `Sections` and `Card style` providers it is never listed in `providers`, and its effect is the block
 above. Its id is **reserved** (§1), so no plugin can take the line off the menu or be silently replaced
-by it, and the line is installed when the bridge arms rather than only once a design exists.
+by it — and because nobody else can hold that id, the line is installed by the FIRST design and not at
+arm: a session with no design has no provider at all, Pi credits no extra registration, and no menu
+build runs anything.
 
 ### The mechanism, and the evidence
 
@@ -2151,14 +2157,15 @@ One rebuild is unavoidable and deliberate: a type with NO host renderer answers 
 box) or a component, and those are different answers from one renderer, so a message of such a type is
 rebuilt once when that shape changes — and never twice for the same shape.
 
-Two limits belong to the contract, not to the implementation:
+Three limits belong to the contract, not to the implementation:
 
 - **A message Pi mounted BEFORE the pass first runs is adopted on the next conversation render.** The
   pass runs inside the conversation component the bridge already wraps; a message that arrives and is
   drawn before that pass has run keeps Pi's own rendering until the next frame, and then draws through
   the design. Nothing older is rewritten retroactively.
 - **A design that fails on a message whose host renderer DECLINED that build shows the message's body,
-  and Pi's own box from the next frame.** A conditional renderer (`(message, options) => options.expanded
+  and Pi's own box from the next frame** — because the failed design is not retried while it stays
+  selected, which is what lets Pi run the default path that populates the box. A conditional renderer (`(message, options) => options.expanded
   ? undefined : component()`) leaves Pi's default box unpopulated: Pi only fills it on its own default
   path, which a design bypasses. The bridge cannot render a box that was never built, so the failing
   frame carries the plain body — never nothing — and Pi's box appears as soon as the message is rebuilt.

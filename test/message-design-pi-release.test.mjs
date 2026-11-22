@@ -56,7 +56,15 @@ if (!pi) {
     assert.deepEqual(draw(chat), control.render(48));
     child.setExpanded(true);
     control.setExpanded(true);
-    assert.deepEqual(draw(chat), control.render(48));
+    // The declined build left Pi's own box unpopulated, so the frame that fails can only show the
+    // message's plain body; the recovery is that the failed design is not retried, which lets Pi run
+    // its default path and populate the box the next frame renders.
+    const native = control.render(48);
+    const first = draw(chat);
+    if (JSON.stringify(first) !== JSON.stringify(native)) {
+      assert.deepEqual(first, ['[conditional]', '', 'keep the full body']);
+    }
+    assert.deepEqual(draw(chat), native, 'the next ordinary frame recovers without invalidate()');
   });
 
   test('S2/L7: text parts reach a design that uses the supplied body', () => {
@@ -83,13 +91,34 @@ if (!pi) {
     assert.equal(getMessageDesignSelectionReads(), reads);
   });
 
-  test('S1/S4: a temporary provider collision does not permanently hide the design option', () => {
-    const off = registerRows({ id: 'bridge.message-designs', category: 'Cards', rows: () => [] });
+  test('reserved provider ids leave the bus untouched and the message switch available', () => {
+    const before = snapshotProviders();
+    for (const id of [
+      'bridge.sections', 'bridge.card-styles', 'bridge.tool-designs', 'bridge.message-designs',
+    ]) {
+      assert.throws(
+        () => registerRows({ id, category: 'Cards', rows: () => [] }),
+        /belongs to the bridge's own line/,
+      );
+    }
+    assert.deepEqual(snapshotProviders(), before, 'nothing stored, nothing replaced');
     installMessageDesignRows();
+    assert.equal(
+      snapshotProviders().some(p => p.id === 'bridge.message-designs'),
+      false,
+      'no design yet: no provider at all',
+    );
     select('late-menu', () => ['design']);
-    off();
-    const values = snapshotProviders().flatMap(provider => provider.rows()).map(row => row.choice?.value);
-    assert.ok(values.includes('panel'));
+    const line = snapshotProviders().find(p => p.id === 'bridge.message-designs').rows();
+    assert.deepEqual(
+      line.map(row => row.choice?.value),
+      ['default', 'panel'],
+      'the first design installs the line: default first, then the design',
+    );
+    assert.ok(
+      snapshotProviders().flatMap(p => p.rows()).some(r => r.choice?.value === 'panel'),
+      'and the design switch is there',
+    );
   });
 
   test('L7: design keeps all rows; pipeline and fullscreen fit columns; regular diff renderer rejects overflow', () => {

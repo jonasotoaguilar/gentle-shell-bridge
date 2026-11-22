@@ -589,6 +589,8 @@ test("S2: the fallback box carries the message's CURRENT output padding", () => 
   setMessageDesignSelection(REMINDER, "loon.reminder");
   adoptCustomMessages(container([child]));
 
-  assert.deepEqual(child.render(40), ["pad 4"], "the padding the message has NOW");
-  assert.deepEqual(child.render(40), ["pad 4"], "and it stays that way on later frames");
+  assert.deepEqual(child.render(40), ["pad 4"], "the frame that failed shows the box at the padding NOW");
+  // And then Pi draws its own box: the failed design is not retried while it is the selected one, which
+  // is what lets Pi run the default path that POPULATES the box for the rest of the session.
+  assert.deepEqual(child.render(40), [`[${REMINDER}] pi's own box@40`], "Pi's own next frame");
 });

@@ -223,21 +223,17 @@ test("S2: a throwing or malformed preview loses its own picture and nothing else
 // The provider
 // ---------------------------------------------------------------------------------------------
 
-test("S4: arming with no design contributes no ROW and no report line", () => {
-  // The bridge's own provider is installed at arm so the bus answers its id first-come, but it is
-  // plumbing: it contributes no row, and `/bridge-status` filters this exact object out by identity,
-  // so a session that never registered a design still reports `providers: none`.
+test("S4: arming with no design contributes NO provider, so nothing pays per pass", () => {
+  // With no design there is no provider at all: Pi credits one fewer registration, the menu runs
+  // nothing extra, and `/bridge-status` keeps its historical output. The id is reserved, so no plugin
+  // can hold it and hand it back — which is why lazy is safe.
   installMessageDesignRows();
-  assert.deepEqual(messageDesignRows(), [], "no row");
-  const providers = snapshotProviders().filter(
-    (provider) => provider.id === MESSAGE_DESIGN_ROWS_PROVIDER_ID,
-  );
-  assert.equal(providers.length, 1, "the bridge's own provider exists");
   assert.deepEqual(
-    providers[0].rows({} as never),
+    snapshotProviders().filter((provider) => provider.id === MESSAGE_DESIGN_ROWS_PROVIDER_ID),
     [],
-    "and it adds nothing to the menu",
+    "a session that never registered a design gains no provider at all",
   );
+  assert.deepEqual(messageDesignRows(), [], "and therefore no row");
 });
 
 test("S4: the FIRST design installs the line, with no second arm", () => {

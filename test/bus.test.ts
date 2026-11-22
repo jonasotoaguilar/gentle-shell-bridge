@@ -12,7 +12,7 @@ const withId = (id: string, category = "Layout"): RowProvider => ({
 // One shared bus for the whole file; every test resets it through the internal seam.
 // `src/index.ts` deliberately does not re-export the seam (asserted below).
 const bus = await import("../src/bus.ts");
-const { registerRows, snapshotProviders, resetBusForTests } = bus;
+const { getRowPlacementRejections, registerRows, snapshotProviders, resetBusForTests } = bus;
 
 const ids = () => snapshotProviders().map((provider: RowProvider) => provider.id);
 
@@ -162,4 +162,33 @@ test("the public entry does not expose the test-only reset seam", async () => {
   const entry = await import("../src/index.ts");
   assert.equal("resetBusForTests" in entry, false);
   assert.equal("registerRows" in entry, true);
+});
+
+test("a placement rejection never changes registration order or replacement in place", () => {
+  const malformed = { after: "" } as unknown as RowProvider["placement"];
+  registerRows(withId("a", "Layout"));
+  // SAFETY: a plugin can pass anything at runtime; the bus must still store exactly one entry.
+  registerRows({ ...withId("b", "Layout"), placement: malformed });
+  registerRows(withId("c", "Layout"));
+
+  assert.deepEqual(ids(), ["a", "b", "c"], "the provider is still registered, in its position");
+  assert.equal(getRowPlacementRejections().length, 1);
+
+  const replacement = withId("b", "Layout");
+  registerRows(replacement);
+
+  assert.deepEqual(ids(), ["a", "b", "c"], "replacement happens in place");
+  assert.equal(snapshotProviders()[1], replacement, "the new provider object is the live one");
+  assert.deepEqual(getRowPlacementRejections(), [], "a conforming replacement clears the record");
+});
+
+test("a disposer removes the placement rejection it created", () => {
+  const malformed = { after: "" } as unknown as RowProvider["placement"];
+  const dispose = registerRows({ ...withId("a", "Layout"), placement: malformed });
+
+  assert.equal(getRowPlacementRejections().length, 1);
+  dispose();
+
+  assert.deepEqual(snapshotProviders(), []);
+  assert.deepEqual(getRowPlacementRejections(), []);
 });

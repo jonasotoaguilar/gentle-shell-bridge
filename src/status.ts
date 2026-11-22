@@ -10,13 +10,18 @@
  */
 
 import {
+  getRowPlacementRejections,
   getSectionPlacementRejections,
+  observedHostCategories,
   placementLandingText,
+  resolveRowPlacements,
   resolveSectionPlacements,
+  rowPlacementLandingText,
   snapshotCardStyles,
   snapshotProviders,
   snapshotSections,
   snapshotTransforms,
+  type RowPlacementRejection,
   type SectionPlacementRejection,
 } from "./bus.ts";
 import {
@@ -107,6 +112,22 @@ export type StatusBackend = "hook" | "capture" | "none";
 export interface StatusProviderEntry {
   id: string;
   category: string;
+  /**
+   * Where this provider asked its rows to sit and where they really land (S1–S3, S5). Present only
+   * when the provider named a placement or the bridge could not honour the one it named, so a plain
+   * provider keeps the entry (and the line) it had before this field existed.
+   */
+  placement?: StatusRowPlacement;
+}
+
+/** One provider's row placement, as `/bridge-status` lists it: requested, landed, why. */
+export interface StatusRowPlacement {
+  /** The request as a person reads it: `start`, `end`, `after "loon.news"`. */
+  requested: string;
+  /** Where the block really draws: `start`, `end`, `after "loon.news"`. */
+  landed: string;
+  /** Why it is not where it asked to be; absent when the request was honoured. */
+  reason?: string;
 }
 
 /** Two providers contribute the same `category` + `choice.setting`. */
@@ -152,6 +173,9 @@ export interface StatusSectionPlacement {
 
 /** A `placement` a registration had to refuse, with the section it belonged to. */
 export type StatusSectionPlacementRejection = SectionPlacementRejection;
+
+/** A row `placement` a registration had to refuse, with the provider it belonged to. */
+export type StatusRowPlacementRejection = RowPlacementRejection;
 
 /**
  * How the section frame is drawn and how the pointer reaches it (N11, N15): the answer to "is this
@@ -462,6 +486,12 @@ export interface StatusSnapshot {
    */
   placementRejections?: StatusSectionPlacementRejection[];
   /**
+   * Row `placement` values the bridge refused: the provider still registered and its rows were
+   * placed at the end. Absent when nothing was refused, so a clean session keeps its historical
+   * output exactly.
+   */
+  rowPlacementRejections?: StatusRowPlacementRejection[];
+  /**
    * Every registered transcript transform in pipeline order, with the last frame's outcome. Absent
    * when none is registered, so a session that never used the pipeline keeps its historical output
    * byte for byte.
@@ -500,6 +530,15 @@ export function collectStatus(): StatusSnapshot {
   const capture = getCaptureDiagnostics();
   const backend: StatusBackend =
     hook.installed ? "hook" : capture.armedTargets > 0 ? "capture" : "none";
+  // The SAME resolver the capture backend runs, against the categories the host last built, so the
+  // report and the menu cannot disagree about where a block went (S5). The hook backend never sees
+  // the host array, so its empty observed set is used instead of a stale capture observation: it
+  // must say `start`/`after` could not be honoured there rather than pretend.
+  const rowPlacements = new Map(
+    resolveRowPlacements(providers, backend === "hook" ? [] : observedHostCategories()).map(
+      (entry) => [entry.provider.id, entry],
+    ),
+  );
 
   // Diagnostics never run providers: duplicate detection comes from the rows the LAST menu build
   // actually received, and is unknown until such a build exists.
@@ -518,7 +557,25 @@ export function collectStatus(): StatusSnapshot {
           // about a provider the user really has.
           provider !== bridgeMessageDesignRowsProvider(),
       )
-      .map((provider) => ({ id: provider.id, category: provider.category })),
+      .map((provider) => {
+        const resolved = rowPlacements.get(provider.id);
+        const placement: StatusRowPlacement | undefined =
+          resolved === undefined
+            ? undefined
+            : {
+                requested: resolved.requested,
+                landed: rowPlacementLandingText(resolved),
+                ...(resolved.reason === undefined ? {} : { reason: resolved.reason }),
+              };
+        // A default `end` that was honoured is not news: omitting it keeps every historical
+        // provider entry (and every pre-feature report) byte for byte.
+        const report =
+          placement !== undefined &&
+          (provider.placement !== undefined || placement.reason !== undefined)
+            ? { placement }
+            : {};
+        return { id: provider.id, category: provider.category, ...report };
+      }),
     backend,
     // Report the failures and the capture outcome of the backend that is actually in use.
     failures:
@@ -535,6 +592,10 @@ export function collectStatus(): StatusSnapshot {
   if (rowNames.length > 0) snapshot.rowNames = rowNames;
   const placementRejections = getSectionPlacementRejections();
   if (placementRejections.length > 0) snapshot.placementRejections = placementRejections;
+  const rowPlacementRejections = getRowPlacementRejections();
+  if (rowPlacementRejections.length > 0) {
+    snapshot.rowPlacementRejections = rowPlacementRejections;
+  }
   const lastCapture = backend === "hook" ? hook.lastCapture : capture.lastOutcome;
   if (lastCapture !== undefined) snapshot.lastCapture = lastCapture;
 
@@ -1120,7 +1181,15 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
   } else {
     lines.push(`providers: ${snapshot.providers.length}`);
     for (const provider of snapshot.providers) {
-      lines.push(`  - ${provider.id} (${provider.category})`);
+      // Where the block asked to sit and where it really lands (S5): a fallback is only actionable
+      // next to the request that caused it, so both are on the provider's own line.
+      const placement = provider.placement;
+      const placementText =
+        placement === undefined
+          ? ""
+          : `, placement ${placement.requested} → ${placement.landed}` +
+            (placement.reason === undefined ? "" : ` (${placement.reason})`);
+      lines.push(`  - ${provider.id} (${provider.category})${placementText}`);
     }
   }
 
@@ -1170,6 +1239,18 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
       lines.push(
         `  - section ${JSON.stringify(rejection.sectionId)} placement ${rejection.value}: ` +
           `${rejection.reason} (the section was placed at the end)`,
+      );
+    }
+  }
+
+  if (snapshot.rowPlacementRejections !== undefined) {
+    lines.push(`row placement rejections: ${snapshot.rowPlacementRejections.length}`);
+    for (const rejection of snapshot.rowPlacementRejections) {
+      // The same discipline as a section's: the value verbatim, the rule it broke, and what the
+      // bridge did instead of dropping the provider's rows (S5).
+      lines.push(
+        `  - provider ${JSON.stringify(rejection.providerId)} placement ${rejection.value}: ` +
+          `${rejection.reason} (the rows were placed at the end)`,
       );
     }
   }

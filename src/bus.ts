@@ -74,6 +74,10 @@ interface BusState {
   transforms: TransformEntry[];
   /** Sections that asked for a `placement` the bridge cannot honour; one per live `id`. */
   placementRejections: SectionPlacementRejection[];
+  /** Row providers that asked for a `placement` the bridge cannot honour; one per live `id`. */
+  rowPlacementRejections: RowPlacementRejection[];
+  /** The host's own category names as the last capture observed them (T2 writes this). */
+  observedHostCategories?: string[];
 }
 
 /** The slot shape on `globalThis`; keeps the cast in one place. */
@@ -105,6 +109,8 @@ function bus(): BusState {
     // Same for the placement rejections: an older copy's bus gains the list instead of being
     // replaced, so the report of a bad `placement` survives a second package copy registering one.
     if (!Array.isArray(existing.placementRejections)) existing.placementRejections = [];
+    // And for the row placement rejections, the same discipline for the row surface.
+    if (!Array.isArray(existing.rowPlacementRejections)) existing.rowPlacementRejections = [];
     return existing;
   }
   const created: BusState = {
@@ -113,6 +119,7 @@ function bus(): BusState {
     cardStyles: [],
     transforms: [],
     placementRejections: [],
+    rowPlacementRejections: [],
   };
   host[BUS_KEY] = created;
   return created;
@@ -203,6 +210,18 @@ function assertRowProviderCategory(provider: RowProvider): void {
 
 function registerRowsStored(provider: RowProvider): () => void {
   assertRowProviderCategory(provider);
+  // A row `placement` the bridge cannot honour is reported and IGNORED, never thrown: refusing the
+  // whole provider over it would cost the user its rows. It lands at the end, which is the
+  // historical default (S5).
+  const placementFault = rowPlacementProblem(provider.placement);
+  if (placementFault === undefined) clearRowPlacementRejection(provider.id);
+  else {
+    recordRowPlacementRejection({
+      providerId: provider.id,
+      value: describeValue(provider.placement),
+      reason: placementFault,
+    });
+  }
   const state = bus();
   const entry: BusEntry = { provider };
   const index = state.entries.findIndex((candidate) => candidate.provider.id === provider.id);
@@ -214,7 +233,12 @@ function registerRowsStored(provider: RowProvider): () => void {
     if (disposed) return;
     disposed = true;
     const current = state.entries.indexOf(entry);
-    if (current !== -1) state.entries.splice(current, 1);
+    if (current !== -1) {
+      state.entries.splice(current, 1);
+      // The record describes THIS registration, which is gone now; a stale disposer (after a
+      // same-id replacement) must not clear the replacement's record instead.
+      clearRowPlacementRejection(provider.id);
+    }
   };
 }
 
@@ -231,7 +255,340 @@ export function snapshotProviders(): RowProvider[] {
  * `src/index.ts`, so it is unreachable from the package's public entry.
  */
 export function resetBusForTests(): void {
-  bus().entries.length = 0;
+  const state = bus();
+  state.entries.length = 0;
+  state.rowPlacementRejections.length = 0;
+  delete state.observedHostCategories;
+}
+
+/**
+ * Record the host's own category names as the last capture observed them, so `/bridge-status` can
+ * resolve a row placement against the pages the host really built. The capture backend is the
+ * writer (T2); a caller can pass the set in any order, because `resolveRowPlacements` normalizes it.
+ */
+export function recordObservedHostCategories(categories: readonly string[]): void {
+  bus().observedHostCategories = categories.filter(
+    (category): category is string => typeof category === "string",
+  );
+}
+
+/** The host categories the last capture observed, or `[]` before one (a fresh copy). */
+export function observedHostCategories(): string[] {
+  return [...(bus().observedHostCategories ?? [])];
+}
+
+/** One row provider's block: where it asked to sit and where it really lands (S1–S3, S5). */
+export interface RowPlacementResolution {
+  provider: RowProvider;
+  /** The category whose page carries this block. */
+  category: string;
+  /** What the plugin asked for, as a person reads it: `start`, `end`, `after "loon.news"`. */
+  requested: string;
+  /** What the block hangs off in its category: `start`, `end`, or `"<provider id>"`. */
+  anchor: string;
+  /** Why the block is not where it asked to be; absent when the request was honoured. */
+  reason?: string;
+}
+
+/**
+ * A row `placement` the bridge cannot honour, kept verbatim so the author can find it (S5). The
+ * provider still registers — a field the bridge can ignore must never cost the whole block — and
+ * it is placed at the end, which is what `/bridge-status` says next to this record.
+ */
+export interface RowPlacementRejection {
+  providerId: string;
+  /** The value as JSON, exactly as far as a report can show it. Never rewritten. */
+  value: string;
+  /** One sentence naming the shape that was expected. */
+  reason: string;
+}
+
+/** The rule, quoted by every rejection so the message stands on its own. */
+const ROW_PLACEMENT_RULE =
+  'placement must be "start", "end", or { after: "<row provider id>" }';
+
+/**
+ * What is wrong with one row `placement`, or `undefined` when the bridge can honour it.
+ *
+ * Checked in a fixed order — the shape, then the `after` string, then its own shape — so the
+ * reported reason is deterministic instead of depending on how a bad value was built. One rule for
+ * the registration (nothing is thrown) and for the resolver, which must survive a value a
+ * registration refused, because a plugin can hand the provider object over and mutate it later.
+ */
+function rowPlacementProblem(value: unknown): string | undefined {
+  // Absent is the default, `"end"`: a provider that names no placement is conforming, not faulty.
+  if (value === undefined) return undefined;
+  if (value === "start" || value === "end") return undefined;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return `it is ${describeValue(value)}; ${ROW_PLACEMENT_RULE}`;
+  }
+  const keys = Object.keys(value);
+  if (keys.length !== 1 || keys[0] !== "after") {
+    return "an object placement carries exactly one field, `after`, naming the id of a registered row provider";
+  }
+  // SAFETY: the object has exactly the own key `after`, which is what is read here.
+  const target = (value as { after: unknown }).after;
+  if (typeof target !== "string" || target.trim() === "") {
+    return `after is ${describeValue(target)}; after must be a non-empty string naming the id of a registered row provider`;
+  }
+  return undefined;
+}
+
+/** Replace the record for one provider, so a corrected registration stops being reported. */
+function recordRowPlacementRejection(rejection: RowPlacementRejection): void {
+  const state = bus();
+  const index = state.rowPlacementRejections.findIndex(
+    (candidate) => candidate.providerId === rejection.providerId,
+  );
+  if (index === -1) state.rowPlacementRejections.push(rejection);
+  else state.rowPlacementRejections[index] = rejection;
+}
+
+function clearRowPlacementRejection(providerId: string): void {
+  const rejections = bus().rowPlacementRejections;
+  for (let index = rejections.length - 1; index >= 0; index -= 1) {
+    if (rejections[index].providerId === providerId) rejections.splice(index, 1);
+  }
+}
+
+/** Every row `placement` a registration had to refuse, for `/bridge-status`. A fresh copy. */
+export function getRowPlacementRejections(): RowPlacementRejection[] {
+  return bus().rowPlacementRejections.map((rejection) => ({ ...rejection }));
+}
+
+/** One provider's placement as a phrase: `start`, `end`, `after "loon.news"`. */
+export function requestedRowPlacementText(provider: RowProvider): string {
+  const placement = provider.placement;
+  if (placement === undefined || placement === "end") return "end";
+  if (placement === "start") return "start";
+  if (placement !== null && typeof placement === "object" && typeof placement.after === "string") {
+    return `after ${JSON.stringify(placement.after)}`;
+  }
+  return describeValue(placement);
+}
+
+/** Where one row landing reads as: `start`, `end`, `after "loon.news"`. */
+export function rowPlacementLandingText(
+  landing: Pick<RowPlacementResolution, "anchor">,
+): string {
+  if (landing.anchor === "start" || landing.anchor === "end") return landing.anchor;
+  return `after ${landing.anchor}`;
+}
+
+/** What one row block hangs off, before the category turns it into a landing. */
+type RowPlacementAnchor =
+  | { kind: "start" }
+  | { kind: "end" }
+  | { kind: "provider"; id: string };
+
+/** Group key for one anchor: tagged, because a provider id may itself read `start` or `end`. */
+function rowAnchorKey(anchor: RowPlacementAnchor): string {
+  if (anchor.kind === "provider") return `provider:${anchor.id}`;
+  return anchor.kind;
+}
+
+/** An anchor as a person reads it: `start`, `end`, `"loon.news"`. */
+function rowAnchorText(anchor: RowPlacementAnchor): string {
+  if (anchor.kind === "provider") return JSON.stringify(anchor.id);
+  return anchor.kind;
+}
+
+interface RowDirectPlacement {
+  anchor: RowPlacementAnchor;
+  reason?: string;
+}
+
+/** What one provider asked for, before cycles are broken and categories are resolved. */
+function rowDirectPlacement(
+  provider: RowProvider,
+  ownIds: ReadonlySet<string>,
+  categoryById: ReadonlyMap<string, string>,
+  hostBuilt: boolean,
+): RowDirectPlacement {
+  const placement = provider.placement;
+  if (placement === undefined || placement === "end") return { anchor: { kind: "end" } };
+  const problem = rowPlacementProblem(placement);
+  if (problem !== undefined) {
+    return { anchor: { kind: "end" }, reason: `its placement is malformed (${problem})` };
+  }
+  if (placement === "start") {
+    if (!hostBuilt) {
+      return {
+        anchor: { kind: "end" },
+        reason: `the host did not build the category ${JSON.stringify(provider.category)}, so it has no first row to sit before; it landed at the end`,
+      };
+    }
+    return { anchor: { kind: "start" } };
+  }
+  // SAFETY: `rowPlacementProblem` accepted the value, so it is the `{ after }` shape.
+  const target = (placement as { after: string }).after;
+  if (!hostBuilt) {
+    return {
+      anchor: { kind: "end" },
+      reason: `the host did not build the category ${JSON.stringify(provider.category)}, so after ${JSON.stringify(target)} cannot be honoured; it landed at the end`,
+    };
+  }
+  if (ownIds.has(target)) return { anchor: { kind: "provider", id: target } };
+  const otherCategory = categoryById.get(target);
+  if (otherCategory !== undefined) {
+    return {
+      anchor: { kind: "end" },
+      reason: `after ${JSON.stringify(target)} is in the category ${JSON.stringify(otherCategory)}, not ${JSON.stringify(provider.category)}`,
+    };
+  }
+  return {
+    anchor: { kind: "end" },
+    reason: `after ${JSON.stringify(target)} is not a registered row provider id`,
+  };
+}
+
+/** A provider id compare: UTF-16 code units, never a locale collation (S2). */
+function compareProviderIds(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
+/** A provider whose `order` is a usable sort key; `NaN`, `Infinity` and a missing value are not. */
+function sortableRowOrder(provider: RowProvider): number | undefined {
+  return typeof provider.order === "number" && Number.isFinite(provider.order)
+    ? provider.order
+    : undefined;
+}
+
+/** The S2 order inside one slot: finite `order` first, ascending, then every tie by `id`. */
+function compareRowProviders(a: RowProvider, b: RowProvider): number {
+  const orderA = sortableRowOrder(a);
+  const orderB = sortableRowOrder(b);
+  if (orderA !== undefined && orderB !== undefined) {
+    if (orderA !== orderB) return orderA - orderB;
+  } else if (orderA !== undefined) {
+    return -1;
+  } else if (orderB !== undefined) {
+    return 1;
+  }
+  return compareProviderIds(a.id, b.id);
+}
+
+/**
+ * Every row block's landing, grouped by category and in DRAW order (S1–S3, S5): the answer both the
+ * capture backend and `/bridge-status` read, so a report and a menu cannot disagree.
+ *
+ * Pure by construction: it takes the registrations and the host's categories, and nothing else.
+ * Where a block goes is decided from those two lists alone, never from the order the plugins loaded
+ * in:
+ *
+ * - within one slot, providers with a finite `order` come first, ascending, then the rest, and ties
+ *   are broken by `id` compared as UTF-16 code units (S2) — the input order does not matter;
+ * - placement is resolved WITHIN the provider's category (S4): `start` is before that category's
+ *   first row, `end` after its own rows, and every provider id is a slot whose followers draw right
+ *   after its block, so chains resolve transitively and several providers asking for the same `X`
+ *   form one block (S3);
+ * - a cycle, a provider after itself, an unknown id, an anchor in another category, and `start` or
+ *   `after` in a category the host did not build all fall back to `"end"` with a reason — never a
+ *   throw, never a vanished block (S5);
+ * - `hostCategories` is a SET: it is deduplicated and sorted by UTF-16 code units, so a caller
+ *   cannot make the answer depend on how it collected the list.
+ */
+export function resolveRowPlacements(
+  providers: readonly RowProvider[],
+  hostCategories: readonly string[],
+): RowPlacementResolution[] {
+  const hostBuilt = new Set(
+    hostCategories.filter((category): category is string => typeof category === "string"),
+  );
+  const categoryById = new Map<string, string>();
+  const categories = new Set<string>(hostBuilt);
+  for (const provider of providers) {
+    categoryById.set(provider.id, provider.category);
+    categories.add(provider.category);
+  }
+
+  const out: RowPlacementResolution[] = [];
+  // A deterministic category order: the host's pages and the plugin-created ones together, sorted
+  // by code unit, so collecting the host set differently cannot reorder the result.
+  for (const category of [...categories].sort(compareProviderIds)) {
+    const own = providers.filter((provider) => provider.category === category);
+    if (own.length === 0) continue;
+    const ownIds = new Set(own.map((provider) => provider.id));
+    const built = hostBuilt.has(category);
+
+    const anchors = new Map<string, RowDirectPlacement>();
+    for (const provider of own) {
+      anchors.set(provider.id, rowDirectPlacement(provider, ownIds, categoryById, built));
+    }
+    for (const id of rowCycleMembers(own, anchors)) {
+      anchors.set(id, {
+        anchor: { kind: "end" },
+        reason: "it would sit after itself: a placement cycle falls back to the end",
+      });
+    }
+
+    const groups = new Map<string, RowProvider[]>();
+    for (const provider of own) {
+      const anchor = anchors.get(provider.id)?.anchor ?? { kind: "end" as const };
+      const key = rowAnchorKey(anchor);
+      const group = groups.get(key);
+      if (group === undefined) groups.set(key, [provider]);
+      else group.push(provider);
+    }
+    for (const group of groups.values()) group.sort(compareRowProviders);
+
+    const visited = new Set<string>();
+    const emit = (key: string): void => {
+      if (visited.has(key)) return;
+      visited.add(key);
+      const group = groups.get(key);
+      if (group === undefined) return;
+      for (const provider of group) {
+        const direct = anchors.get(provider.id) ?? { anchor: { kind: "end" as const } };
+        out.push({
+          provider,
+          category,
+          requested: requestedRowPlacementText(provider),
+          anchor: rowAnchorText(direct.anchor),
+          ...(direct.reason === undefined ? {} : { reason: direct.reason }),
+        });
+        emit(`provider:${provider.id}`);
+      }
+    };
+
+    emit("start");
+    emit("end");
+    // Cycles are gone, so every block was reached above. Emitting any remaining key in a
+    // deterministic order keeps a future anchor shape from silently dropping a block.
+    for (const key of [...groups.keys()].sort(compareProviderIds)) emit(key);
+  }
+
+  return out;
+}
+
+/**
+ * The providers that are part of a placement cycle (A after B after A, or A after itself). Every
+ * other provider is left alone: a chain that merely LEADS into a cycle is resolved through it
+ * after the cycle members have fallen back to the end.
+ */
+function rowCycleMembers(
+  providers: readonly RowProvider[],
+  anchors: ReadonlyMap<string, RowDirectPlacement>,
+): string[] {
+  const settled = new Set<string>();
+  const members = new Set<string>();
+  for (const provider of providers) {
+    const chain: string[] = [];
+    let current: string | undefined = provider.id;
+    while (current !== undefined && !settled.has(current)) {
+      const repeat = chain.indexOf(current);
+      if (repeat !== -1) {
+        for (const id of chain.slice(repeat)) members.add(id);
+        break;
+      }
+      chain.push(current);
+      const anchor: RowPlacementAnchor | undefined = anchors.get(current)?.anchor;
+      current = anchor?.kind === "provider" ? anchor.id : undefined;
+    }
+    for (const id of chain) settled.add(id);
+  }
+  return [...members];
 }
 
 /**

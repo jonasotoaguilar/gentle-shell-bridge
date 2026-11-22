@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resetBusForTests, registerRows } from "../src/bus.ts";
+import { recordObservedHostCategories, resetBusForTests, registerRows } from "../src/bus.ts";
 import {
   getCaptureDiagnostics,
   installCaptureBackend,
@@ -206,4 +206,92 @@ test("a throwing provider is skipped by the duplicate scan instead of breaking i
   ];
 
   assert.deepEqual(findDuplicateSettings(providers, createRowContext(undefined)), []);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Row placement (S1, S2, S3, S5): requested vs landed, on the provider's own line
+// ---------------------------------------------------------------------------------------------
+
+test("collectStatus reports each explicit row placement and the fallback that explains it", () => {
+  recordObservedHostCategories(["Layout", "Banner"]);
+  registerRows({ id: "loon.top", category: "Layout", placement: "start", rows: () => [] });
+  registerRows({
+    id: "loon.after",
+    category: "Layout",
+    placement: { after: "missing" },
+    rows: () => [],
+  });
+  registerRows({ id: "plain", category: "Layout", rows: () => [] });
+
+  const snapshot = collectStatus();
+
+  assert.deepEqual(snapshot.providers, [
+    {
+      id: "loon.top",
+      category: "Layout",
+      placement: { requested: "start", landed: "start" },
+    },
+    {
+      id: "loon.after",
+      category: "Layout",
+      placement: {
+        requested: 'after "missing"',
+        landed: "end",
+        reason: 'after "missing" is not a registered row provider id',
+      },
+    },
+    { id: "plain", category: "Layout" },
+  ]);
+
+  const lines = formatStatus(snapshot);
+  assert.ok(lines.includes("  - loon.top (Layout), placement start → start"), lines.join("\n"));
+  assert.ok(
+    lines.includes(
+      '  - loon.after (Layout), placement after "missing" → end ' +
+        '(after "missing" is not a registered row provider id)',
+    ),
+    lines.join("\n"),
+  );
+  assert.ok(
+    lines.includes("  - plain (Layout)"),
+    "a provider with no placement keeps the entry and line it had before this field existed",
+  );
+});
+
+test("collectStatus reports a malformed row placement as a rejection, and the provider still lands at the end", () => {
+  const malformed = { after: "" } as unknown as RowProvider["placement"];
+  registerRows({ id: "loon.broken", category: "Layout", placement: malformed, rows: () => [] });
+
+  const snapshot = collectStatus();
+
+  assert.deepEqual(snapshot.rowPlacementRejections, [
+    {
+      providerId: "loon.broken",
+      value: '{"after":""}',
+      reason: snapshot.rowPlacementRejections?.[0].reason,
+    },
+  ]);
+  assert.match(snapshot.rowPlacementRejections?.[0].reason ?? "", /non-empty string/);
+  assert.deepEqual(snapshot.providers, [
+    {
+      id: "loon.broken",
+      category: "Layout",
+      placement: {
+        requested: 'after ""',
+        landed: "end",
+        reason: snapshot.providers[0].placement?.reason,
+      },
+    },
+  ]);
+
+  const lines = formatStatus(snapshot);
+  assert.ok(lines.includes("row placement rejections: 1"), lines.join("\n"));
+  assert.ok(
+    lines.some((line) =>
+      /^  - provider "loon\.broken" placement \{"after":""\}: .* \(the rows were placed at the end\)$/u.test(
+        line,
+      ),
+    ),
+    lines.join("\n"),
+  );
 });

@@ -104,6 +104,21 @@ placement?: "start" | "end" | { after: string };
   `"start"` and for an anchor that opted in. The host renders one flat row array and selects a page by
   filtering it, so `"end"` means after that category's own rows, not after every category. An anchor
   that did not opt in is the tail exception in the bullet above.
+- **`categoryPlacement` places the PAGE a block opens (S21).** It is separate from `placement`,
+  which orders a block INSIDE its category. The menu's pages are the first appearance of each
+  category in the rows the host maps, so a block that opens a page is INSERTED after the anchor
+  category's rows while the menu is built:
+
+  ```ts
+  CategoryPlacement = "end" | { after: string };   // provider.categoryPlacement, absent means "end"
+  ```
+
+  `{ after: "Sections" }` opens the page right after `Sections`, before whatever page followed it.
+  Only a block whose `category` the host does not already list opens a page, so a provider joining
+  an existing page is unaffected. An anchor that cannot be honoured — unknown, the block's own
+  category, or a page this build does not produce — appends, exactly the pre-S21 tail order. It is
+  honoured while the menu is built: a page list the host already derived cannot be resequenced.
+
 - **The hook backend cannot honour host-relative placement.** It never sees the host array, so it
   orders each category by the `order` rule below and reports that `"start"`/`after` could not be
   honoured. It never claims a host-relative landing it cannot see.

@@ -80,16 +80,43 @@ test("the sections table reports id, title, visibility and where the order comes
 
   const snapshot = collectStatus();
 
+  // Every section line carries its placement (S1, S5): what it asked for and where it landed. A
+  // section that never named one asked for `end`, so there is no fallback to explain.
   assert.deepEqual(snapshot.sections, [
-    { id: "first", title: "FIRST", visible: true, order: 1, rowLabel: "first" },
-    { id: "late", title: "LATE", visible: true, order: 5, rowLabel: "late" },
-    { id: "plain", title: "PLAIN", visible: true, order: "registration", rowLabel: "plain" },
+    {
+      id: "first",
+      title: "FIRST",
+      visible: true,
+      order: 1,
+      rowLabel: "first",
+      placement: { requested: "end", landed: "after footer" },
+    },
+    {
+      id: "late",
+      title: "LATE",
+      visible: true,
+      order: 5,
+      rowLabel: "late",
+      placement: { requested: "end", landed: "after footer" },
+    },
+    {
+      id: "plain",
+      title: "PLAIN",
+      visible: true,
+      order: "registration",
+      rowLabel: "plain",
+      placement: { requested: "end", landed: "after footer" },
+    },
   ]);
   assert.deepEqual(statusLines().filter((line) => line.includes("FIRST") || line.includes("PLAIN")), [
-    '  - first "FIRST": visible, order 1, row "first"',
-    '  - plain "PLAIN": visible, registration order, row "plain"',
+    '  - first "FIRST": visible, order 1, row "first", placement end → after footer',
+    '  - plain "PLAIN": visible, registration order, row "plain", placement end → after footer',
   ]);
   assert.ok(statusLines().includes("sections: 3"));
+  assert.ok(
+    statusLines().includes("rail parts: todo, jobs, agents, footer"),
+    "the parts a placement resolves against are part of the answer",
+  );
 });
 
 test("the table shows the persisted visibility, not a guess", () => {

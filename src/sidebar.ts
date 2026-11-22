@@ -7,19 +7,21 @@
  * The rail is painted from ONE process-global map: `Symbol.for("gentle-pi.experimental-sidebar.state")`
  * on the terminal object → `state.parts`, a `Map<string, SidebarRail>` (`lib/shell-sidebar.ts:6,78-90`).
  * The layout paints only the hard-coded keys `["todo","jobs","agents","footer"]`
- * (`lib/shell-sidebar-layout.ts:344`), so a new key never renders: appending to an existing part is
- * the only way in, and the `footer` part is the last one painted, which is why our sections can
- * follow every native section without interleaving (`lib/shell-bar.ts:247,251-316` keeps the status
- * sections in a closure we cannot reach — the documented limit).
+ * (`lib/shell-sidebar-layout.ts:344`), so a new key never renders: contributing rows to one of those
+ * parts is the only way in. The bridge wraps ALL FOUR, because a section may ask to sit before the
+ * first one, after one of the middle ones, or after the last (`SIDEBAR_RAIL_KEY`); the status
+ * sections themselves live in a closure (`lib/shell-bar.ts:247,251-316`) we cannot reach — the
+ * documented limit, and the reason "after a status section" is not offered.
  *
  * ## Order independence (S4)
  *
- * The host registers the `footer` part itself (`extensions/gentle-shell.ts:2681`), so our arming may
- * run before OR after it. The rail itself is therefore not the seam; the MAP is. On install we patch
- * the map instance's own `set` and `get`:
+ * The host registers its parts itself (`extensions/gentle-shell.ts:2827` for `footer`, `:2895` for
+ * `jobs`, `extensions/gentle-todo.ts:292` for `todo`, `extensions/gentle-agents.ts:2500` for
+ * `agents`), so our arming may run before OR after any of them. The rail itself is therefore not the
+ * seam; the MAP is. On install we patch the map instance's own `set` and `get`:
  *
- * - `set` wraps the value when the key is the rail we append to, so a registration that happens
- *   after our arm is captured with no polling;
+ * - `set` wraps the value when the key is one of the four painted parts, so a registration that
+ *   happens after our arm is captured with no polling;
  * - `get` wraps and stores on read, so a value written by a path that skipped our `set` (foreign
  *   code calling `Map.prototype.set`, a copy loaded before us) still arrives wrapped, and every
  *   later read returns the SAME wrapper object — stable identity matters, because the layout's memo
@@ -41,14 +43,16 @@
  * `spend`, `surface`, `summary`, `open`, `alert`, `invalidate` and every other field keep reaching
  * their readers with their identity untouched. `digest` is specifically NOT wrapped: the layout memo
  * keys on its value, and a wrapper that recomputed it would defeat the memo. The host's rails are
- * object literals (`extensions/gentle-shell.ts:2681`, `extensions/gentle-agents.ts:2172`), so an
+ * object literals (`extensions/gentle-shell.ts:2827`, `extensions/gentle-agents.ts:2500`), so an
  * own-property spread carries every field; a class instance whose methods live on the prototype
  * would need a prototype-preserving wrapper, which no host rail requires today.
  *
- * `render`/`cardGroups` delegate first and only then add. `handleMouse` delegates every event to the
- * host's own handler, and answers a MOVE over a row this contributor rendered first — because the
- * host's part handler never declines a move (see `mouseThrough`). Every other event reaches the
- * contributor only where the host declined, so the host's own targets always win.
+ * `render`/`cardGroups` delegate first and only then add — our rows around the host's own, never
+ * instead of them. `handleMouse` delegates every event to the host's own handler with the host's own
+ * `y` (its frame starts after our BEFORE rows), and answers an event that lands on a row this
+ * contributor rendered itself — because the host's part handler never declines a move (see
+ * `mouseThrough`). Every other event reaches the contributor only where the host declined, so the
+ * host's own targets always win.
  *
  * ## Markers and idempotency
  *
@@ -88,6 +92,8 @@
 
 import { isRecord } from "./rows.ts";
 import { notePanelCandidate } from "./section-panel.ts";
+import { RAIL_PARTS } from "./types.ts";
+import type { RailPart } from "./types.ts";
 
 /** The host's own state key: the seam this backend intercepts. Never our own state. */
 const HOST_STATE = Symbol.for("gentle-pi.experimental-sidebar.state");
@@ -100,11 +106,17 @@ const PARTS_INTERCEPTED = Symbol.for("gentle-shell-bridge.sidebar.parts.v1");
 const RAIL_WRAPPED = Symbol.for("gentle-shell-bridge.sidebar.rail.v1");
 
 /**
- * The part we append to. The layout paints `todo`, `jobs`, `agents`, `footer` in that order
- * (`lib/shell-sidebar-layout.ts:344`), so wrapping the last one puts our sections after every native
- * section; any other key would interleave.
+ * The part that ends the rail, and the one `"end"` means. The layout paints
+ * `todo`, `jobs`, `agents`, `footer` in that order (`lib/shell-sidebar-layout.ts:344`), so the footer
+ * is after every native section. Every painted part is wrapped (a section may ask for `"start"` or
+ * `after` any of them); this key stays the one the diagnostics call "the rail".
  */
 export const SIDEBAR_RAIL_KEY = "footer";
+
+/** Whether a map key is a part the layout paints, and therefore one the bridge wraps. */
+function isPaintedRailKey(key: string): key is RailPart {
+  return (RAIL_PARTS as readonly string[]).includes(key);
+}
 
 /** Row ranges of the section cards a part draws, as the host's `cardGroups` returns them. */
 export interface RailGroupLayout {
@@ -125,7 +137,8 @@ export interface RailMouseResult {
  * `surface`, `summary`, `open`, `alert` and `invalidate` — but "every field" would be false: a
  * non-enumerable property, a method that lives on the prototype, and a getter (snapshotted once at
  * wrap time) do not survive the spread. Every host rail observed so far is an object literal
- * (`extensions/gentle-shell.ts:2681`, `extensions/gentle-agents.ts:2172`), so nothing it carries is
+ * Every host rail observed so far is an object literal
+ * (`extensions/gentle-shell.ts:2827`, `extensions/gentle-agents.ts:2500`), so nothing it carries is
  * lost; `test/sidebar-independent.test.ts` pins the limit rather than leaving it to prose.
  */
 export interface SidebarRailLike {
@@ -152,27 +165,47 @@ export interface SidebarRailLike {
  */
 export type RailMapValue = SidebarRailLike | Record<string, unknown> | undefined;
 
-/** What a contributor adds to the wrapped part, appended after the host's own rows. */
+/** What a contributor adds to ONE wrapped part: rows around the host's own. */
 export interface RailContribution {
   lines: string[];
   /** Card groups for `lines`, as row ranges RELATIVE to `lines[0]`; the wrapper offsets them. */
   groups: Array<{ start: number; end: number }>;
 }
 
+/** One part's contribution: a block drawn above the host's rows and/or a block drawn below them. */
+export interface RailPartContribution {
+  /** Drawn BEFORE the host's own rows. Absent means nothing above them. */
+  before?: RailContribution;
+  /** Drawn AFTER the host's own rows. Absent means nothing below them. */
+  after?: RailContribution;
+}
+
+/** What a contributor is told about the frame it is being asked to contribute to. */
+export interface RailContributorContext {
+  /** The rail part currently rendering (`todo`, `jobs`, `agents`, `footer`). */
+  part: RailPart;
+  /**
+   * The parts the host paints, in paint order — what a placement resolves against (S5). A part that
+   * is absent from the map, hidden by `state.visibility.todo === false`, or that rendered no rows in
+   * the previous frame is not painted, and an anchor on it falls forward to the next painted one.
+   */
+  painted: readonly RailPart[];
+}
+
 /**
  * The extension point the section renderer plugs into (T4). It knows nothing about sections: it
- * contributes rows and their card groups for one width, and may answer mouse events over them.
+ * contributes rows around one part's own, their card groups, and may answer mouse events over them.
  */
 export interface RailContributor {
-  render(width: number): RailContribution | undefined;
+  render(width: number, context: RailContributorContext): RailPartContribution | undefined;
   /**
    * A cheap signature of the live state the contributed rows paint (N14). The layout re-renders a
    * part only when its digest changes, so a row whose `meta` moved between frames must move this
    * value — otherwise the host would keep the cached rows and the field would look frozen.
    */
-  digest?(): string;
+  digest?(context: RailContributorContext): string;
   /**
-   * Our own mouse targets. A MOVE over a row this contributor rendered is offered here FIRST (the
+   * Our own mouse targets. An event over a row this contributor rendered is offered here FIRST (the
    * host's own part handler answers every move inside its frame, so waiting for it to decline would
    * never reach us); every other event is offered here only after the host's own handler declined,
    * so the host's own targets win wherever it has one. The event's `y` is in the PART's frame, so
@@ -181,17 +214,26 @@ export interface RailContributor {
   handleMouse?(event: unknown, position?: RailContributionPosition): RailMouseResult | undefined;
 }
 
-/** Where a contributor's rows sit inside the part's rendered frame. */
+/** A half-open range of rows in one part's rendered frame: `[start, end)`. */
+export interface RailRowRange {
+  start: number;
+  end: number;
+}
+
+/** Where a contributor's rows sit inside the part's rendered frame (S7). */
 export interface RailContributionPosition {
-  /** The index of the contributor's first row in the part's own `render(width)` output. */
-  startRow?: number;
+  /** The part whose frame the event's `y` counts. */
+  part: string;
+  /** The host's own rows in that frame. */
+  native?: RailRowRange;
   /**
-   * One past the contributor's last row in the same frame (absent together with `startRow`). The
-   * wrapper uses it to recognise a MOVE over its own rows: the host's part handler answers every
-   * move inside its frame (`lib/native-pointer-region.ts:80-88`, `extensions/gentle-shell.ts:2732-2741`),
-   * so the rows the host did not draw are exactly `[startRow, endRow)`.
+   * The rows this contributor drew ABOVE the host's own. A row range, not an offset: contributed
+   * rows can now sit on either side of the host's, so "everything after the host's rows" is no
+   * longer the shape of a contribution.
    */
-  endRow?: number;
+  before?: RailRowRange;
+  /** The rows this contributor drew BELOW the host's own. */
+  after?: RailRowRange;
 }
 
 /**
@@ -226,7 +268,7 @@ export type SidebarRecordedOutcome = SidebarInstallOutcome | "no-widget-surface"
 export interface InstallSidebarResult {
   installed: boolean;
   outcome: SidebarInstallOutcome;
-  /** Whether the part we append to was already in the map when we looked. */
+  /** Whether the part `"end"` draws in (the host's `footer`) was already in the map when we looked. */
   rail: "wrapped" | "pending";
   /** Only for `resolver-threw`: the resolver's message. */
   reason?: string;
@@ -249,8 +291,15 @@ export interface SidebarFailure {
 export interface SidebarDiagnostics {
   /** Host rail maps currently intercepted in this process. */
   interceptedMaps: number;
-  /** Rails currently wrapped (one per intercepted map that has the part). */
+  /** Painted parts currently wrapped, across every intercepted map (four per complete map). */
   wrappedRails: number;
+  /**
+   * Whether the part `"end"` draws in (the host's `footer`) is wrapped in the first intercepted map.
+   * Reported separately from `wrappedRails` because the four parts are wrapped independently: a rail
+   * whose sections all land before the footer must not look "wrapped" while the part they land in is
+   * missing.
+   */
+  rail?: "wrapped" | "pending";
   lastFailures: SidebarFailure[];
   /** The most recent install attempt's outcome; absent until the backend is installed once. */
   lastOutcome?: SidebarRecordedOutcome;
@@ -268,6 +317,12 @@ type MapClear = RailMap["clear"];
 /** One patched map, with everything a restore needs. */
 interface Interception {
   parts: RailMap;
+  /**
+   * The host's sidebar state object the map came from. Kept for one field only: `visibility.todo`,
+   * which the layout applies BEFORE asking a part to render, so a part the host hides must not be
+   * treated as a placement anchor. Reading it is optional-chained and a missing field means painted.
+   */
+  hostState?: Record<string, unknown>;
   /** The own descriptor the map had before us, if any, so a restore is exact. */
   ownSet?: PropertyDescriptor;
   ownGet?: PropertyDescriptor;
@@ -290,12 +345,18 @@ interface WrappedRailRecord {
   key: string;
   original: RailMapValue;
   wrapper: RailMapValue;
+  /**
+   * How many rows the host's own `render` produced the last time it was asked — the render-side
+   * answer to "is this part painted?". Absent before the first frame: an unrendered part is assumed
+   * painted, which is what makes the very first frame resolve the way the rail looks.
+   */
+  nativeRows?: number;
 }
 
 /** One render's worth of state, so `cardGroups` need not re-run the host or the contributor. */
 interface RailMemoEntry {
   nativeLength: number;
-  contribution?: RailContribution;
+  contribution?: RailPartContribution;
 }
 
 interface SidebarBackendState {
@@ -341,9 +402,11 @@ function sidebarState(): SidebarBackendState {
 /** Diagnostics snapshot for `status` (T6) and for this backend's own tests. */
 export function getSidebarDiagnostics(): SidebarDiagnostics {
   const state = sidebarState();
+  const interception = state.intercepted[0];
   return {
     interceptedMaps: state.intercepted.length,
     wrappedRails: state.wrapped.length,
+    ...(interception === undefined ? {} : { rail: railStatus(interception.parts) }),
     lastFailures: [...state.lastFailures],
     ...(state.lastOutcome === undefined ? {} : { lastOutcome: state.lastOutcome }),
     ...(state.lastReason === undefined ? {} : { lastReason: state.lastReason }),
@@ -413,8 +476,9 @@ function attemptInstall(resolveTui: SidebarTuiResolver): InstallSidebarResult {
   if (parts === undefined) return { installed: false, outcome: "no-sidebar-state", rail: "pending" };
   // One of the objects the bridge is handed: if a host ever publishes its panel builders on the
   // sidebar state, the section renderer uses them and `/bridge-status` says so (N11, N15).
-  notePanelCandidate("the terminal sidebar state", hostSidebarStateOf(resolved));
-  return intercept(parts);
+  const hostState = hostSidebarStateOf(resolved);
+  notePanelCandidate("the terminal sidebar state", hostState);
+  return intercept(parts, hostState);
 }
 
 /**
@@ -451,7 +515,7 @@ export function hostSidebarStateOf(tui: unknown): Record<string, unknown> | unde
   return isRecord(state) ? state : undefined;
 }
 
-function intercept(parts: RailMap): InstallSidebarResult {
+function intercept(parts: RailMap, hostState?: Record<string, unknown>): InstallSidebarResult {
   const state = sidebarState();
   const existing = state.intercepted.find((record) => record.parts === parts);
 
@@ -459,9 +523,9 @@ function intercept(parts: RailMap): InstallSidebarResult {
   // through the prototype chain describes some other object, and a marker whose value is not the
   // live `set` means foreign code replaced ours since (so we re-patch around it below).
   if (existing !== undefined && parts.set === existing.patchedSet) {
-    // Already intercepted. Still make sure the part currently in the map is wrapped: a value that
-    // arrived through a path which skipped our `set` is wrapped by our `get`.
-    void parts.get(SIDEBAR_RAIL_KEY);
+    // Already intercepted. Still make sure every painted part currently in the map is wrapped: a
+    // value that arrived through a path which skipped our `set` is wrapped by our `get`.
+    primePaintedParts(parts);
     return { installed: true, outcome: "already-intercepted", rail: railStatus(parts) };
   }
   if (existing !== undefined) state.intercepted.splice(state.intercepted.indexOf(existing), 1);
@@ -477,13 +541,13 @@ function intercept(parts: RailMap): InstallSidebarResult {
   const originalClear = parts.clear;
 
   const patchedSet = function (this: RailMap, key: string, value: RailMapValue) {
-    const stored = key === SIDEBAR_RAIL_KEY ? wrapRail(parts, key, value) : value;
+    const stored = isPaintedRailKey(key) ? wrapRail(parts, key, value) : value;
     return originalSet.call(this, key, stored);
   } as MapSet;
 
   const patchedGet = function (this: RailMap, key: string) {
     const value = originalGet.call(this, key);
-    if (key !== SIDEBAR_RAIL_KEY || value === undefined) return value;
+    if (!isPaintedRailKey(key) || value === undefined) return value;
     const wrapped = wrapRail(parts, key, value);
     if (wrapped === value) return value;
     // Store through the ORIGINAL set: re-entering our own patch would wrap twice for nothing.
@@ -512,6 +576,7 @@ function intercept(parts: RailMap): InstallSidebarResult {
 
   state.intercepted.push({
     parts,
+    ...(hostState === undefined ? {} : { hostState }),
     ownSet,
     ownGet,
     ownDelete,
@@ -525,8 +590,13 @@ function intercept(parts: RailMap): InstallSidebarResult {
     patchedDelete,
     patchedClear,
   });
-  void parts.get(SIDEBAR_RAIL_KEY);
+  primePaintedParts(parts);
   return { installed: true, outcome: "intercepted", rail: railStatus(parts) };
+}
+
+/** Read every painted key once, so a part registered before our arm arrives wrapped (see `patchedGet`). */
+function primePaintedParts(parts: RailMap): void {
+  for (const key of RAIL_PARTS) void parts.get(key);
 }
 
 /** Drop the wrapped-rail records for a part, so a deleted or cleared key is not reported as wrapped. */
@@ -614,12 +684,15 @@ function wrapRail(parts: RailMap, key: string, rail: RailMapValue): RailMapValue
   const original = rail;
   const generation = state.generation;
   const memo = new Map<number, RailMemoEntry>();
+  // Only the four painted keys are ever wrapped (`isPaintedRailKey`), so this cast names the part
+  // the contributor is told about, and nothing else is inferred from it.
+  const part = key as RailPart;
 
   const wrapper: Rail = {
     ...original,
-    render: (width: number) => renderThrough(key, original, generation, memo, width),
-    cardGroups: (width: number) => groupsThrough(key, original, generation, memo, width),
-    handleMouse: (event: unknown) => mouseThrough(key, original, generation, memo, event),
+    render: (width: number) => renderThrough(parts, part, original, generation, memo, width),
+    cardGroups: (width: number) => groupsThrough(parts, part, original, generation, memo, width),
+    handleMouse: (event: unknown) => mouseThrough(part, original, generation, memo, event),
   };
 
   // The host's panel builders are looked for on the part itself (N11, N15): if a host ever publishes
@@ -634,7 +707,7 @@ function wrapRail(parts: RailMap, key: string, rail: RailMapValue): RailMapValue
   // nothing contributes one — the passthrough tests pin the VALUE, because the memo compares values
   // and never function identity. When a contributor has a signature, it is appended, so a change in
   // the built rows reaches the memo as a new key.
-  wrapper.digest = () => digestValue(key, original, generation);
+  wrapper.digest = () => digestValue(part, original, generation, paintedParts(parts));
 
   Object.defineProperty(wrapper, RAIL_WRAPPED, {
     value: original,
@@ -658,6 +731,51 @@ function isRailLike(value: RailMapValue): value is Rail {
   return isRecord(value) && typeof value.render === "function";
 }
 
+/**
+ * The parts the host actually paints, in paint order — what a placement resolves against (S5).
+ *
+ * Three facts make a part painted: it is in the map (the host registered it and did not dispose it),
+ * the host's own visibility switch does not hide it (`state.visibility.todo === false`, the filter
+ * the layout applies at `lib/shell-sidebar-layout.ts:344`), and its own `render` did not return an
+ * empty frame the last time it ran (a part in compact-work or status-hidden mode paints nothing).
+ * A part that has not rendered yet counts as painted: the first frame must resolve the way the rail
+ * looks, not the way an empty observation would.
+ */
+function paintedParts(parts: RailMap): RailPart[] {
+  const state = sidebarState();
+  const visibility = hostVisibility(parts);
+  return RAIL_PARTS.filter((key) => {
+    if (key === "todo" && visibility?.todo === false) return false;
+    const record = state.wrapped.find((entry) => entry.parts === parts && entry.key === key);
+    return record !== undefined && record.nativeRows !== 0;
+  });
+}
+
+/** The host's own `state.visibility`, when the object the map came from carries one. */
+function hostVisibility(parts: RailMap): { todo?: boolean } | undefined {
+  const hostState = sidebarState().intercepted.find((entry) => entry.parts === parts)?.hostState;
+  const visibility = hostState?.visibility;
+  return isRecord(visibility) ? (visibility as { todo?: boolean }) : undefined;
+}
+
+/** Remember how many rows one part's own render produced, so "painted" is a measurement. */
+function recordNativeRows(parts: RailMap, key: RailPart, rows: number): void {
+  const record = sidebarState().wrapped.find(
+    (entry) => entry.parts === parts && entry.key === key,
+  );
+  if (record !== undefined) record.nativeRows = rows;
+}
+
+/**
+ * The parts the host paints right now, for a caller that has no frame of its own (`/bridge-status`).
+ * Before the first interception — or before any frame — this is every painted key, which is the
+ * rail's normal shape: `todo`, `jobs`, `agents`, `footer`.
+ */
+export function observedPaintedParts(): RailPart[] {
+  const interception = sidebarState().intercepted[0];
+  return interception === undefined ? [...RAIL_PARTS] : paintedParts(interception.parts);
+}
+
 /** Own-property identity check: the marker's value is the exact rail this object wraps. */
 function isOurWrapper(value: RailMapValue): boolean {
   if (!isRecord(value) || !Object.hasOwn(value, RAIL_WRAPPED)) return false;
@@ -665,9 +783,10 @@ function isOurWrapper(value: RailMapValue): boolean {
   return isRecord((value as Record<symbol, unknown>)[RAIL_WRAPPED]);
 }
 
-/** Delegate to the host's `render`, then append the contribution — if the host painted anything. */
+/** Delegate to the host's `render`, then wrap our own rows around it — if the host painted anything. */
 function renderThrough(
-  key: string,
+  parts: RailMap,
+  key: RailPart,
   original: Rail,
   generation: number,
   memo: Map<number, RailMemoEntry>,
@@ -684,6 +803,10 @@ function renderThrough(
     throw error;
   }
 
+  // What the host's own frame is, remembered BEFORE the contribution resolves: whether this part is
+  // painted is part of the answer to "where does a block anchored on it go" (S5).
+  recordNativeRows(parts, key, native.length);
+
   if (native.length === 0) {
     // The host painted no frame (rail inactive, compact work row, another surface owns it). A frame
     // of ours here would appear exactly where the host suppressed its own.
@@ -691,14 +814,18 @@ function renderThrough(
     return native;
   }
 
-  const contribution = contributionFor(key, width);
+  const contribution = contributionFor(key, width, paintedParts(parts));
   remember(memo, width, { nativeLength: native.length, contribution });
-  return contribution === undefined ? native : [...native, ...contribution.lines];
+  const before = contribution?.before?.lines ?? [];
+  const after = contribution?.after?.lines ?? [];
+  if (before.length === 0 && after.length === 0) return native;
+  return [...before, ...native, ...after];
 }
 
-/** Delegate to the host's `cardGroups`, then append our groups offset by the host's row count. */
+/** Delegate to the host's `cardGroups`, then wrap our groups around the host's, offset by ours. */
 function groupsThrough(
-  key: string,
+  parts: RailMap,
+  key: RailPart,
   original: Rail,
   generation: number,
   memo: Map<number, RailMemoEntry>,
@@ -720,7 +847,9 @@ function groupsThrough(
     }
   }
   const contribution =
-    remembered !== undefined ? remembered.contribution : contributionFor(key, width);
+    remembered !== undefined
+      ? remembered.contribution
+      : contributionFor(key, width, paintedParts(parts));
   if (remembered === undefined) remember(memo, width, { nativeLength, contribution });
 
   let base: RailGroupLayout | undefined;
@@ -731,23 +860,34 @@ function groupsThrough(
     throw error;
   }
   // Same default the layout applies: without `cardGroups` a part is one section headed by its first
-  // row, and that one section must cover the rows we append too.
+  // row, and that one section must cover the rows we wrap around it too.
   const hostLayout: RailGroupLayout = base ?? { groups: [{ start: 0, end: nativeLength }] };
+  const beforeLength = contribution?.before?.lines.length ?? 0;
+  const afterLength = contribution?.after?.lines.length ?? 0;
 
-  if (contribution === undefined || nativeLength === 0 || contribution.groups.length === 0) {
+  if (nativeLength === 0 || (beforeLength === 0 && afterLength === 0)) {
     // Nothing of ours: the host's own layout object, untouched.
     return hostLayout;
   }
 
+  const before = contribution?.before;
+  const after = contribution?.after;
   return {
     groups: [
-      ...hostLayout.groups,
-      ...contribution.groups.map((group) => ({
-        start: group.start + nativeLength,
-        end: group.end + nativeLength,
+      ...(before?.groups ?? []),
+      ...hostLayout.groups.map((group) => ({
+        start: group.start + beforeLength,
+        end: group.end + beforeLength,
+      })),
+      ...(after?.groups ?? []).map((group) => ({
+        start: group.start + beforeLength + nativeLength,
+        end: group.end + beforeLength + nativeLength,
       })),
     ],
-    ...(hostLayout.loose === undefined ? {} : { loose: hostLayout.loose }),
+    // The host's loose rows (key hints) are indices into the HOST's frame, so they move with it.
+    ...(hostLayout.loose === undefined
+      ? {}
+      : { loose: hostLayout.loose.map((row) => row + beforeLength) }),
   };
 }
 
@@ -769,9 +909,15 @@ function groupsThrough(
  * click or a press on a row it does not own (`extensions/gentle-shell.ts:2747-2757`), which is how a
  * contributed row's click reaches us today. When the contributor declines a move over our rows the
  * host still runs, so its own hover is cleared exactly as it would be for any row it does not own.
+ *
+ * The event's `y` counts the PART's rows. Since a part can now carry our rows ABOVE the host's as
+ * well as below, the event is TRANSLATED for the host: `y` minus our before-block, so a host row
+ * still reaches the host's handler with the host's own coordinate (S7). An event over one of our own
+ * rows is offered to the host at `nativeLength` — one past its last row — which is exactly where an
+ * appended row already sat before this feature, so the host still never claims one of our rows.
  */
 function mouseThrough(
-  key: string,
+  key: RailPart,
   original: Rail,
   generation: number,
   memo: Map<number, RailMemoEntry>,
@@ -782,16 +928,24 @@ function mouseThrough(
     return typeof hostHandler === "function" ? hostHandler.call(original, event) : undefined;
   }
 
-  const position = contributionPosition(memo, event);
-  if (isMoveOverContribution(event, position)) {
+  const position = contributionPosition(key, memo, event);
+  const region = regionOf(event, position);
+  let consulted = false;
+  if (region === "before" || region === "after") {
+    // Our own rows: the contributor goes first, over the host's region, which would answer a move
+    // here with "not mine" and a click with nothing.
+    consulted = true;
     const own = contributorMouse(key, event, position);
     if (own !== undefined) return own;
   }
 
   if (typeof hostHandler === "function") {
     let result: RailMouseResult | undefined;
+    const hostY = hostYFor(event, position, region);
+    const hostEvent =
+      hostY === undefined || !isRecord(event) ? event : { ...event, y: hostY };
     try {
-      result = hostHandler.call(original, event);
+      result = hostHandler.call(original, hostEvent);
     } catch (error) {
       recordFailure(key, "handleMouse", error);
       throw error;
@@ -800,14 +954,50 @@ function mouseThrough(
     if (result !== undefined) return result;
   }
 
-  return contributorMouse(key, event, position);
+  // Offered once: a second call would run a plugin's handler twice for one event.
+  return consulted ? undefined : contributorMouse(key, event, position);
+}
+
+/** Which rows of the part frame the event landed on. */
+type PointerRegion = "before" | "native" | "after" | undefined;
+
+function within(y: number, range: RailRowRange | undefined): boolean {
+  return range !== undefined && y >= range.start && y < range.end;
+}
+
+function regionOf(event: unknown, position: RailContributionPosition | undefined): PointerRegion {
+  if (position === undefined || !isRecord(event)) return undefined;
+  const y = event.y;
+  if (typeof y !== "number" || !Number.isFinite(y)) return undefined;
+  if (within(y, position.before)) return "before";
+  if (within(y, position.after)) return "after";
+  if (within(y, position.native)) return "native";
+  return undefined;
+}
+
+/**
+ * The same pointer event's `y` in the HOST's own coordinates: its frame starts after our before-block,
+ * and a row it did not draw is reported one past its last row (where an appended row already sat
+ * before a before-block existed). `undefined` when there is nothing to translate.
+ */
+function hostYFor(
+  event: unknown,
+  position: RailContributionPosition | undefined,
+  region: PointerRegion,
+): number | undefined {
+  if (position === undefined || !isRecord(event)) return undefined;
+  const y = event.y;
+  if (typeof y !== "number" || !Number.isFinite(y)) return undefined;
+  const beforeLength = position.before?.end ?? 0;
+  const nativeLength = position.native === undefined ? 0 : position.native.end - position.native.start;
+  return region === "before" ? nativeLength : y - beforeLength;
 }
 
 /** Ask the contributor, recording a throw instead of letting it reach the host's dispatch. */
 function contributorMouse(
   key: string,
   event: unknown,
-  position: RailContributionPosition,
+  position: RailContributionPosition | undefined,
 ): RailMouseResult | undefined {
   const contributor = sidebarState().contributor;
   if (contributor?.handleMouse === undefined) return undefined;
@@ -819,47 +1009,47 @@ function contributorMouse(
   }
 }
 
-/** `true` when the event is a bare pointer move inside the rows this contributor rendered. */
-function isMoveOverContribution(
-  event: unknown,
-  position: RailContributionPosition,
-): boolean {
-  if (!isRecord(event) || event.type !== "move") return false;
-  const y = event.y;
-  if (typeof y !== "number" || !Number.isFinite(y)) return false;
-  const start = position.startRow;
-  const end = position.endRow;
-  return start !== undefined && end !== undefined && y >= start && y < end;
-}
-
 /**
- * Where the contributor's rows start in the frame this event was mapped into.
+ * Where the contributor's rows sit in the frame this event was mapped into.
  *
  * The host maps a hit to the part's own coordinates before calling its `handleMouse`
- * (`lib/shell-sidebar-layout.ts:245-259`), so `y` counts the HOST's rows first; the render that
- * preceded the event recorded how many there were at that width. Without such a frame there is
- * nothing to map, and the contributor declines instead of guessing an offset.
+ * (`lib/shell-sidebar-layout.ts:245-259`), so `y` counts the part's rows, our before-block included;
+ * the render that preceded the event recorded how many rows each block has at that width. Without
+ * such a frame there is nothing to map, and the contributor declines instead of guessing an offset.
  */
 function contributionPosition(
+  key: RailPart,
   memo: Map<number, RailMemoEntry>,
   event: unknown,
-): RailContributionPosition {
-  if (!isRecord(event)) return {};
+): RailContributionPosition | undefined {
+  if (!isRecord(event)) return undefined;
   const width = event.width;
-  if (typeof width !== "number") return {};
+  if (typeof width !== "number") return undefined;
   const entry = memo.get(width);
-  if (entry === undefined) return {};
+  if (entry === undefined) return undefined;
+  const before = entry.contribution?.before?.lines.length ?? 0;
+  const after = entry.contribution?.after?.lines.length ?? 0;
   return {
-    startRow: entry.nativeLength,
-    endRow: entry.nativeLength + (entry.contribution?.lines.length ?? 0),
+    part: key,
+    native: { start: before, end: before + entry.nativeLength },
+    ...(before === 0 ? {} : { before: { start: 0, end: before } }),
+    ...(after === 0
+      ? {}
+      : { after: { start: before + entry.nativeLength, end: before + entry.nativeLength + after } }),
   };
 }
 
 /**
  * The part's digest: the host's own value when nothing contributes one, otherwise the host's value
- * with the contributor's signature appended (N14).
+ * with the contributor's signature appended (N14). The signature receives the same context the
+ * render did, so a placement change moves it and the host re-frames the part.
  */
-function digestValue(key: string, original: Rail, generation: number): string | undefined {
+function digestValue(
+  key: RailPart,
+  original: Rail,
+  generation: number,
+  painted: readonly RailPart[],
+): string | undefined {
   const hostDigest = original.digest;
   const raw = typeof hostDigest === "function" ? hostDigest.call(original) : undefined;
   // A foreign rail can return anything; only a string is a digest the layout can compare.
@@ -869,7 +1059,7 @@ function digestValue(key: string, original: Rail, generation: number): string | 
   if (contributor?.digest === undefined) return hostValue;
   let contribution: string;
   try {
-    contribution = contributor.digest();
+    contribution = contributor.digest({ part: key, painted });
   } catch (error) {
     // A broken signature must not take the host's memo down with it: record it and stay on the
     // host's own digest, which degrades to invalidation-only, exactly as the layout does.
@@ -879,18 +1069,25 @@ function digestValue(key: string, original: Rail, generation: number): string | 
   return `${hostValue ?? ""}|${contribution}`;
 }
 
-function contributionFor(key: string, width: number): RailContribution | undefined {
+function contributionFor(
+  key: RailPart,
+  width: number,
+  painted: readonly RailPart[],
+): RailPartContribution | undefined {
   const contributor = sidebarState().contributor;
   if (contributor === undefined) return undefined;
-  let contribution: RailContribution | undefined;
+  let contribution: RailPartContribution | undefined;
   try {
-    contribution = contributor.render(width);
+    contribution = contributor.render(width, { part: key, painted });
   } catch (error) {
     // A broken renderer loses its own rows and nothing else (S8): record it, draw the host's rows.
     recordFailure(key, "contribute", error);
     return undefined;
   }
-  if (contribution === undefined || contribution.lines.length === 0) return undefined;
+  if (contribution === undefined) return undefined;
+  const before = contribution.before?.lines.length ?? 0;
+  const after = contribution.after?.lines.length ?? 0;
+  if (before === 0 && after === 0) return undefined;
   return contribution;
 }
 

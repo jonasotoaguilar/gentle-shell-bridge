@@ -89,11 +89,15 @@ import {
   resetSidebarStateForTests,
 } from "../src/sidebar.ts";
 import { buildSectionContribution, resetSectionFailuresForTests } from "../src/sidebar-render.ts";
+
+/** The footer part with every native part painted: where a contribution with no placement lands. */
+const FOOTER_RAIL = { part: "footer" as const, painted: RAIL_PARTS };
 import { collectStatus, formatStatus } from "../src/status.ts";
 import { resetStoreStateForTests } from "../src/store.ts";
 import { resetToolDesignsForTests, setToolDesignSelection, snapshotToolDesigns } from "../src/tool-designs.ts";
 import { resetToolDesignRowStateForTests } from "../src/tool-design-rows.ts";
 import { resetToolDesignWiringForTests } from "../src/tool-design-wiring.ts";
+import { RAIL_PARTS } from "../src/types.ts";
 import type { CustomizeRow, InlineHelpers } from "../src/types.ts";
 import { setSectionCollapsed } from "../src/visibility.ts";
 import { createFakeEvents } from "./fake-events.ts";
@@ -1001,7 +1005,7 @@ test("T31 matrix — sections: the bridge's own section and another plugin's, co
 
   /** The contribution rows and groups the real renderer builds right now. */
   const contribution = (): { rows: string[]; groups: Array<{ start: number; end: number }> } => {
-    const built = buildSectionContribution(RAIL_WIDTH, ctx);
+    const built = buildSectionContribution(RAIL_WIDTH, ctx, FOOTER_RAIL)?.after;
     assert.ok(built !== undefined, "both sections are visible, so the rail has rows");
     return { rows: built.lines, groups: built.groups };
   };
@@ -1127,7 +1131,7 @@ test("T31 matrix — sections: a structured row keeps its tone through the style
   const part = fakeState().parts.get(SIDEBAR_RAIL_KEY);
   assert.ok(part !== undefined);
 
-  const built = buildSectionContribution(RAIL_WIDTH, { theme, configHome });
+  const built = buildSectionContribution(RAIL_WIDTH, { theme, configHome }, FOOTER_RAIL)?.after;
   assert.ok(built !== undefined);
   const accentRow = built.lines.find((row) => stripAnsi(row).includes("playing"));
   assert.ok(accentRow !== undefined);

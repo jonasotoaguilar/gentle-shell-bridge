@@ -62,10 +62,11 @@ Every call, its arguments and its guarantees live in the contract, linked below.
   — so a plugin never draws chrome of its own. A provider can place its block at the start of its
   category, at the end (the default), or right after another provider's rows (`placement`), and order
   it inside that slot with `order`; naming either field opts in, while a provider naming neither keeps
-  the old tail append. Anchors are bridge provider ids, never host row labels; blocks follow each
-  row's actual category (one block per category when rows override it), so a rendered
-  `choice.setting` pair never splits, and `/bridge-status` reports the landing the last build
-  actually produced.
+  the old tail append. Anchors are bridge provider ids, never host row labels; an `after` anchor is
+  followed where its provider really sits — inside its category when opted in, or in the tail when it
+  did not opt in. Opted-in blocks follow each row's actual category (one block per category when rows
+  override it), while an unopted provider keeps its tail block, so a rendered `choice.setting` pair
+  never splits. `/bridge-status` reports the landing the last build actually produced.
 - **Sidebar sections** that join the rail where the plugin asks — at the start, at the end (the
   default, after every native card), or right after another section or one of the host's own cards —
   each contributing its own visibility toggle automatically. The order inside one place never depends

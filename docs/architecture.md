@@ -170,24 +170,30 @@ observes that `map`, provisionally, and the end of the factory decides.
   previous behaviour applies exactly. When exactly one captured array proves itself the menu's rows it is
   the target by evidence, so a merely row-like array mapped beside it no longer makes the build
   ambiguous; two proven arrays, or two unproven ones, still do.
-- **The rollback.** A factory that throws leaves no trace. The session stack and the patched
+- **The rollback.** A factory that throws removes the rows this build appended when that segment is
+  still intact; it does not restore a whole snapshot. The session stack and the patched
   `Array.prototype.map` are restored first and unconditionally, and every rollback step is best effort
   and never throws (E10: a host that froze its rows and then threw used to make the rollback throw,
-  replace the host's error and leave `map` patched). The build restores the recorded contents of its
-  own array exactly: the occurrences it inserted are gone and the host rows come back in the same
-  order and identity. It never filters by identity, which would delete a host row a provider handed
-  back. The snapshot was taken after the provisional `Card style` splice, so restoring it keeps that
-  range intact until `undoCardStyleSplice` removes exactly the values it inserted. A session only ever
-  rolls back its own array, so a nested factory's rollback cannot touch the outer menu's rows.
+  replace the host's error and leave `map` patched). The build removes exactly what it appended: when
+  those rows still end the array, it shrinks the array's length and writes no element, so a retained
+  read-only index the build never touched is never written and no hole appears. If the host appended
+  rows after them, it moves only those later rows, preflighting every index it will write. If the host reordered the appended
+  segment, it records a notice and leaves the array as consistent as it can instead of guessing; if
+  the host removed part or all of it, the remaining array is left untouched rather than reconstructed
+  from a snapshot. A write it cannot perform is reported the same way. The `Card style` values are
+  undone by their own recorded splice, not by a snapshot. A session only ever rolls back its own array, so a
+  nested factory's rollback cannot touch the outer menu's rows.
 
-Net guarantee: whenever the array accepts the rollback write, after a factory invocation no array
-holds bridge rows except the one the late decision chose. Costs, stated: for the duration of the factory an array that satisfies the proof can hold bridge
+Net guarantee: when the appended segment is intact and writable, after a factory invocation no array
+holds bridge rows except the one the late decision chose; when the host reordered it or the bridge
+cannot safely remove it, the rollback records a notice instead of guessing. Costs, stated: for the duration of the factory an array that satisfies the proof can hold bridge
 rows, visible only to code running inside that factory; the host's category mapper runs once more per
 row-like `map` call and once per appended row; when a guess is rolled back the providers are built twice
 for that menu build; and the proof is pinned to the host's default `Settings`, so a host that renames it
-degrades to the late path (no new page) rather than guessing. Not reviewed by anyone: rollback when the
-host reorders or removes our rows or pushes its own after them (Proxy arrays included), and a stale
-`cardStyleRowMode()` after a rolled-back guess.
+degrades to the late path (no new page) rather than guessing. A host that reorders the appended
+segment is covered by the notice above, not a guessed restore; one that removes part of it leaves the
+remaining array untouched (Proxy arrays included); a stale `cardStyleRowMode()` after a rolled-back
+guess remains not reviewed.
 
 ## 6. Why one bridge beats N wrappers
 
@@ -212,11 +218,14 @@ Failure isolation is per provider, so a broken plugin costs its own rows and not
 not the menu, not the other providers, and not another provider's placement.
 
 The placement itself is resolved by `src/bus.ts`'s pure `resolveRowPlacements` and turned into
-insertion points by `src/rows.ts`'s `planRowPlacement`. Each block boundary comes from the category
-its rows actually use (`row.category ?? provider.category`): a provider with rows in several
-categories contributes one block per category, and its rows stay contiguous WITHIN one category. The
-capture path never re-sorts blocks or re-implements the fallbacks: it reads the host array's first
-and last index for each actual category, computes the whole plan against the array as it stands, and
+insertion points by `src/rows.ts`'s `planRowPlacement`. An opted-in block's boundary comes from the
+category its rows actually use (`row.category ?? provider.category`): a provider with rows in several
+categories contributes one block per category, and its rows stay contiguous WITHIN one category,
+while an unopted provider keeps one tail block. An `after` follower of a provider that did not opt in
+is not a category insertion: that provider's rows are in the pre-feature tail, so the follower is
+emitted in that tail right after them. The capture path never re-sorts blocks or re-implements the
+fallbacks: for each actual category it reads the host array's first and last index, computes the
+whole plan against the array as it stands, and
 applies it in one preflighted in-place write, so no index can drift between splices. A rendered
 consecutive `choice.setting` pair — and the bridge's own `Card style` value splice — is therefore
 never split. If the write is refused, nothing is half-applied: every block stays in the pre-feature

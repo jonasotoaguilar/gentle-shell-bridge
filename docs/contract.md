@@ -50,7 +50,7 @@ interface RowProvider {
   name?: string;                               // optional: this plugin's INTEGRATIONS row (§8)
   rows(ctx: RowContext): CustomizeRow[];       // evaluated lazily, per menu build
   order?: number;                              // finite first inside its slot, then the rest (§2)
-  placement?: "start" | "end" | { after: string }; // absent means "end" (§2)
+  placement?: "start" | "end" | { after: string }; // omitted + no order keeps the tail (§2)
 }
 ```
 
@@ -72,33 +72,38 @@ interface RowProvider {
 `placement` and `order` are REGISTRATION data, like a section's `order`: the bridge resolves them on
 every menu build and never persists them. Placement is resolved per the category each ROW actually
 uses (`row.category ?? provider.category`), never the provider's declared category. A provider whose
-rows stay in one category contributes one block there; a provider whose rows override the category
-contributes one block per actual category. An insertion point is therefore a boundary of the category
-the renderer filters, so a rendered consecutive `choice.setting` pair — and the bridge's own
-`Card style` value splice — is never split, with or without a category override. Rows of one provider
-stay contiguous WITHIN one category.
+rows stay in one category contributes one block there; an opted-in provider whose rows override the
+category contributes one block per actual category, while an unopted provider keeps its rows in one
+tail block. For a block placed in a category, an insertion point is therefore a boundary of that
+category, so a rendered consecutive `choice.setting` pair — and the bridge's own `Card style` value
+splice — is never split, with or without a category override. Rows of one provider stay contiguous
+WITHIN one category.
 
 `placement` and `order` are also the opt-in. A provider that names NEITHER keeps the pre-feature tail
 append exactly, in subscription order, and nothing it did not ask to move moves. Only providers that
-name at least one of the two enter placement resolution; a provider with only `order` uses the
-default `"end"` slot.
+name at least one of the two are placed; a provider with only `order` uses the default `"end"` slot.
+An unopted provider can still be named by `after`: its tail block is then the target (see below).
 
 ```ts
-// The three placements; absent is exactly the same as "end".
+// The placement shapes. A provider that names neither field keeps the pre-feature tail append.
 placement?: "start" | "end" | { after: string };
 ```
 
-- **Absent means `"end"`**, the historical behaviour: after the host's own rows of the provider's
-  category.
+- **`"end"`** follows the category's own rows. A provider that opts in with `order` alone gets this
+  default; a provider that names neither field is not placed and keeps the tail append above.
 - **`"start"`** sits before the category's first row.
 - **`{ after: id }`** sits right after that provider's block, ids only. A host row's label text
   (`"Card style"`, `"Bridge card style"`) is NOT an anchor: the host gives its own rows no identity,
-  so a label would be fragile and ambiguous. The anchor may itself be placed (for example at
-  `"start"`); the follower lands after its block, not at the anchor's original position.
-- Resolution is **per the category each row actually uses** (`row.category ?? provider.category`). The
-  host renders one flat row array and selects a page by filtering it, so `"end"` means after that
-  category's own rows, not after every category. `"start"` and `after` are boundaries of that same
-  category.
+  so a label would be fragile and ambiguous. The follower goes where the anchor's rows actually are:
+  - an anchor that opted in (`placement` or `order`) is inside its actual category, so the follower
+    lands right after its block there, and chains resolve transitively inside that category;
+  - an anchor that named neither field is a pre-feature tail block, so the follower lands right after
+    that provider's rows in the tail, before any later tail block. Same-tail followers keep the S2
+    order.
+- Resolution is **per the category each row actually uses** (`row.category ?? provider.category`) for
+  `"start"` and for an anchor that opted in. The host renders one flat row array and selects a page by
+  filtering it, so `"end"` means after that category's own rows, not after every category. An anchor
+  that did not opt in is the tail exception in the bullet above.
 - **The hook backend cannot honour host-relative placement.** It never sees the host array, so it
   orders each category by the `order` rule below and reports that `"start"`/`after` could not be
   honoured. It never claims a host-relative landing it cannot see.
@@ -339,7 +344,7 @@ One command, `/bridge-status`, reporting:
 | Field | Meaning |
 | --- | --- |
 | Gentle-pi | `gentle-pi: present`, or `gentle-pi: missing — <reason>` followed by `bridge: disabled — gentle-pi is required; …`. The required host package is checked through `pi.getCommands()`; when it is missing, every per-surface block below is omitted (nothing was armed) and the report keeps the buffered notices (`src/presence.ts`, `src/status.ts`) |
-| Providers | every registered provider, `id` and `category`, in subscription order. When the provider named a `placement` or the last build could not honour it, its line also says what it asked for, where the LAST BUILD actually landed, and why (`placement start → end (the host did not build the category "Loon page", …)`). After a build the landing is observed, not planned (before the first build the resolver's answer is reported): a refused write reports the real tail landing (`placement start → end (the block stayed at the end because …)`). A provider that named no `placement` and has no fallback reason keeps the pre-feature line: only requested placements, real landings and fallbacks are printed |
+| Providers | every registered provider, `id` and `category`, in subscription order. When the provider named a `placement` or the last build could not honour it, its line also says what it asked for, where the LAST BUILD actually landed, and why (`placement start → end (the host did not build the category "Loon page", …)`). With the capture backend, after a build the landing is observed, not planned (before the first build the resolver's answer is reported): a refused write reports the real tail landing (`placement start → end (the block stayed at the end because …)`), and a follower after an unopted anchor reports that tail landing (`after "anchor" → after "anchor"`). A provider that named no `placement` and has no fallback reason keeps the pre-feature line: only requested placements, real landings and fallbacks are printed |
 | Backend | which interception backend is active: `hook` or `capture` |
 | Last capture | outcome of the most recent menu build, with the number of rows injected |
 | Last failures | most recent provider failures: `id`, message, and whether rows were dropped |

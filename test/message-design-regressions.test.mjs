@@ -141,11 +141,11 @@ test('S3: sparse or malformed returned arrays fall back to the host rows rather 
     for (const bad of [Array(1), ["x", , "y"], Object.assign(['x'], { every: undefined })]) {
       result = bad;
       assert.doesNotThrow(() => component.render(24), 'a plugin value never throws into the frame');
-      // A sparse array is rejected: reading by index finds the hole. An array whose own `every` was
-      // replaced is NOT rejected — its positions are valid rows, and not calling the plugin's own
-      // methods is the fix that makes it harmless.
-      const hollow = bad.length !== Object.keys(bad).filter((key) => key !== 'every').length;
-      assert.deepEqual(component.render(24), hollow ? ['host'] : ['x']);
+      // A sparse array is refused: reading by index finds its holes. A dense array whose own `every`
+      // was replaced is accepted — its positions ARE rows, nothing calls that member, and only the
+      // positions are copied into the frame.
+      const sparse = bad.length !== Object.keys(bad).filter((key) => key !== 'every').length;
+      assert.deepEqual(component.render(24), sparse ? ['host'] : ['x']);
     }
   } finally { drop(); }
 });

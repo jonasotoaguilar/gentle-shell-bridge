@@ -583,9 +583,14 @@ export function applyMessageDesign(
 }
 
 /**
- * Whether every position of an array holds a string, holes included. `for` over the LENGTH, so a
- * sparse array is rejected instead of silently accepted, and nothing calls a method the plugin could
- * have replaced.
+ * Whether every position of this array holds a string, read BY INDEX and never through the value's own
+ * members. A `for` over the length, so a sparse array is refused instead of silently handing Pi
+ * `undefined` rows, and nothing here calls a method the plugin could have replaced.
+ *
+ * What a plugin hangs off the array itself is deliberately ignored rather than refused: a value whose
+ * `every` was replaced is still a row array if its positions are rows, and because the accepted rows
+ * are copied out by index (`applyMessageDesign`), no such member can ever travel into Pi's frame.
+ * Refusing it would drop a design's output over a property nobody reads.
  */
 function rowsAreStrings(value: readonly unknown[]): boolean {
   for (let index = 0; index < value.length; index += 1) {

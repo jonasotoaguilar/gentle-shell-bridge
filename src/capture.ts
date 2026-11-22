@@ -705,93 +705,170 @@ function placeEarlyBlocks(early: EarlyInjection): string | undefined {
   return applyRowPlacementPlan(array, early.plan.planned);
 }
 
+/** Describe an error without reading any property off it (a hostile getter can throw). */
+function describeRollbackError(error: unknown): string {
+  try {
+    if (error === null) return "null";
+    if (error === undefined) return "undefined";
+    if (typeof error === "string") return "a string";
+    if (typeof error === "number") return "a number";
+    if (typeof error === "boolean") return "a boolean";
+    if (typeof error === "object") return "an object";
+    return `a ${typeof error}`;
+  } catch {
+    return "an unreadable value";
+  }
+}
+
+/** One truthful rollback count: appended, already removed by the host, removed by the bridge, left. */
+function removalReport(
+  appended: number,
+  hostRemoved: number,
+  bridgeRemoved: number,
+  unremovable: number,
+  detail?: string,
+): string {
+  const rows = appended === 1 ? "row" : "rows";
+  const counts =
+    `appended ${appended} ${rows}; ${hostRemoved} already removed by the host; ` +
+    `${bridgeRemoved} removed by the bridge; ${unremovable} could not be removed`;
+  return detail === undefined ? counts : `${detail}; ${counts}`;
+}
+
+/** Why the appended range cannot be deleted as one unit, checked before any write. */
+function appendedRangeProblem(
+  array: readonly CustomizeRow[],
+  start: number,
+  count: number,
+): string | undefined {
+  for (let index = start; index < start + count; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(array, String(index));
+    if (descriptor === undefined) return `index ${index} is missing`;
+    if (descriptor.configurable === false) return `index ${index} is non-configurable`;
+    if (descriptor.writable === false) return `index ${index} is read-only`;
+  }
+  return undefined;
+}
+
+/** Shrink the array to `start` after its appended range was preflighted, writing no element. */
+function removeTailTo(array: CustomizeRow[], start: number): string | undefined {
+  const descriptor = Object.getOwnPropertyDescriptor(array, "length");
+  if (descriptor !== undefined && descriptor.writable === false) {
+    return "the host array's length is read-only";
+  }
+  try {
+    array.length = start;
+  } catch {
+    return "the host array refused the tail trim";
+  }
+  return array.length === start ? undefined : "the host array kept a phantom length";
+}
+
 /**
  * Remove exactly the rows this build appended, without writing a retained host index (S10).
  *
  * The normal case is the unchanged array `original + rows`: shrinking `length` removes the tail
  * append and writes no element, so a retained read-only index is never touched and no hole can
- * appear. If the host appended its own rows after ours, only the indices at or after the append point
- * are rewritten, again guarded and preflighted as one change. Anything that cannot be done leaves the
- * array consistent and returns the reason for the notice.
+ * appear. If the host already removed some appended rows, the remaining tail rows are removed and the
+ * notice says who removed what. If the host appended its own rows after ours, only the indices at or
+ * after the append point are rewritten, after the whole appended range is preflighted. Anything that
+ * cannot be removed as a whole removes nothing, leaves the array as the build left it, and returns the
+ * reason and truthful counts for the notice.
  */
 function removeInjectedTail(early: EarlyInjection): string | undefined {
   const { array, original, rows } = early;
-  if (rows.length === 0) return undefined;
+  const appended = rows.length;
+  if (appended === 0) return undefined;
   const start = original.length;
   try {
     const length = array.length;
-    const target = start + rows.length;
+    const target = start + appended;
     if (length < target) {
-      // The host already removed part of the append (for example through `pop()`). Report what is
-      // still there and how much of the build's work could not be undone.
-      const available = Math.max(0, Math.min(rows.length, length - start));
+      // The host already removed part of the append (for example through `pop()`). The remaining
+      // rows are still the build's tail segment, so remove them too, all or nothing.
+      const available = Math.max(0, Math.min(appended, length - start));
       let found = 0;
       for (let index = 0; index < available; index += 1) {
         if (array[start + index] !== rows[index]) {
-          return (
-            "the host changed the appended rows before the rollback " +
-            `(found ${found} of ${rows.length} appended rows; ` +
-            `${rows.length - found} could not be removed)`
+          return removalReport(
+            appended,
+            0,
+            0,
+            appended - found,
+            "the host changed the appended rows before the rollback",
           );
         }
         found += 1;
       }
-      return (
-        "the host array no longer holds the appended segment " +
-        `(found ${found} of ${rows.length} appended rows; ` +
-        `${rows.length - found} could not be removed)`
-      );
+      const hostRemoved = appended - found;
+      if (found === 0) return removalReport(appended, hostRemoved, 0, 0);
+      const rangeProblem = appendedRangeProblem(array, start, found);
+      if (rangeProblem !== undefined) {
+        return removalReport(appended, hostRemoved, 0, found, rangeProblem);
+      }
+      const trimProblem = removeTailTo(array, start);
+      return trimProblem === undefined
+        ? removalReport(appended, hostRemoved, found, 0)
+        : removalReport(appended, hostRemoved, 0, found, trimProblem);
     }
-    for (let index = 0; index < rows.length; index += 1) {
+    for (let index = 0; index < appended; index += 1) {
       if (array[start + index] !== rows[index]) {
-        return (
-          "the host changed the appended rows before the rollback " +
-          `(found ${index} of ${rows.length} appended rows; ` +
-          `${rows.length - index} could not be removed)`
+        return removalReport(
+          appended,
+          0,
+          0,
+          appended - index,
+          "the host changed the appended rows before the rollback",
         );
       }
     }
     if (length === target) {
-      const descriptor = Object.getOwnPropertyDescriptor(array, "length");
-      if (descriptor !== undefined && descriptor.writable === false) {
-        return `the host array's length is read-only (${rows.length} appended rows could not be removed)`;
+      const rangeProblem = appendedRangeProblem(array, start, appended);
+      if (rangeProblem !== undefined) {
+        return removalReport(appended, 0, 0, appended, rangeProblem);
       }
-      array.length = start;
-      return array.length === start
+      const trimProblem = removeTailTo(array, start);
+      return trimProblem === undefined
         ? undefined
-        : `the host array kept a phantom length (${rows.length} appended rows could not be removed)`;
+        : removalReport(appended, 0, 0, appended, trimProblem);
     }
 
     // The host appended rows after ours: shift those rows left over the exact appended segment. Only
-    // indices >= `start` are written; retained host indices are never touched. Preflight every index
-    // `splice` will assign (it writes even an equal value), plus the length.
-    const nextLength = length - rows.length;
+    // indices >= `start` are written; retained host indices are never touched. Preflight the whole
+    // appended range for deletion and every index `splice` will assign (it writes even an equal value).
+    const rangeProblem = appendedRangeProblem(array, start, appended);
+    if (rangeProblem !== undefined) {
+      return removalReport(appended, 0, 0, appended, rangeProblem);
+    }
+    const nextLength = length - appended;
     const lengthDescriptor = Object.getOwnPropertyDescriptor(array, "length");
     if (lengthDescriptor !== undefined && lengthDescriptor.writable === false) {
-      return `the host array's length is read-only (${rows.length} appended rows could not be removed)`;
+      return removalReport(appended, 0, 0, appended, "the host array's length is read-only");
     }
     for (let index = start; index < nextLength; index += 1) {
       const descriptor = Object.getOwnPropertyDescriptor(array, String(index));
       if (descriptor !== undefined && descriptor.writable === false) {
-        return `index ${index} is read-only (${rows.length} appended rows could not be removed)`;
+        return removalReport(appended, 0, 0, appended, `index ${index} is read-only`);
       }
       if (descriptor === undefined && !Object.isExtensible(array)) {
-        return `index ${index} cannot be written (${rows.length} appended rows could not be removed)`;
+        return removalReport(appended, 0, 0, appended, `index ${index} cannot be written`);
       }
     }
     try {
-      array.splice(start, rows.length);
+      array.splice(start, appended);
     } catch {
-      return `the host array refused the tail trim (${rows.length} appended rows could not be removed)`;
+      return removalReport(appended, 0, 0, appended, "the host array refused the tail trim");
     }
     return array.length === nextLength
       ? undefined
-      : `the host array kept a phantom length (${rows.length} appended rows could not be removed)`;
+      : removalReport(appended, 0, 0, appended, "the host array kept a phantom length");
   } catch (error) {
-    const detail = error instanceof Error ? error.message : "unknown error";
-    return (
-      `the host array could not be inspected or changed (${detail}); ` +
-      `${rows.length} appended rows could not be removed`
+    return removalReport(
+      appended,
+      0,
+      0,
+      appended,
+      `the host array could not be inspected or changed (${describeRollbackError(error)})`,
     );
   }
 }

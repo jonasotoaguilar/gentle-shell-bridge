@@ -34,6 +34,31 @@ const hostRows = (): CustomizeRow[] => [
   { category: "Layout", label: "Layout: builtin", action: () => {} },
 ];
 
+
+/** A throwing early host: the build appends first, then `afterAppend` mutates, then it throws. */
+const throwingHostAfter = (
+  providerRows: CustomizeRow[],
+  afterAppend: (rows: CustomizeRow[]) => void = () => {},
+) => {
+  const rows = hostRows();
+  const originalError = new Error("factory exploded");
+  const ui = {
+    custom: (factory: (ui: unknown, theme: unknown, ...rest: unknown[]) => unknown): unknown =>
+      factory(ui, undefined),
+  };
+  const host = {
+    ui,
+    build: (): unknown =>
+      ui.custom(() => {
+        rows.map((row) => row.category ?? "Settings");
+        afterAppend(rows);
+        throw originalError;
+      }),
+  };
+  registerRows({ id: "loon.injected", category: "Layout", rows: () => providerRows });
+  installCaptureBackend(host.ui);
+  return { rows, host, originalError };
+};
 /** A host that maps its rows to labels but never derives categories: the late path injects. */
 const lateOnlyHost = (rows: CustomizeRow[]) => {
   const ui = {
@@ -403,8 +428,8 @@ test("a pop'd appended row makes the rollback report what it found and could not
   assert.deepEqual(
     snapshotNotices().entries.map((entry) => entry.message),
     [
-      "gentle-shell-bridge: could not fully roll back the provisional rows: the host array no " +
-        "longer holds the appended segment (found 0 of 1 appended rows; 1 could not be removed). " +
+      "gentle-shell-bridge: could not fully roll back the provisional rows: appended 1 row; " +
+        "1 already removed by the host; 0 removed by the bridge; 0 could not be removed. " +
         "The host menu was left as consistent as the array allowed.",
     ],
   );
@@ -449,9 +474,126 @@ test("a throwing length descriptor trap never replaces the factory's own error",
   assert.ok(
     snapshotNotices().entries.some(
       (entry) =>
-        entry.message.includes("could not be inspected or changed") &&
-        entry.message.includes("length descriptor exploded"),
+        entry.message.includes("could not be inspected or changed (an object)") &&
+        !entry.message.includes("length descriptor exploded"),
     ),
-    "the guarded rollback reports why it could not remove the append",
+    "the guarded rollback describes the refusing value without reading it",
+  );
+});
+
+
+test("a clean rollback of every appended row emits no notice", () => {
+  const scenario = throwingHostAfter([
+    { label: "Injected one", action: () => {} },
+    { label: "Injected two", action: () => {} },
+    { label: "Injected three", action: () => {} },
+  ]);
+
+  assert.throws(() => scenario.host.build(), (error) => error === scenario.originalError);
+  assert.deepEqual(snapshotNotices().entries, []);
+  assert.deepEqual(labels(scenario.rows), labels(hostRows()));
+});
+
+test("a host pop of one of three appended rows reports host and bridge removals truthfully", () => {
+  const scenario = throwingHostAfter(
+    [
+      { label: "Injected one", action: () => {} },
+      { label: "Injected two", action: () => {} },
+      { label: "Injected three", action: () => {} },
+    ],
+    (rows) => rows.pop(),
+  );
+
+  assert.throws(() => scenario.host.build(), (error) => error === scenario.originalError);
+  assert.deepEqual(labels(scenario.rows), labels(hostRows()));
+  assert.deepEqual(snapshotNotices().entries.map((entry) => entry.message), [
+    "gentle-shell-bridge: could not fully roll back the provisional rows: appended 3 rows; " +
+      "1 already removed by the host; 2 removed by the bridge; 0 could not be removed. " +
+      "The host menu was left as consistent as the array allowed.",
+  ]);
+});
+
+test("a non-configurable appended index makes the rollback remove nothing", () => {
+  let injected: CustomizeRow[] = [];
+  const scenario = throwingHostAfter(
+    [
+      { label: "Injected one", action: () => {} },
+      { label: "Injected two", action: () => {} },
+      { label: "Injected three", action: () => {} },
+    ],
+    (rows) => {
+      injected = rows.slice(rows.length - 3);
+      Object.defineProperty(rows, String(rows.length - 3), { configurable: false });
+    },
+  );
+
+  assert.throws(() => scenario.host.build(), (error) => error === scenario.originalError);
+  assert.equal(scenario.rows.length, 7);
+  assert.deepEqual(labels(scenario.rows), [
+    ...labels(hostRows()),
+    "Injected one",
+    "Injected two",
+    "Injected three",
+  ]);
+  injected.forEach((row, index) => {
+    assert.equal(scenario.rows[4 + index], row, `appended row ${index} keeps its identity`);
+  });
+  for (let index = 0; index < 7; index += 1) {
+    assert.equal(Object.hasOwn(scenario.rows, String(index)), true, `index ${index} is not a hole`);
+  }
+  assert.deepEqual(snapshotNotices().entries.map((entry) => entry.message), [
+    "gentle-shell-bridge: could not fully roll back the provisional rows: index 4 is " +
+      "non-configurable; appended 3 rows; 0 already removed by the host; 0 removed by the " +
+      "bridge; 3 could not be removed. The host menu was left as consistent as the array allowed.",
+  ]);
+});
+
+test("a throwing message getter on the rollback error is never inspected", () => {
+  const rows = hostRows();
+  const initialLength = rows.length;
+  const hostile = new Error("descriptor exploded");
+  Object.defineProperty(hostile, "message", {
+    get() {
+      throw new Error("message getter exploded");
+    },
+  });
+  let lengthDescriptorReads = 0;
+  const proxyRows = new Proxy(rows, {
+    getOwnPropertyDescriptor(target, property) {
+      if (property === "length" && target.length > initialLength) {
+        lengthDescriptorReads += 1;
+        if (lengthDescriptorReads > 1) throw hostile;
+      }
+      return Reflect.getOwnPropertyDescriptor(target, property);
+    },
+  });
+  const originalError = new Error("factory exploded");
+  const ui = {
+    custom: (factory: (ui: unknown, theme: unknown, ...rest: unknown[]) => unknown): unknown =>
+      factory(ui, undefined),
+  };
+  const host = {
+    ui,
+    build: (): unknown =>
+      ui.custom(() => {
+        proxyRows.map((row) => row.category ?? "Settings");
+        throw originalError;
+      }),
+  };
+  registerRows({
+    id: "loon.injected",
+    category: "Layout",
+    rows: () => [{ label: "Injected row", action: () => {} }],
+  });
+  installCaptureBackend(host.ui);
+
+  assert.throws(() => host.build(), (error) => error === originalError);
+  assert.ok(
+    snapshotNotices().entries.some(
+      (entry) =>
+        entry.message.includes("could not be inspected or changed (an object)") &&
+        !entry.message.includes("message getter exploded"),
+    ),
+    "the rollback describes the hostile error without reading its message",
   );
 });

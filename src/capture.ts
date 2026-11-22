@@ -117,6 +117,7 @@ import {
   undoSharedSections,
   type SharedSectionsPatch,
 } from "./sections-preview.ts";
+import type { RowBuildResult } from "./rows.ts";
 import type { CustomizeRow } from "./types.ts";
 
 /** Marks a UI target this module wrapped; the value is the wrapper function it installed. */
@@ -1011,6 +1012,52 @@ function observeRowMap(
 }
 
 /**
+ * S21: put a block that OPENS a page where its provider asked, and append every other block.
+ *
+ * The order of this array is the order of the menu's pages: the host derives
+ * `categories` from `options.rows.map(row => row.category)` (`lib/visual-customize-view.ts:387`),
+ * and `new Set(...)` keeps the FIRST appearance of each category. The injection runs before that
+ * `map`, so a block inserted after another category's rows opens its page right there.
+ *
+ * Only a block whose category the host does not already list opens a page; a block that joins an
+ * existing page is appended exactly as before (its position inside that page is `placement`'s
+ * business). A placement that cannot be honoured — no `categoryPlacement`, an unknown anchor, or the
+ * provider's own category — appends, so the fallback is the behaviour that existed before S21.
+ * Insertions run from the highest index down, so the earlier ones keep their indices.
+ */
+function insertBuiltRows(array: CustomizeRow[], built: RowBuildResult): void {
+  const placements = new Map<string, { after: string }>();
+  for (const provider of built.providers) {
+    const asked = provider.categoryPlacement;
+    if (asked === null || typeof asked !== "object") continue;
+    if (typeof asked.after !== "string" || asked.after.length === 0) continue;
+    if (asked.after === provider.category) continue;
+    placements.set(provider.category, { after: asked.after });
+  }
+  const hostCategories = new Set(array.map((row) => row.category ?? HOST_DEFAULT_CATEGORY));
+  const appends: CustomizeRow[] = [];
+  const inserts: { index: number; rows: CustomizeRow[] }[] = [];
+  for (const block of built.blocks) {
+    const asked = placements.get(block.category);
+    const opensAPage = !hostCategories.has(block.category);
+    const index = asked === undefined || !opensAPage ? -1 : endOfCategory(array, asked.after);
+    if (index < 0) appends.push(...block.rows);
+    else inserts.push({ index, rows: block.rows });
+  }
+  inserts.sort((a, b) => b.index - a.index);
+  for (const insert of inserts) array.splice(insert.index, 0, ...insert.rows);
+  if (appends.length > 0) array.push(...appends);
+}
+
+/** The index right after the last row of one category in the captured array, or -1 when it has none. */
+function endOfCategory(array: CustomizeRow[], category: string): number {
+  for (let index = array.length - 1; index >= 0; index -= 1) {
+    if ((array[index]?.category ?? HOST_DEFAULT_CATEGORY) === category) return index + 1;
+  }
+  return -1;
+}
+
+/**
  * S18: give a brand-new page to the view before it fixes its page list — provisionally (S20).
  *
  * The view computes `categories` once, in its constructor, from `options.rows.map(...)`
@@ -1074,7 +1121,7 @@ function injectProvisionalRows(
     // still in the array before `new Set(...)` reads it; the blocks move to their real slots once the
     // factory returns, and if that move is refused they are already exactly where the old path put
     // them (S6).
-    if (built.rows.length > 0) array.push(...built.rows);
+    if (built.rows.length > 0) insertBuiltRows(array, built);
     Object.defineProperty(array as object, CAPTURE_INJECTED, {
       value: true,
       enumerable: false,

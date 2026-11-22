@@ -1,1 +1,3 @@
 node_modules/
+# Local feature docs, shared by hand between worktrees; never a tracked symlink.
+odd/

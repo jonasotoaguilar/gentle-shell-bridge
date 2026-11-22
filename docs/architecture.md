@@ -170,30 +170,32 @@ observes that `map`, provisionally, and the end of the factory decides.
   previous behaviour applies exactly. When exactly one captured array proves itself the menu's rows it is
   the target by evidence, so a merely row-like array mapped beside it no longer makes the build
   ambiguous; two proven arrays, or two unproven ones, still do.
-- **The rollback.** A factory that throws removes the rows this build appended when that segment is
-  still intact; it does not restore a whole snapshot. The session stack and the patched
-  `Array.prototype.map` are restored first and unconditionally, and every rollback step is best effort
-  and never throws (E10: a host that froze its rows and then threw used to make the rollback throw,
-  replace the host's error and leave `map` patched). The build removes exactly what it appended: when
-  those rows still end the array, it shrinks the array's length and writes no element, so a retained
-  read-only index the build never touched is never written and no hole appears. If the host appended
-  rows after them, it moves only those later rows, preflighting every index it will write. If the host reordered the appended
-  segment, it records a notice and leaves the array as consistent as it can instead of guessing; if
-  the host removed part or all of it, the remaining array is left untouched rather than reconstructed
-  from a snapshot. A write it cannot perform is reported the same way. The `Card style` values are
-  undone by their own recorded splice, not by a snapshot. A session only ever rolls back its own array, so a
-  nested factory's rollback cannot touch the outer menu's rows.
+- **The rollback.** A factory that throws takes the provisional append back; it does not restore a
+  whole snapshot. The session stack and the patched `Array.prototype.map` are restored first and
+  unconditionally, and every rollback step is best effort and never throws (E10: a host that froze its
+  rows and then threw used to make the rollback throw, replace the host's error and leave `map`
+  patched). The removal is all-or-nothing against the range it will REALLY touch. It matches every
+  appended occurrence by identity and position across the whole tail, so a reordered segment is still
+  removed entirely; when the host already removed some rows, it removes the remaining occurrences and
+  the notice counts host removals separately. Every source and target index that a length trim or
+  splice will inspect or write is preflighted first, including host rows appended after the build; a
+  locked or non-configurable index means nothing is written, so a host row is never duplicated and no
+  hole appears. When the appended segment was mutated beyond recognition, the bridge also removes
+  nothing: that is the documented exception, and the notice reports it rather than guessing. The
+  `Card style` values are undone by their own recorded splice, not by a snapshot. A session only ever
+  rolls back its own array, so a nested factory's rollback cannot touch the outer menu's rows.
 
-Net guarantee: when the appended segment is intact and writable, after a factory invocation no array
-holds bridge rows except the one the late decision chose; when the host reordered it or the bridge
-cannot safely remove it, the rollback records a notice instead of guessing. Costs, stated: for the duration of the factory an array that satisfies the proof can hold bridge
+Net guarantee: when the appended identities can be removed as a whole and every range index passes
+preflight, after a factory invocation no array holds bridge rows except the one the late decision
+chose. When the segment was mutated beyond recognition or the removal range cannot be handled exactly,
+no rows are removed and the notice reports that outcome; that is the documented exception. Costs, stated: for the duration of the factory an array that satisfies the proof can hold bridge
 rows, visible only to code running inside that factory; the host's category mapper runs once more per
 row-like `map` call and once per appended row; when a guess is rolled back the providers are built twice
 for that menu build; and the proof is pinned to the host's default `Settings`, so a host that renames it
 degrades to the late path (no new page) rather than guessing. A host that reorders the appended
-segment is covered by the notice above, not a guessed restore; one that removes part of it leaves the
-remaining array untouched (Proxy arrays included); a stale `cardStyleRowMode()` after a rolled-back
-guess remains not reviewed.
+segment is removed by identity and reported, not restored from a snapshot; one that mutates it beyond
+recognition gets the exception above (Proxy arrays included); a stale `cardStyleRowMode()` after a
+rolled-back guess remains not reviewed.
 
 ## 6. Why one bridge beats N wrappers
 

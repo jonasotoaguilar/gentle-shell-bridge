@@ -597,3 +597,73 @@ test("a throwing message getter on the rollback error is never inspected", () =>
     "the rollback describes the hostile error without reading its message",
   );
 });
+
+test("swapping the last two appended rows removes all three and accounts for them", () => {
+  const scenario = throwingHostAfter(
+    [
+      { label: "Injected one", action: () => {} },
+      { label: "Injected two", action: () => {} },
+      { label: "Injected three", action: () => {} },
+    ],
+    (rows) => {
+      const first = rows.length - 3;
+      const last = rows[first + 2] as CustomizeRow;
+      rows[first + 2] = rows[first + 1] as CustomizeRow;
+      rows[first + 1] = last;
+    },
+  );
+  const hostBefore = [...scenario.rows];
+
+  assert.throws(() => scenario.host.build(), (error) => error === scenario.originalError);
+  assert.equal(scenario.rows.length, 4);
+  assert.deepEqual(labels(scenario.rows), labels(hostRows()));
+  scenario.rows.forEach((row, index) => {
+    assert.equal(row, hostBefore[index], `host row ${index} keeps its identity`);
+  });
+  for (let index = 0; index < 4; index += 1) {
+    assert.equal(Object.hasOwn(scenario.rows, String(index)), true, `index ${index} is not a hole`);
+  }
+  assert.deepEqual(snapshotNotices().entries.map((entry) => entry.message), [
+    "gentle-shell-bridge: could not fully roll back the provisional rows: the host changed the " +
+      "appended rows before the rollback; appended 3 rows; 0 already removed by the host; " +
+      "3 removed by the bridge; 0 could not be removed. The host menu was left as consistent as " +
+      "the array allowed.",
+  ]);
+});
+
+test("a locked host row after the append leaves the build array byte-for-byte intact", () => {
+  let buildLeft: CustomizeRow[] = [];
+  const scenario = throwingHostAfter(
+    [
+      { label: "Injected one", action: () => {} },
+      { label: "Injected two", action: () => {} },
+      { label: "Injected three", action: () => {} },
+    ],
+    (rows) => {
+      rows.push(
+        { label: "Host extra one", action: () => {} },
+        { label: "Host extra two", action: () => {} },
+      );
+      Object.defineProperty(rows, String(rows.length - 2), {
+        configurable: false,
+        writable: false,
+      });
+      buildLeft = [...rows];
+    },
+  );
+
+  assert.throws(() => scenario.host.build(), (error) => error === scenario.originalError);
+  assert.equal(scenario.rows.length, 9);
+  assert.equal(scenario.rows.length, buildLeft.length);
+  scenario.rows.forEach((row, index) => {
+    assert.equal(row, buildLeft[index], `index ${index} keeps its build-left identity`);
+  });
+  for (let index = 0; index < 9; index += 1) {
+    assert.equal(Object.hasOwn(scenario.rows, String(index)), true, `index ${index} is not a hole`);
+  }
+  assert.deepEqual(snapshotNotices().entries.map((entry) => entry.message), [
+    "gentle-shell-bridge: could not fully roll back the provisional rows: index 7 is " +
+      "non-configurable; appended 3 rows; 0 already removed by the host; 0 removed by the " +
+      "bridge; 3 could not be removed. The host menu was left as consistent as the array allowed.",
+  ]);
+});

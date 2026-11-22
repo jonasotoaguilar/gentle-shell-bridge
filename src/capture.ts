@@ -750,6 +750,35 @@ function appendedRangeProblem(
   return undefined;
 }
 
+/** Match every appended occurrence by identity anywhere in one range, not by suffix position. */
+function matchAppendedRange(
+  array: readonly CustomizeRow[],
+  start: number,
+  count: number,
+  rows: readonly CustomizeRow[],
+): { found: number; reordered: boolean } | undefined {
+  const matched = rows.map(() => false);
+  let found = 0;
+  let reordered = false;
+  for (let offset = 0; offset < count; offset += 1) {
+    const row = array[start + offset];
+    const expected = offset;
+    if (expected < rows.length && !matched[expected] && row === rows[expected]) {
+      matched[expected] = true;
+      found += 1;
+      continue;
+    }
+    const index = rows.findIndex((candidate, candidateIndex) => {
+      return !matched[candidateIndex] && candidate === row;
+    });
+    if (index === -1) return undefined;
+    matched[index] = true;
+    found += 1;
+    reordered = true;
+  }
+  return { found, reordered };
+}
+
 /** Shrink the array to `start` after its appended range was preflighted, writing no element. */
 function removeTailTo(array: CustomizeRow[], start: number): string | undefined {
   const descriptor = Object.getOwnPropertyDescriptor(array, "length");
@@ -783,60 +812,68 @@ function removeInjectedTail(early: EarlyInjection): string | undefined {
   try {
     const length = array.length;
     const target = start + appended;
-    if (length < target) {
-      // The host already removed part of the append (for example through `pop()`). The remaining
-      // rows are still the build's tail segment, so remove them too, all or nothing.
-      const available = Math.max(0, Math.min(appended, length - start));
-      let found = 0;
-      for (let index = 0; index < available; index += 1) {
-        if (array[start + index] !== rows[index]) {
-          return removalReport(
-            appended,
-            0,
-            0,
-            appended - found,
-            "the host changed the appended rows before the rollback",
-          );
-        }
-        found += 1;
-      }
-      const hostRemoved = appended - found;
-      if (found === 0) return removalReport(appended, hostRemoved, 0, 0);
-      const rangeProblem = appendedRangeProblem(array, start, found);
-      if (rangeProblem !== undefined) {
-        return removalReport(appended, hostRemoved, 0, found, rangeProblem);
-      }
-      const trimProblem = removeTailTo(array, start);
-      return trimProblem === undefined
-        ? removalReport(appended, hostRemoved, found, 0)
-        : removalReport(appended, hostRemoved, 0, found, trimProblem);
-    }
-    for (let index = 0; index < appended; index += 1) {
-      if (array[start + index] !== rows[index]) {
+    const tailCount = Math.max(0, length - start);
+    if (length <= target) {
+      // Everything after `start` must be an appended identity; a foreign row means the host mutated
+      // the segment beyond recognition, so remove nothing rather than guess.
+      const match = matchAppendedRange(array, start, tailCount, rows);
+      if (match === undefined) {
         return removalReport(
           appended,
           0,
           0,
-          appended - index,
-          "the host changed the appended rows before the rollback",
+          appended,
+          "the host changed the appended rows beyond recognition",
+        );
+      }
+      const hostRemoved = appended - match.found;
+      if (tailCount > 0) {
+        const rangeProblem = appendedRangeProblem(array, start, tailCount);
+        if (rangeProblem !== undefined) {
+          return removalReport(appended, hostRemoved, 0, match.found, rangeProblem);
+        }
+        const trimProblem = removeTailTo(array, start);
+        if (trimProblem !== undefined) {
+          return removalReport(appended, hostRemoved, 0, match.found, trimProblem);
+        }
+      }
+      if (hostRemoved === 0 && !match.reordered) return undefined;
+      return removalReport(
+        appended,
+        hostRemoved,
+        match.found,
+        0,
+        match.reordered ? "the host changed the appended rows before the rollback" : undefined,
+      );
+    }
+
+    // The host appended rows after ours. Only the first `appended` positions may be ours; a host row
+    // carrying one of our identities makes the boundary ambiguous, so remove nothing.
+    const match = matchAppendedRange(array, start, appended, rows);
+    if (match === undefined) {
+      return removalReport(
+        appended,
+        0,
+        0,
+        appended,
+        "the host changed the appended rows beyond recognition",
+      );
+    }
+    for (let index = target; index < length; index += 1) {
+      if (rows.includes(array[index])) {
+        return removalReport(
+          appended,
+          0,
+          0,
+          appended,
+          "the host changed the appended rows beyond recognition",
         );
       }
     }
-    if (length === target) {
-      const rangeProblem = appendedRangeProblem(array, start, appended);
-      if (rangeProblem !== undefined) {
-        return removalReport(appended, 0, 0, appended, rangeProblem);
-      }
-      const trimProblem = removeTailTo(array, start);
-      return trimProblem === undefined
-        ? undefined
-        : removalReport(appended, 0, 0, appended, trimProblem);
-    }
 
-    // The host appended rows after ours: shift those rows left over the exact appended segment. Only
-    // indices >= `start` are written; retained host indices are never touched. Preflight the whole
-    // appended range for deletion and every index `splice` will assign (it writes even an equal value).
-    const rangeProblem = appendedRangeProblem(array, start, appended);
+    // The removal really touches every index from `start` to the current end while it shifts the
+    // host's later rows; preflight that whole range, then the target indices the splice will assign.
+    const rangeProblem = appendedRangeProblem(array, start, length - start);
     if (rangeProblem !== undefined) {
       return removalReport(appended, 0, 0, appended, rangeProblem);
     }
@@ -859,9 +896,18 @@ function removeInjectedTail(early: EarlyInjection): string | undefined {
     } catch {
       return removalReport(appended, 0, 0, appended, "the host array refused the tail trim");
     }
-    return array.length === nextLength
-      ? undefined
-      : removalReport(appended, 0, 0, appended, "the host array kept a phantom length");
+    if (array.length !== nextLength) {
+      return removalReport(appended, 0, 0, appended, "the host array kept a phantom length");
+    }
+    return match.reordered
+      ? removalReport(
+          appended,
+          0,
+          appended,
+          0,
+          "the host changed the appended rows before the rollback",
+        )
+      : undefined;
   } catch (error) {
     return removalReport(
       appended,

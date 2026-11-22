@@ -36,6 +36,16 @@
  * selection on EVERY render pass, which is what lets a design chosen after the message was drawn
  * repaint it, and what makes `default` restore the host's own rows untouched.
  *
+ * ## The content level is the design's, not the bridge's
+ *
+ * Pi's card content level (`minimal`) clips TOOL cards, because the host's own renderer decides how
+ * much of a tool result to show, and gentle-shell's renderers offer `previewRows` for exactly that.
+ * A custom message has no host renderer, and the bridge adds no policy of its own: it never truncates,
+ * re-wraps or withholds a row a design returned, and it never reads a content level. An alert the
+ * agent must read in full can therefore print in full — that choice is the DESIGN's, and what this
+ * module owes it is the material to make it: `width`, `render.expanded`, `render.outputPad`,
+ * `render.message` and `cardStyle`.
+ *
  * With nothing selected — `native`, a design that was disposed (`missing`), a line whose selected
  * design never claimed this type (`not-covered`) — the answer is the host's own component, BY
  * IDENTITY, or `undefined` when there is none, which is exactly what makes Pi draw its default box.

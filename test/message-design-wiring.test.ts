@@ -329,3 +329,33 @@ test("S2: a design for a type with no host renderer receives NO rows — the box
 
   assert.deepEqual(seen, [[]], "no invented rows: the bridge has no frame to hand over");
 });
+
+test("S2: nothing is clipped or reformatted — the design decides how much body is printed", () => {
+  // Pi's card content level (`minimal`) clips TOOL cards through the host's own renderer, and
+  // gentle-shell's renderers offer `previewRows` for it. A custom message has no such renderer, and
+  // the bridge adds no policy of its own: an alert whose whole body the agent must read has to come
+  // back row for row, character for character, at any content level.
+  const body = Array.from(
+    { length: 40 },
+    (_unused, index) => `instruction ${index}: ${"x".repeat(180)}`,
+  );
+  registerMessageDesign(
+    design({
+      customType: REMINDER,
+      id: "loon.alert",
+      label: "alert",
+      apply: () => body,
+    }),
+  );
+  setMessageDesignSelection(REMINDER, "loon.alert");
+
+  const component = messageDesignRenderer(REMINDER, undefined)(
+    { customType: REMINDER },
+    options,
+    {},
+  ) as { render(width: number): readonly string[] };
+
+  const drawn = component.render(24);
+  assert.equal(drawn.length, 40, "no row withheld");
+  assert.deepEqual(drawn, body, "no row re-wrapped, truncated or coloured by the bridge");
+});

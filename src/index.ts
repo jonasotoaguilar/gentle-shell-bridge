@@ -40,7 +40,11 @@ export type {
 } from "./api.ts";
 export { registerCardStyle, registerRows, registerSection, registerTransform } from "./bus.ts";
 export { registerToolDesign, resolveToolDesignSelection } from "./tool-designs.ts";
-export { registerMessageDesign, resolveMessageDesignSelection } from "./message-designs.ts";
+export {
+  registerMessageDesign,
+  resolveMessageDesignFollow,
+  resolveMessageDesignSelection,
+} from "./message-designs.ts";
 export { resolveCardStyleSelection } from "./card-styles.ts";
 export type { MessageDesignSelection } from "./message-designs.ts";
 export type { ToolDesignSelection } from "./tool-designs.ts";
@@ -56,6 +60,8 @@ export type {
   CustomizeRow,
   InlineHelpers,
   MessageDesignContext,
+  MessageDesignFollow,
+  MessageDesignFollowAnswer,
   MessageDesignRegistration,
   MessageDesignRender,
   RowChoice,

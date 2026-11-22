@@ -512,6 +512,13 @@ export interface ToolDesignRegistration {
    * contributes ONLY designs still needs this member.
    */
   name?: string;
+  /**
+   * The tool-design switch this design follows instead of having a switch of its own (S1, 0.12.0).
+   * A following design contributes NO value to the customize menu: the value the user already picked on
+   * that tool line is what turns it on. Omit it for a design with its own `Message <line>` line, which
+   * is what every 0.11.0 registration does.
+   */
+  follows?: MessageDesignFollow;
   /** The short text shown on the customize line as this design's value. */
   label: string;
   /** One line a preview can show about what the design does. */
@@ -628,6 +635,36 @@ export interface MessageDesignContext {
 }
 
 /**
+ * The tool-design switch a message design FOLLOWS (S1, 0.12.0): while that line answers that design
+ * id, this design is the one selected for its types; while it answers anything else (including the
+ * host's own `native`), the message keeps the host's own output.
+ *
+ * It is a READ, never a write: nothing here produces a seed, a second switch or a value the user has
+ * to pick twice, and the tool document is opened for reading only. It is answered live on every pass,
+ * so flipping the tool switch repaints the messages already on screen and turns them off again.
+ */
+export interface MessageDesignFollow {
+  /** The tool-design line whose switch decides this design, e.g. `"tags"`. */
+  readonly line: string;
+  /** The tool design id that must be selected on that line for this design to be active. */
+  readonly id: string;
+}
+
+/**
+ * What a follow answers right now, as `/bridge-status` and a plugin can read it.
+ */
+export interface MessageDesignFollowAnswer {
+  /** The line the follow names. */
+  readonly line: string;
+  /** Whether a live tool-design line has that name at all. */
+  readonly found: boolean;
+  /** The design id that line answers right now, or `"none"` when there is no such line. */
+  readonly answered: string;
+  /** Whether `answered` is the id this follow waits for. */
+  readonly active: boolean;
+}
+
+/**
  * A plugin's design for ONE custom message type, or for a line of several (S1).
  *
  * A custom message has no frame of the host's own to preserve: Pi draws a default box, or the
@@ -671,6 +708,13 @@ export interface MessageDesignRegistration {
   id: string;
   /** Optional display name for the plugin's INTEGRATIONS line; see `RowProvider.name`. */
   name?: string;
+  /**
+   * The tool-design switch this design follows instead of having a switch of its own (S1, 0.12.0).
+   * A following design contributes NO value to the customize menu: the value the user already picked on
+   * that tool line is what turns it on. Omit it for a design with its own `Message <line>` line, which
+   * is what every 0.11.0 registration does.
+   */
+  follows?: MessageDesignFollow;
   /** The short text shown on the customize line as this design's value. */
   label: string;
   /** One line a preview can show about what the design does. */

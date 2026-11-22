@@ -37,7 +37,13 @@ import { assertRegistrationId } from "./bus.ts";
 import { attributeRegistration } from "./plugin-lines.ts";
 import { isRecord } from "./rows.ts";
 import { createStore } from "./store.ts";
-import type { MessageDesignContext, MessageDesignRegistration } from "./types.ts";
+import { getToolDesignLineSelection, toolDesignLines } from "./tool-designs.ts";
+import type {
+  MessageDesignContext,
+  MessageDesignFollow,
+  MessageDesignFollowAnswer,
+  MessageDesignRegistration,
+} from "./types.ts";
 
 /** The reserved value that means "the host's own output": never a design id, never selectable as one. */
 export const MESSAGE_DESIGN_NATIVE = "native";
@@ -223,6 +229,32 @@ function assertApply(id: string, apply: unknown): void {
   }
 }
 
+/**
+ * `follows`, when present, is exactly `{ line, id }`: both non-empty, and never the reserved `native`
+ * as the id it waits for — `native` means "this line answers nothing", so a design following it could
+ * never turn on and would be a switch the user cannot find anywhere.
+ */
+function assertFollow(id: unknown, follow: unknown): void {
+  if (follow === null || typeof follow !== "object") {
+    throw invalid(id, "`follows` must be an object `{ line, id }`");
+  }
+  const candidate = follow as { line?: unknown; id?: unknown };
+  if (typeof candidate.line !== "string" || candidate.line.trim() === "") {
+    throw invalid(id, "`follows.line` must be a non-empty tool-design line id");
+  }
+  if (typeof candidate.id !== "string" || candidate.id.trim() === "") {
+    throw invalid(id, "`follows.id` must be a non-empty tool design id");
+  }
+  if (candidate.id.trim() === MESSAGE_DESIGN_NATIVE) {
+    throw invalid(
+      id,
+      `\`follows.id\` cannot be ${JSON.stringify(MESSAGE_DESIGN_NATIVE)}: that value means the tool ` +
+        "line answers nothing, so the design could never turn on. Name the tool design that should " +
+        "turn it on.",
+    );
+  }
+}
+
 function assertTypes(id: unknown, types: unknown): string[] {
   if (!Array.isArray(types) || types.length === 0) {
     throw new Error(
@@ -320,6 +352,7 @@ function registerStored(design: MessageDesignRegistration): () => void {
   const { scope, line, types } = normalizeRegistration(design.id, design);
   assertLabel(design.id, design.label);
   assertApply(design.id, design.apply);
+  if (design.follows !== undefined) assertFollow(design.id, design.follows);
   assertTypesAreFree(scope, line, design.id, types);
 
   const state = messageDesignState();
@@ -404,6 +437,33 @@ export function hasMessageDesignClaims(): boolean {
  */
 export function isMessageTypeClaimed(customType: string): boolean {
   return messageDesignState().entries.some((entry) => entry.types.includes(customType));
+}
+
+/** What a follow answers when no live tool-design line has its name. */
+export const MESSAGE_DESIGN_FOLLOW_NONE = "none";
+
+/**
+ * What one follow answers RIGHT NOW (S1, 0.12.0): which tool-design line answered, what it answered,
+ * and whether that is the id this design waits for.
+ *
+ * READ ONLY. It never writes the tool document and never needs a seed: the value the user already
+ * picked on that line is the whole answer, and when there is no such line (a tool design that has not
+ * registered yet, or was disposed) the answer is `found: false` rather than a throw.
+ */
+export function resolveMessageDesignFollow(
+  follow: MessageDesignFollow,
+): MessageDesignFollowAnswer {
+  const line = toolDesignLines().find((candidate) => candidate.line === follow.line);
+  if (line === undefined) {
+    return {
+      line: follow.line,
+      found: false,
+      answered: MESSAGE_DESIGN_FOLLOW_NONE,
+      active: false,
+    };
+  }
+  const answered = getToolDesignLineSelection(line.scope, line.line);
+  return { line: follow.line, found: true, answered, active: answered === follow.id };
 }
 
 /** Every line that has designs, in creation order, with its type set and its designs in order. */
@@ -528,17 +588,41 @@ export function resolveMessageDesignSelection(customType: string): MessageDesign
     const orphan = storedId(selections.types, customType);
     return orphan === MESSAGE_DESIGN_NATIVE ? { kind: "native" } : { kind: "missing", id: orphan };
   }
+  const lineEntries = state.entries.filter(
+    (entry) => entry.scope === claim.scope && entry.line === claim.line,
+  );
+  // A design that FOLLOWS a tool switch is decided by that switch, never by a message-side value the
+  // user never chose (S1, 0.12.0). It is answered first, live, and the first active one in
+  // registration order wins — the same rule the line's own values follow.
+  const activeFollow = lineEntries.find(
+    (entry) =>
+      entry.types.includes(customType) &&
+      entry.design.follows !== undefined &&
+      resolveMessageDesignFollow(entry.design.follows).active,
+  )?.design;
+
   const stored = storedId(
     claim.scope === "type" ? selections.types : selections.lines,
     claim.line,
   );
-  if (stored === MESSAGE_DESIGN_NATIVE) return { kind: "native" };
-  const lineEntries = state.entries.filter(
-    (entry) => entry.scope === claim.scope && entry.line === claim.line,
-  );
+  if (stored === MESSAGE_DESIGN_NATIVE) {
+    return activeFollow === undefined
+      ? { kind: "native" }
+      : { kind: "design", design: activeFollow };
+  }
   const chosen = lineEntries.find((entry) => entry.design.id === stored);
   if (chosen === undefined) return { kind: "missing", id: stored };
   if (!chosen.types.includes(customType)) return { kind: "not-covered", id: stored };
+  if (chosen.design.follows !== undefined) {
+    // A following design that also carries a stored value: the follow still decides, and the stored
+    // value is what it falls back to if the follow is removed from the registration.
+    if (resolveMessageDesignFollow(chosen.design.follows).active) {
+      return { kind: "design", design: chosen.design };
+    }
+    return activeFollow === undefined
+      ? { kind: "native" }
+      : { kind: "design", design: activeFollow };
+  }
   return { kind: "design", design: chosen.design };
 }
 

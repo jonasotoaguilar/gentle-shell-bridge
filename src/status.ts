@@ -28,6 +28,7 @@ import { getHookDiagnostics } from "./hook.ts";
 import { getMessageDesignAdoptionDiagnostics } from "./message-design-adoption.ts";
 import {
   MESSAGE_DESIGN_DEFAULT_LABEL,
+  resolveMessageDesignFollow,
   MESSAGE_DESIGN_NATIVE,
   getMessageDesignConflicts,
   getMessageDesignFailures,
@@ -269,6 +270,12 @@ export interface StatusMessageDesignValue {
   label: string;
   /** The custom types of the line this value paints. `default` covers every type of the line. */
   covers: string[];
+  /**
+   * The tool-design switch this value follows instead of having one of its own (S1, 0.12.0), with what
+   * that switch answers right now — so "my design is selected but the message is unchanged" has an
+   * answer in the report instead of in a debugger.
+   */
+  follow?: { line: string; id: string; answered: string; active: boolean };
 }
 
 /** One message line, as `/bridge-status` lists it: the row name, its types, the value in force. */
@@ -804,6 +811,18 @@ function describeMessageDesigns(): StatusMessageDesigns | undefined {
             id: design.id,
             label: design.label,
             covers: coveredTypesOf(line, design),
+            ...(design.follows === undefined
+              ? {}
+              : {
+                  follow: {
+                    line: design.follows.line,
+                    id: design.follows.id,
+                    ...(() => {
+                      const answer = resolveMessageDesignFollow(design.follows);
+                      return { answered: answer.answered, active: answer.active };
+                    })(),
+                  },
+                }),
           })),
         ],
       };
@@ -1256,7 +1275,14 @@ export function formatStatus(snapshot: StatusSnapshot): string[] {
       // and which values the menu offers for them.
       lines.push(`  - ${entry.line} "${entry.rowName}": ${entry.selection}`);
       for (const value of entry.values) {
-        lines.push(`      ${value.id} "${value.label}": covers ${value.covers.join(", ")}`);
+        const follow =
+          value.follow === undefined
+            ? ""
+            : ` — follows ${value.follow.line}/${value.follow.id}: answers ` +
+              `${value.follow.answered} (${value.follow.active ? "on" : "off"})`;
+        lines.push(
+          `      ${value.id} "${value.label}": covers ${value.covers.join(", ")}${follow}`,
+        );
       }
     }
     // S4's other half: a design for a message Pi already mounted only reaches it on the next

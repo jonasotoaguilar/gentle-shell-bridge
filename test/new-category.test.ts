@@ -383,6 +383,55 @@ test("S21: an anchor the menu does not have falls back to the end, as before", (
   );
 });
 
+test("S21: only the rows of the page being placed move, never the whole block", () => {
+  // A block's rows may each declare their own category (`src/rows.ts:326-338`). Moving the block
+  // would drag the first appearance of the OTHER page to the anchor as well.
+  publishBridgeApi().registerRows({
+    id: "loon.split",
+    category: "Loon page",
+    categoryPlacement: { after: "Cards" },
+    rows: () => [
+      ...toggles("Loon heading", "Loon heading", ["default", "tool"]),
+      button("Loon repaint"),
+      { label: "Loon stray", category: "Loon other" } as CustomizeRow,
+    ],
+  });
+
+  const host = menuHost();
+  host.build();
+
+  assert.deepEqual(
+    host.view().pages(),
+    ["Cards", "Loon page", "Banner", "Layout", "Loon other"],
+    "the placed page moves; the block's other page keeps the pre-feature tail order",
+  );
+});
+
+test("S21: a rollback still removes a page placed in the MIDDLE of the host's rows", async () => {
+  // The rollback primitive is tail-shaped, so a mid-array insert has to record what it wrote: with
+  // `Cards` as the anchor the insertion index is not `original.length`, and a tail-shaped removal
+  // would leave the bridge rows behind (and could remove host rows instead).
+  publishBridgeApi().registerRows({
+    id: "loon.page",
+    category: "Loon page",
+    rows: loonPage,
+    categoryPlacement: { after: "Cards" },
+  });
+
+  const twin: CustomizeRow[] = incidentalRows("Twin", "Cards");
+  const host = menuHost({ preBuild: () => void twin.map((row) => row.category ?? "Settings") });
+  const before = [...host.liveRows()];
+  host.build();
+
+  assert.deepEqual(
+    getCaptureDiagnostics().lastOutcome,
+    { kind: "uncaptured", injectedRows: 0, reason: "ambiguous" },
+    "the late decision disagrees with the early guess",
+  );
+  assert.deepEqual(bridgeLabels(host.liveRows()), [], "no bridge row survives the rollback");
+  assert.ok(sameRows(host.liveRows(), before), "the host's own rows are exactly as they were");
+});
+
 test("the new page holds its toggle and its button, in the provider's order", () => {
   publishBridgeApi().registerRows({ id: "loon.page", category: "Loon page", rows: loonPage });
 

@@ -74,7 +74,11 @@ export interface MessageDesignLineName {
  */
 export function messageDesignLineNames(): MessageDesignLineName[] {
   const taken = new Set<string>();
-  return messageDesignLines().map((line) => {
+  return messageDesignLines()
+    // A line made only of FOLLOWING designs has no switch of its own (S1): the tool line they follow
+    // is the switch, and a row here would be the second choice the user refuses to make.
+    .filter((line) => ownDesignsOf(line).length > 0)
+    .map((line) => {
     const base = [MESSAGE_LINE_PREFIX, ...sourceWords(line.scope, line.line)].join(" ");
     let name = base;
     let suffix = 2;
@@ -83,9 +87,17 @@ export function messageDesignLineNames(): MessageDesignLineName[] {
       const kept = words.slice(0, MAX_ROW_NAME_WORDS - 1);
       name = `${kept.join(" ")} ${suffix++}`;
     }
-    taken.add(name);
-    return { scope: line.scope, line: line.line, name, types: [...line.types] };
-  });
+      taken.add(name);
+      return { scope: line.scope, line: line.line, name, types: [...line.types] };
+    });
+}
+
+/**
+ * The designs of a line that own a value on the customize menu: everything except the ones that
+ * follow a tool-design switch, whose value is chosen on that tool's own line (S1).
+ */
+export function ownDesignsOf(line: MessageDesignLine): MessageDesignRegistration[] {
+  return line.designs.filter((design) => design.follows === undefined);
 }
 
 /**
@@ -191,8 +203,10 @@ export function messageDesignRows(): CustomizeRow[] {
       (candidate) => candidate.scope === named.scope && candidate.line === named.line,
     );
     if (line === undefined) continue;
+    const own = ownDesignsOf(line);
+    if (own.length === 0) continue;
     rows.push(nativeRow(line, named.name));
-    for (const design of line.designs) rows.push(designRow(line, named.name, design));
+    for (const design of own) rows.push(designRow(line, named.name, design));
   }
   return rows;
 }

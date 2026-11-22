@@ -1712,6 +1712,46 @@ renderers at construction, and adoption then recognises the marker and adds noth
 counts both per tool (`wrapper mounted on N cards`, `adopted N cards`), so the next failure says
 which path ran.
 
+### Following a tool design's switch
+
+A design may take its activation from a TOOL design line instead of having a switch of its own (S1,
+0.12.0). That is what makes one `Card tags` value paint a message: no second switch, no seed, no write
+to the tool document.
+
+```ts
+registerMessageDesign({
+  customType: "gentle-pi.exploration-budget",   // or `line` + `types` for several
+  id: "loon.budget-card",
+  label: "budget card",
+  follows: { line: "tags", id: "activity" },    // the tool line and the tool design id
+  apply: (lines, ctx) => paintActivityCard(lines, ctx),
+});
+```
+
+- **`follows.line`** is the `line` a tool design registered with (`registerToolDesign({ line: "tags", … })`);
+  **`follows.id`** is the tool design's `id` there — the value the user reads as `activity`.
+- **The message design is selected exactly while that line answers that id.** Anything else — another
+  value, or the host's own `native` — and the message keeps the host's own output, never a design the
+  user did not ask for.
+- **A following design contributes NO value to the customize menu.** The switch it follows is the
+  switch; a line made only of following designs contributes no row at all. A line that also has a
+  design of its own keeps its row, listing only the designs that own a value.
+- **It is a READ.** The tool document is opened for reading and never written, so nothing is seeded,
+  seeded twice, or undone when the message design is disposed.
+- **It is answered LIVE, per pass.** Flipping `Card tags` repaints the messages already on screen and
+  turns them off again; no re-registration and no session reload. `resolveMessageDesignFollow({ line, id })`
+  answers `{ line, found, answered, active }` for a plugin that wants to ask.
+- **Nothing is paid when the follow answers nothing.** No design for a type means no provider, no row,
+  no report block and no store read, exactly as before; a resolve pays one read of the message
+  document, plus one of the tool document only when the design it resolves actually follows something.
+- **`/bridge-status`** prints the follow on the design's value line:
+  `loon.budget-card "budget card": covers gentle-pi.exploration-budget — follows tags/activity: answers native (off)`.
+- **A registration without `follows`** — every 0.11.0 one — behaves exactly as it did.
+
+`follows` is validated before anything is stored: both halves non-empty, and never the reserved
+`native` as the id it waits for, because that value means "this line answers nothing" and the design
+could never turn on.
+
 ### Selection, and the default
 
 The selected design per line is a row in `/gentle:customize` → `Cards`: a line named `Card <tool>` for

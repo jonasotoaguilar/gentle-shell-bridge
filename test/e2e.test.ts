@@ -324,6 +324,7 @@ test("the public entry exports exactly the contract surface and no test seams", 
     "registerToolDesign",
     "registerTransform",
     "resolveCardStyleSelection",
+    "resolveMessageDesignFollow",
     "resolveMessageDesignSelection",
     "resolveToolDesignSelection",
   ]);
@@ -461,6 +462,11 @@ test("the documented values and types are reachable from the public entry", () =
     "the entry exports the message-design registration",
   );
   assert.equal(typeof publicApi.resolveMessageDesignSelection, "function");
+  assert.equal(
+    typeof publicApi.resolveMessageDesignFollow,
+    "function",
+    "a design that follows a tool switch can be asked what it answers right now",
+  );
   assert.deepEqual(messageDesign.apply(["row"], messageContext), ["row", "x@5"]);
   assert.equal(render.expanded, false);
   assert.equal(

@@ -33,6 +33,7 @@ import {
 import { resetNoticesForTests } from "../src/notices.ts";
 import { resetPluginLinesForTests } from "../src/plugin-lines.ts";
 import { resetRowBuildStateForTests } from "../src/rows.ts";
+import { collectStatus, formatStatus } from "../src/status.ts";
 import { resetStoreStateForTests } from "../src/store.ts";
 import {
   registerToolDesign,
@@ -299,4 +300,33 @@ test("S1: flipping the Card tags switch repaints a message already on screen", (
   setToolDesignLineSelection("line", TOOL_LINE, "native");
   adoptCustomMessages(chat);
   assert.deepEqual(child.render(40), ["host frame"], "and off again, with the host's own frame");
+});
+
+// ---------------------------------------------------------------------------------------------
+// The report answers "why is my design not painting?"
+// ---------------------------------------------------------------------------------------------
+
+test("S1: `/bridge-status` names the line and the id a design follows, and what it answers", () => {
+  toolLine();
+  registerMessageDesign(follows());
+  setToolDesignLineSelection("line", TOOL_LINE, TOOL_DESIGN_ID);
+
+  const [line] = collectStatus().messageDesigns?.lines ?? [];
+  const value = line?.values.find((candidate) => candidate.id === "loon.budget");
+  assert.deepEqual(value?.follow, {
+    line: TOOL_LINE,
+    id: TOOL_DESIGN_ID,
+    answered: TOOL_DESIGN_ID,
+    active: true,
+  });
+
+  const printed = formatStatus(collectStatus()).join("\n");
+  assert.match(printed, /follows tags\/activity: answers activity \(on\)/u);
+
+  setToolDesignLineSelection("line", TOOL_LINE, "native");
+  assert.match(
+    formatStatus(collectStatus()).join("\n"),
+    /follows tags\/activity: answers native \(off\)/u,
+    "the report says the switch is off, not that the design is broken",
+  );
 });

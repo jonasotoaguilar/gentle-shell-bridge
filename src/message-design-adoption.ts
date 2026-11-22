@@ -265,7 +265,7 @@ export function adoptCustomMessages(container: unknown): AdoptCustomMessagesResu
 }
 
 /** The set of messages one container adopted, created on first use. */
-function ownedBy(state: AdoptionState, container: object): Set<unknown> {
+function ownedBy(state: AdoptionState, container: Record<string, unknown>): Set<unknown> {
   const existing = state.adoptedByContainer.get(container);
   if (existing !== undefined) return existing;
   const created = new Set<unknown>();

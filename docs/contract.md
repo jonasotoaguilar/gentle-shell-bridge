@@ -263,7 +263,9 @@ One command, `/bridge-status`, reporting:
 | Last failures | most recent provider failures: `id`, message, and whether rows were dropped |
 | Store problems | store files this process could not use, with the plugin id and the reason |
 | Duplicate settings | every `category` + `setting` pair contributed by more than one provider in the rows of the last menu build; `no build yet` before the first build |
-| Sections | every registered section with its id, title, the `row` label the menu reads (and the collision note when two wanted the same label), persisted visibility (plus `collapsed` while the card is folded) and where its position comes from (`order 3` or `registration order`); omitted when no section is registered. Ids stay here on purpose: this report is for the plugin author, not the user picking a toggle |
+| Sections | every registered section with its id, title, the `row` label the menu reads (and the collision note when two wanted the same label), persisted visibility (plus `collapsed` while the card is folded), where its position comes from (`order 3` or `registration order`) and its PLACEMENT: what it asked for, where it really landed, and the reason whenever those differ (`placement after "todo" → after jobs (the native rail part "todo" is not painted; it landed after jobs)`). Omitted when no section is registered. Ids stay here on purpose: this report is for the plugin author, not the user picking a toggle |
+| Rail parts | the parts the host paints, in paint order (`todo, jobs, agents, footer`), or `none`: the context a placement is resolved against, so a fallback is explainable. Emitted with the sections table |
+| Placement rejections | every `placement` the bridge refused, with the section id, the value VERBATIM and the shape that was expected. The section still registered and its card was placed at the end; omitted when nothing was rejected |
 | Section frame | which drawing the section header and rows use: `host` when the host's own `renderPanelHeader`/`renderPanelRow` were found on an object the bridge is handed, `fallback` otherwise — with what was looked for, whether Pi has handed the widget factory a theme, and (for `fallback`) a `section frame gap` line naming what cannot be reached. Emitted with the sections table |
 | Section interaction | how the pointer reaches the rows: the host's own `handleMouse` dispatch, and how the hover claim is carried (`hover owner claimed on the host's sidebar state`, `unavailable` with the reason, or `not used yet`). Emitted with the sections table |
 | Section failures | the most recent sidebar frame's failing sections with `id`, `phase` (`lines`/`meta`/`onClick`) and message |
@@ -526,7 +528,8 @@ host's "Preview unavailable" default. `dispose()` removes exactly this provider'
 
 One call adds the card to gentle-shell's fullscreen sidebar **and** its show/hide toggle to
 `/gentle:customize` → `Sections`. The plugin writes content only; it never names a `setting`, a
-value, the `Sections` category or the rail:
+value, the `Sections` category or a rail KEY: a `placement` names where in the section list the card
+goes, which is a placement the bridge resolves, not a part the plugin writes:
 
 ```ts
 const dispose = api.registerSection({
@@ -536,7 +539,8 @@ const dispose = api.registerSection({
   meta: () => "1 playing",      // optional right-aligned text
   lines: () => ["track  Blue in Green", "album  Kind of Blue"], // per frame, live
   defaultVisible: true,         // absent means true
-  order: 10,                    // optional integer
+  order: 10,                    // optional integer, read INSIDE one placement slot
+  placement: "start",           // optional: "start" | "end" | { after: "<id>" }; absent means "end"
 });
 ```
 
@@ -546,6 +550,48 @@ the id — is the line's name: `music  ● shown  ○ hidden`, next to the host'
 `stats  ● shown  ○ hidden`. A hidden section is not rendered and its `lines()`/`meta()` are not
 called. A throw loses only that section's body and is reported by `/bridge-status`. `dispose()`
 removes the card and the toggle together, leaving every other section untouched.
+
+#### Where the card goes: `placement`
+
+`placement` is registration data, like `order`: nothing is persisted, and the bridge resolves it on
+every frame, so a re-registration that changes it moves the card on the next one.
+
+| Value | Where the card's rows are drawn |
+| --- | --- |
+| absent or `"end"` | after every native section — the host's `footer` part, which is also `{ after: "footer" }`. This is exactly where a section went before this field existed |
+| `"start"` | before the FIRST native part the host paints: the top of the rail |
+| `{ after: "loon.news" }` | right after that section's card, in whatever slot that section landed in (resolved transitively) |
+| `{ after: "todo" }`, `"jobs"`, `"agents"`, `"footer"` | right after one of the host's own rail parts |
+
+The native granularity is the rail PART. The host's status sections (`CHANGES`, `STATS`,
+`INTEGRATIONS`) are built inside a closure the bridge cannot reach, so "after a status section" is
+not offered and cannot be.
+
+**Order inside one slot never depends on load order.** Sections asking for the same place form one
+block, and inside it: a finite `order` first, ascending; then the rest; ties (equal `order`, or both
+without one) broken by `id`, compared by UTF-16 code units (`a < b`, no locale). Two plugins that
+load in the opposite order draw the same rail. This is a behaviour change from 0.12 and earlier,
+where a tie kept registration order; `order` no longer breaks ties between slots either, because
+every slot has its own list.
+
+**Every fallback is deterministic and reported.** The bridge resolves anchors by RENDER, so a card is
+never placed by registration luck, and it never throws:
+
+| Situation | Result |
+| --- | --- |
+| the anchor is a section that is hidden, or folded to its header | the follower stays exactly where the anchor would be: hiding a section never moves the sections placed after it |
+| the anchor is a section placed after another | resolved transitively |
+| a cycle (`a` after `b`, `b` after `a`) or a section after itself | every section in the cycle lands at the end, with the reason |
+| the anchor id is neither a registered section nor a native part | the end, with the reason |
+| the anchor is a native part the host does not paint (`state.visibility.todo === false`, not registered, or rendering no rows) | the next painted native part after it, ending at the footer, with the reason |
+| `"start"` and the host paints no part at all | the end, with the reason |
+| `placement` is malformed (none of the three shapes, `after` not a non-empty string, extra fields) | the section still REGISTERS and the card is placed at the end; the value is reported verbatim (see §8) |
+
+A native part that renders no rows draws none of the bridge's rows there either: that part painted no
+frame, and a frame of ours there would appear exactly where the host suppressed its own. One
+consequence worth knowing: a part key can collide with a section id (`"todo"`, `"jobs"`, `"agents"`,
+`"footer"` are legal section ids), and then the NATIVE part wins as an `after` target — `/bridge-status`
+says so on the section's line.
 
 Those rows draw no preview of their own. Every `Sections` row shows the host's ONE shared preview —
 the list of the sections that are active (`[changes] [rdd] [agents] [todo] [usageCost]`) — and the

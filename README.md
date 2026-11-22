@@ -60,8 +60,10 @@ Every call, its arguments and its guarantees live in the contract, linked below.
 - **Settings rows** for the host's categories, or a page of your own: toggles, button rows, and the
   host's own `●`/`○` marker, arrow handling and footer for a focused row — `←/→ choose · Enter apply`
   — so a plugin never draws chrome of its own.
-- **Sidebar sections** that join the rail after the native cards, each contributing its own
-  visibility toggle automatically.
+- **Sidebar sections** that join the rail where the plugin asks — at the start, at the end (the
+  default, after every native card), or right after another section or one of the host's own cards —
+  each contributing its own visibility toggle automatically. The order inside one place never depends
+  on load order, and `/bridge-status` says where every card really landed and why.
 - **Card styles** and **transcript transforms**: the bridge rewrites frames the host already drew,
   so the rest of the visual system stays the host's.
 - **Card designs per tool name**, behind one `pi.registerToolRenderer` resolver for the whole
@@ -91,6 +93,10 @@ Every call, its arguments and its guarantees live in the contract, linked below.
   no capture, and `/bridge-status` reports that instead of passing silently.
 - **`Keymaps` stays reserved for row providers.** The host's keymap page captures keys and claims a
   footer, so rows there would be advertised as assignable and could never honour it.
+- **A section is placed at the granularity of the host's rail PARTS.** The host's own status cards
+  (`CHANGES`, `STATS`, `INTEGRATIONS`) are built inside a closure the bridge cannot reach, so
+  "after a status card" is not offered; a `placement` names a section or one of `todo`, `jobs`,
+  `agents`, `footer`.
 - **Card styles and transforms are repaints, not host features.** They depend on the host's frame
   grammar, and a downstream post-processor that re-frames the conversation can still override the
   result.

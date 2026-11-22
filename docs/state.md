@@ -70,7 +70,13 @@ store in the flow. The bridge persists it in its own namespaced file,
 ```
 
 one key (`sections`) mapping section id → boolean, defaults taken from the section's
-`defaultVisible`, non-boolean values ignored rather than coerced.
+`defaultVisible`, non-boolean values ignored rather than coerced. Collapse state lives in the same
+file under its own `collapsed` key.
+
+A section's `placement` — like its `order` — is NOT stored: it is registration data the plugin
+declares, and the bridge resolves it on every frame against the parts the host paints. Persisting it
+would let a file disagree with the plugin that owns the card, and a store cannot know whether an
+anchor is registered in this session.
 
 Why not the host's `visual-customization.json`: gentle-shell validates that file against a closed
 `VISUAL_SECTION_KEYS` list (`lib/visual-customization-policy.ts:82`, `keysMatch` ~:112-130) and

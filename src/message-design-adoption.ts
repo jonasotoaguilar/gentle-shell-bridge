@@ -206,10 +206,14 @@ export function adoptCustomMessages(container: unknown): AdoptCustomMessagesResu
   if (!Array.isArray(children)) return result;
 
   const perPass = new Map<string, boolean>();
+  let adopted = 0;
   for (const child of children) {
     result.scanned += 1;
     try {
       result[adoptMessage(child, perPass)] += 1;
+      // Counted AFTER the call: what this container holds once this pass is done with it is the only
+      // number that may close the fast path, and a message adopted on this very pass must open it.
+      if (isRecord(child) && adoptedMessage(child) !== undefined) adopted += 1;
     } catch (error) {
       // `adoptMessage` is written not to throw; this is the last line of defence inside Pi's render
       // loop, so even a host object whose every accessor throws cannot take the frame down.
@@ -220,6 +224,10 @@ export function adoptCustomMessages(container: unknown): AdoptCustomMessagesResu
       }
     }
   }
+  // The count is reconciled to what this container really holds, so a message the host dropped
+  // without a pass seeing it stops closing the fast path: the next pass answers before reading a
+  // child again (S4). `liveAdoptions` can be too high for at most one pass, which costs a read.
+  adoptionState().liveAdoptions = adopted;
   return result;
 }
 
@@ -288,6 +296,12 @@ function adoptMessage(child: unknown, perPass: Map<string, boolean>): MessageOut
     // right there on the component it built, so it is rendered as-is: the same bytes the user would
     // have seen without a design, not a picture of them invented here.
     fallbackRows: (width: number): string[] | undefined => hostBoxRows(child, width),
+    // What the mounted answer is, kept true across rebuilds this pass never sees: `setExpanded`, a
+    // session switch or a reload re-enter the renderer, and a stale record would leave the message
+    // on the raw host component with no design able to reach it again.
+    onBuild: (designSelected: boolean): void => {
+      record.designAtBuild = designSelected;
+    },
   });
   const record: AdoptedMessage = {
     designAtBuild: design,
@@ -344,7 +358,6 @@ function adoptMessage(child: unknown, perPass: Map<string, boolean>): MessageOut
     return "failed";
   }
 
-  adoptionState().liveAdoptions += 1;
   recordAdoptedMessage(customType);
   // The renderer Pi stored was resolved when the message was added; `invalidate()` is what makes it
   // resolve again, through the design renderer.
@@ -382,8 +395,6 @@ function restore(
     return "failed";
   }
   delete symbolSlot(child)[ADOPTED_MESSAGE];
-  const state = adoptionState();
-  state.liveAdoptions = Math.max(0, state.liveAdoptions - 1);
   invalidate(child, customType);
   return "restored";
 }
@@ -396,6 +407,19 @@ function restore(
 function hostBoxRows(child: Record<string, unknown>, width: number): string[] | undefined {
   const box = readMember(child, "box");
   if (!isRecord(box) || typeof readMember(box, "render") !== "function") return undefined;
+  // Pi applies the message's padding to that box ONLY on its default path, which a design bypasses:
+  // after `setOutputPad(4)` the box still carries the padding it was born with. Rendering it as the
+  // fallback must therefore set the CURRENT output padding first, or a failed design would answer an
+  // indented box that no setting asked for.
+  const outputPad = readMember(child, "outputPad");
+  const setPaddingX = readMember(box, "setPaddingX");
+  if (typeof outputPad === "number" && typeof setPaddingX === "function") {
+    try {
+      (setPaddingX as (padding: number) => void).call(box, outputPad);
+    } catch {
+      // A box that refuses its own padding is still a box this pass can render.
+    }
+  }
   let rows: unknown;
   try {
     // SAFETY: `typeof` just proved `render` callable, and a component's `render(width)` is the whole

@@ -211,10 +211,12 @@ function designComponent(args: {
       };
       const applied = applyMessageDesign(selection.design, rows, ctx);
       if (applied !== undefined) return applied;
-      // The design failed: draw what the message would have drawn without it. A host-less message's
-      // own default box is the only faithful answer, and `fallbackRows` is the adoption pass handing
-      // it over; the plain body is the last resort when there is no box to ask (S2 + L7: the body the
-      // agent must read is never the thing that gets dropped).
+      // The design failed: draw what the message would have drawn without it, which is the HOST's
+      // rows when there are any (the frame this design was only allowed to rewrite). Only a host-less
+      // message needs the box handed over by the adoption pass, because its `rows` are the plain body
+      // and Pi's own frame is what the user would have seen. The plain body is the last resort, so a
+      // message the agent must read is never the thing that gets dropped (S2 + L7).
+      if (host !== undefined) return rows;
       return fallbackRows?.(width) ?? rows;
     },
     invalidate(): void {
@@ -261,10 +263,20 @@ function designComponent(args: {
 export function messageDesignRenderer(
   customType: string,
   host: HostMessageRenderer | undefined,
-  hooks?: { fallbackRows?: (width: number) => string[] | undefined },
+  hooks?: {
+    fallbackRows?: (width: number) => string[] | undefined;
+    /**
+     * Called on EVERY build with whether a design was selected, so the adoption pass always knows
+     * what the mounted answer is. An external rebuild (`setExpanded`, `/tree`, a reload) re-enters the
+     * renderer with whatever is selected then, and a stale record would leave the message on the raw
+     * host component while the design never draws again.
+     */
+    onBuild?: (designSelected: boolean) => void;
+  },
 ): HostMessageRenderer {
   return function (message: unknown, options: unknown, theme?: unknown): unknown {
     const selection = selectionFor(customType);
+    hooks?.onBuild?.(selection.kind === "design");
     // The host's own renderer first, always, and exactly once per build: it owns the frame, its
     // arguments and its failures. A host renderer that throws is REPORTED and answers `undefined`,
     // which is exactly what Pi does with it — its own default box — so the bridge never changes what

@@ -68,11 +68,18 @@ const REMINDER = "gentle-pi.verifier-settle-reminder";
 interface FakeMessage {
   message: { customType: string; content: string };
   customRenderer: unknown;
+  /** What `rebuild()` stored: Pi renders THIS on every frame, it does not re-call the renderer. */
+  component: unknown;
+  expanded: boolean;
+  /** Pi's own default box, present on a real component from construction. */
+  box?: { padding?: number; render(width: number): readonly string[]; setPaddingX?(padding: number): void };
+  outputPad?: number;
   rendererCalls: number;
   invalidations: number;
   rebuilds: number;
   rebuild(): void;
   invalidate(): void;
+  setExpanded(expanded: boolean): void;
   render(width: number): readonly string[];
 }
 
@@ -89,31 +96,43 @@ function fakeCustomMessage(
             render: (width: number): readonly string[] =>
               hostRows(message, options).map((row) => `${row}@${width}`),
           }),
+    component: undefined,
+    expanded: false,
     rendererCalls: 0,
     invalidations: 0,
     rebuilds: 0,
+    // Exactly Pi: the renderer is invoked as a MEMBER, once per rebuild.
     rebuild(): void {
       child.rebuilds += 1;
+      child.rendererCalls += 1;
+      child.component =
+        typeof child.customRenderer === "function"
+          ? (child.customRenderer as (m: unknown, o: unknown, t: unknown) => unknown).call(
+              child,
+              child.message,
+              { expanded: child.expanded, outputPad: 1 },
+              {},
+            )
+          : undefined;
     },
     invalidate(): void {
       child.invalidations += 1;
       child.rebuild();
     },
+    setExpanded(expanded: boolean): void {
+      if (child.expanded === expanded) return;
+      child.expanded = expanded;
+      child.rebuild();
+    },
     render(width: number): readonly string[] {
-      child.rendererCalls += 1;
-      if (typeof child.customRenderer === "function") {
-        // Exactly Pi's own call: a member call, so `this` is the component
-        // (`custom-message.js`, `rebuild()`).
-        const component = (
-          child.customRenderer as (m: unknown, o: unknown, t: unknown) => unknown
-        ).call(child, child.message, { expanded: false, outputPad: 1 }, {});
-        if (component !== undefined) {
-          return (component as { render(width: number): readonly string[] }).render(width);
-        }
+      const component = child.component;
+      if (component !== undefined) {
+        return (component as { render(width: number): readonly string[] }).render(width);
       }
       return [`[${customType}] pi's own box@${width}`];
     },
   };
+  child.rebuild();
   return child;
 }
 
@@ -210,14 +229,16 @@ test("S3: a selected design receives the host's rows at the message's width and 
   assert.deepEqual(child.render(72), ["host frame@72", "design row"], "the width is read per pass");
 });
 
-test("S3: choosing a design AFTER the message was drawn repaints it without a second pass", () => {
+test("S3: choosing a design AFTER the message was drawn reaches it on the next pass", () => {
   const child = fakeCustomMessage(TYPE, () => ["host frame"]);
   registerMessageDesign(design());
   adoptCustomMessages(container([child]));
   assert.deepEqual(child.render(40), ["host frame@40"]);
 
-  // The user picks the design: the renderer re-reads the selection on every pass.
+  // The user picks the design: the action repaints, the pass sees the new selection, and the message
+  // is rebuilt onto the design renderer. The reused raw host component could never draw it.
   setMessageDesignSelection(TYPE, "loon.budget");
+  adoptCustomMessages(container([child]));
   assert.deepEqual(child.render(40), ["host frame@40", "design row"]);
 });
 
@@ -476,4 +497,95 @@ test("S4: disposing the last design restores the host's renderer and stops payin
     0,
     "no live claim: a render must not read the store any more",
   );
+});
+
+test("S3: a failing design on a HOST-rendered message keeps the host's own frame", () => {
+  // The design was only ever allowed to rewrite the host's rows, so its failure must leave exactly
+  // those rows — not Pi's box, which this message never drew.
+  const child = fakeCustomMessage(TYPE, () => ["host frame"]);
+  registerMessageDesign(
+    design({
+      apply: () => {
+        throw new Error("boom");
+      },
+    }),
+  );
+  setMessageDesignSelection(TYPE, "loon.budget");
+  adoptCustomMessages(container([child]));
+
+  assert.deepEqual(child.render(40), ["host frame@40"], "the host's frame, untouched");
+});
+
+test("S3: an external rebuild at `default` does not strand the design", () => {
+  // Pi rebuilds on its own (`setExpanded`, a session switch, a reload) and calls the renderer with
+  // whatever is selected then. A record that still believed a design was mounted would leave the
+  // message on the raw host component and no design could ever reach it again.
+  const child = fakeCustomMessage(TYPE, () => ["host frame"]);
+  registerMessageDesign(design());
+  setMessageDesignSelection(TYPE, "loon.budget");
+  adoptCustomMessages(container([child]));
+  assert.deepEqual(child.render(40), ["host frame@40", "design row"]);
+
+  setMessageDesignSelection(TYPE, "native");
+  adoptCustomMessages(container([child]));
+  child.setExpanded(true); // Pi's own rebuild, at `default`
+  assert.deepEqual(child.render(40), ["host frame@40"]);
+
+  setMessageDesignSelection(TYPE, "loon.budget");
+  adoptCustomMessages(container([child]));
+  assert.deepEqual(child.render(40), ["host frame@40", "design row"], "the design draws again");
+});
+
+test("S4: a message the host removed stops closing the fast path", () => {
+  const child = fakeCustomMessage(TYPE);
+  const drop = registerMessageDesign(design());
+  setMessageDesignSelection(TYPE, "loon.budget");
+  adoptCustomMessages(container([child]));
+
+  // The host drops the message before anybody disposes the design.
+  adoptCustomMessages(container([]));
+  drop();
+
+  let reads = 0;
+  const other = fakeCustomMessage(REMINDER);
+  Object.defineProperty(other, "message", {
+    get: () => {
+      reads += 1;
+      return { customType: REMINDER, content: "hello" };
+    },
+    configurable: true,
+  });
+  adoptCustomMessages(container([other]));
+
+  assert.equal(reads, 0, "nothing claimed and nothing mounted: no child is read again");
+});
+
+test("S2: the fallback box carries the message's CURRENT output padding", () => {
+  // Pi applies padding to its default box only on its own default path, which a design bypasses. After
+  // `setOutputPad(4)` the box still holds the padding it was born with, so a failing design that
+  // rendered it as-is would answer a frame indented to a setting nobody has any more.
+  const child = fakeCustomMessage(REMINDER);
+  child.outputPad = 4;
+  child.box = {
+    padding: 2,
+    setPaddingX(this: { padding: number }, padding: number): void {
+      this.padding = padding;
+    },
+    render(this: { padding: number }): readonly string[] {
+      return [`pad ${this.padding}`];
+    },
+  };
+  registerMessageDesign({
+    customType: REMINDER,
+    id: "loon.reminder",
+    label: "reminder",
+    apply: () => {
+      throw new Error("boom");
+    },
+  });
+  setMessageDesignSelection(REMINDER, "loon.reminder");
+  adoptCustomMessages(container([child]));
+
+  assert.deepEqual(child.render(40), ["pad 4"], "the padding the message has NOW");
+  assert.deepEqual(child.render(40), ["pad 4"], "and it stays that way on later frames");
 });

@@ -32,12 +32,17 @@ import {
   reservedCategory,
   RESERVED_CATEGORY_RULE,
 } from "./row-names.ts";
+import { RAIL_PARTS } from "./types.ts";
 import type {
   CardStyleRegistration,
+  RailPart,
   RowProvider,
   SidebarSection,
   TranscriptTransform,
 } from "./types.ts";
+
+/** Re-exported here because a placement decision is the bus's: see `resolveSectionPlacements`. */
+export { RAIL_PARTS };
 
 /** Stable process-global slot for the bridge's registration lists. */
 const BUS_KEY = Symbol.for("gentle-shell-bridge.providers");
@@ -67,6 +72,8 @@ interface BusState {
   cardStyles: CardStyleEntry[];
   /** Transcript transforms in registration order; ordering happens in `snapshotTransforms`. */
   transforms: TransformEntry[];
+  /** Sections that asked for a `placement` the bridge cannot honour; one per live `id`. */
+  placementRejections: SectionPlacementRejection[];
 }
 
 /** The slot shape on `globalThis`; keeps the cast in one place. */
@@ -95,9 +102,18 @@ function bus(): BusState {
     // And for transforms: a copy that predates the pipeline keeps its live registrations and gains
     // the list, so the wrapper another copy installed sees what this copy registered.
     if (!Array.isArray(existing.transforms)) existing.transforms = [];
+    // Same for the placement rejections: an older copy's bus gains the list instead of being
+    // replaced, so the report of a bad `placement` survives a second package copy registering one.
+    if (!Array.isArray(existing.placementRejections)) existing.placementRejections = [];
     return existing;
   }
-  const created: BusState = { entries: [], sections: [], cardStyles: [], transforms: [] };
+  const created: BusState = {
+    entries: [],
+    sections: [],
+    cardStyles: [],
+    transforms: [],
+    placementRejections: [],
+  };
   host[BUS_KEY] = created;
   return created;
 }
@@ -294,6 +310,18 @@ function registerSectionStored(section: SidebarSection): () => void {
   }
   // The name in force now conforms, so a record left by the name it replaced is no longer true.
   clearRowNameRejections("section", section.id);
+  // A `placement` the bridge cannot honour is reported and IGNORED, never thrown: it names where the
+  // card goes, and refusing the whole section over it would cost the user their card. It lands at the
+  // end, which is the historical default (S5).
+  const placementFault = placementProblem(section.placement);
+  if (placementFault === undefined) clearPlacementRejection(section.id);
+  else {
+    recordPlacementRejection({
+      sectionId: section.id,
+      value: describeValue(section.placement),
+      reason: placementFault,
+    });
+  }
   const state = bus();
   const entry: SectionEntry = { section };
   const index = state.sections.findIndex((candidate) => candidate.section.id === section.id);
@@ -309,43 +337,402 @@ function registerSectionStored(section: SidebarSection): () => void {
   };
 }
 
+/** One section's landing: where its block of rows hangs in the rail (S1–S3, S5). */
+export interface SectionPlacementResolution {
+  section: SidebarSection;
+  /** What the plugin asked for, as a person reads it: `start`, `end`, `after "loon.news"`. */
+  requested: string;
+  /** The painted rail part whose own rows it draws around. */
+  part: RailPart;
+  /** `before` draws above that part's own rows, `after` below them. */
+  side: "before" | "after";
+  /** What the block hangs off: `start`, `end`, a native rail part, or `"<section id>"`. */
+  anchor: string;
+  /** Why the card is not where it asked to be; absent when the request was honoured. */
+  reason?: string;
+}
+
+/**
+ * A `placement` the bridge cannot honour, kept verbatim so the author can find it (S5). The section
+ * still registers — a field the bridge can ignore must never cost the whole card — and it is placed
+ * at the end, which is what `/bridge-status` says next to this record.
+ */
+export interface SectionPlacementRejection {
+  sectionId: string;
+  /** The value as JSON, exactly as far as a report can show it. Never rewritten. */
+  value: string;
+  /** One sentence naming the shape that was expected. */
+  reason: string;
+}
+
+/** The rule, quoted by every rejection so the message stands on its own. */
+const PLACEMENT_RULE =
+  'placement must be "start", "end", or { after: "<section id or native rail part>" }';
+
+/**
+ * What is wrong with one `placement`, or `undefined` when the bridge can honour it.
+ *
+ * Checked in a fixed order — the shape, then the `after` string, then its own shape — so the
+ * reported reason is deterministic instead of depending on how a bad value was built. One rule for
+ * the registration (`./bus.ts` stores nothing) and for the resolver, which must survive a value a
+ * registration refused, because a plugin can hand the section object over and mutate it later.
+ */
+function placementProblem(value: unknown): string | undefined {
+  // Absent is the default, `"end"`: a section that names no placement is conforming, not faulty.
+  if (value === undefined) return undefined;
+  if (value === "start" || value === "end") return undefined;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return `it is ${describeValue(value)}; ${PLACEMENT_RULE}`;
+  }
+  const keys = Object.keys(value);
+  if (keys.length !== 1 || keys[0] !== "after") {
+    return 'an object placement carries exactly one field, `after`, naming a section id or one of "todo", "jobs", "agents", "footer"';
+  }
+  // SAFETY: the object has exactly the own key `after`, which is what is read here.
+  const target = (value as { after: unknown }).after;
+  if (typeof target !== "string" || target.trim() === "") {
+    return `after is ${describeValue(target)}; after must be a non-empty string naming a section id or one of "todo", "jobs", "agents", "footer"`;
+  }
+  return undefined;
+}
+
+/** A value as a short, safe phrase for a message: the JSON when it has one, its type otherwise. */
+function describeValue(value: unknown): string {
+  if (value === undefined) return "absent";
+  try {
+    const json = JSON.stringify(value);
+    if (typeof json === "string") return json;
+  } catch {
+    // A cyclic or otherwise unprintable value falls through to its type.
+  }
+  return `a ${typeof value}`;
+}
+
+/** Replace the record for one section, so a corrected registration stops being reported. */
+function recordPlacementRejection(rejection: SectionPlacementRejection): void {
+  const state = bus();
+  const index = state.placementRejections.findIndex(
+    (candidate) => candidate.sectionId === rejection.sectionId,
+  );
+  if (index === -1) state.placementRejections.push(rejection);
+  else state.placementRejections[index] = rejection;
+}
+
+function clearPlacementRejection(sectionId: string): void {
+  const rejections = bus().placementRejections;
+  for (let index = rejections.length - 1; index >= 0; index -= 1) {
+    if (rejections[index].sectionId === sectionId) rejections.splice(index, 1);
+  }
+}
+
+/** Every `placement` a registration had to refuse, for `/bridge-status`. A fresh copy. */
+export function getSectionPlacementRejections(): SectionPlacementRejection[] {
+  return bus().placementRejections.map((rejection) => ({ ...rejection }));
+}
+
+/** One section's placement as a phrase: `start`, `end`, `after "loon.news"`. */
+export function requestedPlacementText(section: SidebarSection): string {
+  const placement = section.placement;
+  if (placement === undefined || placement === "end") return "end";
+  if (placement === "start") return "start";
+  if (placement !== null && typeof placement === "object" && typeof placement.after === "string") {
+    return `after ${JSON.stringify(placement.after)}`;
+  }
+  return describeValue(placement);
+}
+
+/** Where one landing reads as: `before todo`, `after footer`. */
+export function placementLandingText(landing: Pick<SectionPlacementResolution, "part" | "side">): string {
+  return `${landing.side} ${landing.part}`;
+}
+
+/** What a section's rows hang off, before the rail turns it into a part. */
+type PlacementAnchor =
+  | { kind: "start" }
+  | { kind: "end" }
+  | { kind: "part"; part: RailPart }
+  | { kind: "section"; id: string };
+
+/** Group key for one anchor: tagged, because a section id may itself read `start`, `end` or `todo`. */
+function anchorKey(anchor: PlacementAnchor): string {
+  if (anchor.kind === "part") return `part:${anchor.part}`;
+  if (anchor.kind === "section") return `section:${anchor.id}`;
+  return anchor.kind;
+}
+
+/** An anchor as a person reads it: `start`, `end`, `todo`, `"loon.news"`. */
+function anchorText(anchor: PlacementAnchor): string {
+  if (anchor.kind === "part") return anchor.part;
+  if (anchor.kind === "section") return JSON.stringify(anchor.id);
+  return anchor.kind;
+}
+
+/** Whether a string names a native rail part. A native part wins over a section that shares the id. */
+function nativePart(value: string): RailPart | undefined {
+  return (RAIL_PARTS as readonly string[]).includes(value) ? (value as RailPart) : undefined;
+}
+
+interface DirectPlacement {
+  anchor: PlacementAnchor;
+  reason?: string;
+}
+
+/** What one section asked for, before cycles are broken and parts are resolved. */
+function directPlacement(section: SidebarSection, ids: ReadonlySet<string>): DirectPlacement {
+  const placement = section.placement;
+  if (placement === undefined || placement === "end") return { anchor: { kind: "end" } };
+  if (placement === "start") return { anchor: { kind: "start" } };
+  const problem = placementProblem(placement);
+  if (problem !== undefined) {
+    return { anchor: { kind: "end" }, reason: `its placement is malformed (${problem})` };
+  }
+  // SAFETY: `placementProblem` accepted the value, so it is the `{ after }` shape.
+  const target = (placement as { after: string }).after;
+  const part = nativePart(target);
+  if (part !== undefined) {
+    return {
+      anchor: { kind: "part", part },
+      // A section id is free to be `todo`, so one string can name a section AND a native part. The
+      // native part wins, and the report says why instead of leaving the author to guess.
+      ...(ids.has(target)
+        ? {
+            reason: `the native rail part ${JSON.stringify(target)} wins over the section with the same id`,
+          }
+        : {}),
+    };
+  }
+  if (ids.has(target)) return { anchor: { kind: "section", id: target } };
+  return {
+    anchor: { kind: "end" },
+    reason: `after ${JSON.stringify(target)} is neither a registered section nor a native rail part`,
+  };
+}
+
+/**
+ * Every section's landing, in DRAW order (S1–S3, S5): the answer both the renderer and
+ * `/bridge-status` read, so a report and a frame cannot disagree.
+ *
+ * Pure by construction: it takes the registrations and the painted parts, and nothing else. Where a
+ * block goes is decided from those two lists alone, never from the order the plugins loaded in:
+ *
+ * - within one slot, sections with a finite `order` come first, ascending, then the rest, and ties
+ *   are broken by `id` compared as UTF-16 code units (S2) — the input order does not matter;
+ * - `"start"` is one slot, each native part is one slot, `"end"` is one slot, and every section id
+ *   is one slot: a section asking for `after` X joins X's slot and draws right after X (S3);
+ * - a slot is resolved by render, never by registration (S5): an anchor that draws nothing keeps
+ *   its place, so hiding a section does not move its followers; a native part that is not painted
+ *   falls forward to the next painted one, ending at `footer`; a cycle, a section after itself, or
+ *   an anchor nobody registered falls back to `"end"` with a reason. `"end"` itself is the `footer`
+ *   part, exactly as before this field existed: only `"start"` and a native anchor need to know
+ *   which parts the host paints.
+ *
+ * `painted` is the parts the host actually paints this frame, in any order; it is normalized against
+ * `RAIL_PARTS`, so a caller cannot make the rail order depend on how it collected the list.
+ */
+export function resolveSectionPlacements(
+  sections: readonly SidebarSection[],
+  painted: readonly RailPart[],
+): SectionPlacementResolution[] {
+  const paintedParts = RAIL_PARTS.filter((part) => painted.includes(part));
+  const firstPainted = paintedParts[0];
+  const ids = new Set(sections.map((section) => section.id));
+
+  const anchors = new Map<string, DirectPlacement>();
+  for (const section of sections) {
+    anchors.set(section.id, directPlacement(section, ids));
+  }
+
+  // A cycle is not a placement: every section IN it falls back to the end. A section leading INTO
+  // one resolves through its anchor, which is now the end, so it lands there too and keeps its own
+  // request honoured.
+  for (const id of cycleMembers(sections, anchors)) {
+    anchors.set(id, {
+      anchor: { kind: "end" },
+      reason: "it would sit after itself: a placement cycle falls back to the end",
+    });
+  }
+
+  /**
+   * Where one anchor's block lands. A section anchor lands where ITS anchor lands, so a chain of
+   * `after` requests resolves transitively; the cycles are already gone, so this terminates.
+   */
+  const landings = new Map<string, { part: RailPart; side: "before" | "after" }>();
+  const landingOf = (anchor: PlacementAnchor): { part: RailPart; side: "before" | "after" } => {
+    const key = anchorKey(anchor);
+    const known = landings.get(key);
+    if (known !== undefined) return known;
+    const landing = computeLanding(anchor);
+    landings.set(key, landing);
+    return landing;
+  };
+
+  const computeLanding = (
+    anchor: PlacementAnchor,
+  ): { part: RailPart; side: "before" | "after" } => {
+    if (anchor.kind === "start") {
+      // Before the first painted native part; with nothing painted, after the last one there is.
+      return firstPainted === undefined
+        ? { part: "footer", side: "after" }
+        : { part: firstPainted, side: "before" };
+    }
+    if (anchor.kind === "end") {
+      // After every native section, which IS the footer part: `{ after: "footer" }` and `"end"` are
+      // the same placement (S4), and a part that paints no frame draws none of our rows — exactly
+      // the rule this surface always had, so a rail whose footer is hidden loses nothing new.
+      return { part: "footer", side: "after" };
+    }
+    if (anchor.kind === "section") {
+      const target = anchors.get(anchor.id);
+      return target === undefined
+        ? { part: "footer", side: "after" }
+        : landingOf(target.anchor);
+    }
+    // A native part: after its own rows when it is painted, otherwise the next painted slot after
+    // it, ending at `footer` (S5).
+    if (paintedParts.includes(anchor.part)) return { part: anchor.part, side: "after" };
+    const at = RAIL_PARTS.indexOf(anchor.part);
+    const next = paintedParts.find((part) => RAIL_PARTS.indexOf(part) > at);
+    return { part: next ?? "footer", side: "after" };
+  };
+
+  // The blocks, in the S2 order the input already carries: one list per anchor.
+  const groups = new Map<string, SidebarSection[]>();
+  for (const section of sections) {
+    const anchor = anchors.get(section.id)?.anchor ?? { kind: "end" };
+    const key = anchorKey(anchor);
+    const group = groups.get(key);
+    if (group === undefined) groups.set(key, [section]);
+    else group.push(section);
+  }
+
+  const out: SectionPlacementResolution[] = [];
+  const visited = new Set<string>();
+
+  /**
+   * Why a landing is not the one the request named, when the reason comes from the RENDER (a native
+   * part the host does not paint, or a rail with nothing painted at all) rather than from the shape
+   * of the request itself.
+   */
+  const landingReason = (anchor: PlacementAnchor): string | undefined => {
+    if (anchor.kind === "start" && paintedParts.length === 0) {
+      return "no native rail part is painted, so it landed at the end";
+    }
+    if (anchor.kind === "part" && !paintedParts.includes(anchor.part)) {
+      return `the native rail part ${JSON.stringify(anchor.part)} is not painted; it landed ${placementLandingText(
+        landingOf(anchor),
+      )}`;
+    }
+    return undefined;
+  };
+
+  /** Emit one block and, right after each of its sections, that section's own followers. */
+  const emit = (key: string): void => {
+    if (visited.has(key)) return;
+    visited.add(key);
+    const group = groups.get(key);
+    if (group === undefined) return;
+    for (const section of group) {
+      const direct = anchors.get(section.id) ?? { anchor: { kind: "end" as const } };
+      const landing = landingOf(direct.anchor);
+      const reason = direct.reason ?? landingReason(direct.anchor);
+      out.push({
+        section,
+        requested: requestedPlacementText(section),
+        part: landing.part,
+        side: landing.side,
+        anchor: anchorText(direct.anchor),
+        ...(reason === undefined ? {} : { reason }),
+      });
+      emit(`section:${section.id}`);
+    }
+  };
+
+  emit("start");
+  // Every native part is emitted, painted or not: a block anchored at a part the host does not paint
+  // still exists, and it draws where the landing put it. `RAIL_PARTS` order keeps two blocks that
+  // land on the same rows in one deterministic order, and `end` stays last.
+  for (const part of RAIL_PARTS) emit(`part:${part}`);
+  emit("end");
+
+  return out;
+}
+
+/**
+ * The sections that are part of a placement cycle (A after B after A, or A after itself). Every
+ * other section is left alone: a chain that merely LEADS into a cycle is resolved through it after
+ * the cycle members have fallen back to the end.
+ */
+function cycleMembers(
+  sections: readonly SidebarSection[],
+  anchors: ReadonlyMap<string, DirectPlacement>,
+): string[] {
+  const settled = new Set<string>();
+  const members = new Set<string>();
+  for (const section of sections) {
+    const chain: string[] = [];
+    let current: string | undefined = section.id;
+    while (current !== undefined && !settled.has(current)) {
+      const repeat = chain.indexOf(current);
+      if (repeat !== -1) {
+        for (const id of chain.slice(repeat)) members.add(id);
+        break;
+      }
+      chain.push(current);
+      const anchor: PlacementAnchor | undefined = anchors.get(current)?.anchor;
+      current = anchor?.kind === "section" ? anchor.id : undefined;
+    }
+    for (const id of chain) settled.add(id);
+  }
+  return [...members];
+}
+
+/** A section id compare: UTF-16 code units, never a locale collation (S2). */
+function compareSectionIds(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
+/**
+ * The rendering order of every registered section: those with an `order` first, ascending, then the
+ * rest, and every tie broken by `id` compared as UTF-16 code units (S2).
+ *
+ * The registration index is deliberately NOT part of the sort. The same set of registrations has to
+ * draw the same rail in any load order — a user's sidebar must not depend on which plugin Pi
+ * happened to load first — so equal values are resolved by the one key that is identity. Both halves
+ * are computed from the registration list, never from `Map` iteration, and the array is a fresh copy,
+ * so a fan-out that iterates it sees a stable list even if a section registers or disposes
+ * mid-iteration.
+ */
+export function snapshotSections(): SidebarSection[] {
+  const ordered: Array<{ section: SidebarSection; order: number }> = [];
+  const rest: SidebarSection[] = [];
+
+  for (const entry of bus().sections) {
+    const order = sortableSectionOrder(entry.section);
+    if (order === undefined) rest.push(entry.section);
+    else ordered.push({ section: entry.section, order });
+  }
+
+  ordered.sort((a, b) => a.order - b.order || compareSectionIds(a.section.id, b.section.id));
+  rest.sort((a, b) => compareSectionIds(a.id, b.id));
+  return [...ordered.map((entry) => entry.section), ...rest];
+}
+
 /** A section whose `order` is a usable sort key; `NaN`, `Infinity` and a missing value are not. */
-function sortableOrder(section: SidebarSection): number | undefined {
+function sortableSectionOrder(section: SidebarSection): number | undefined {
   return typeof section.order === "number" && Number.isFinite(section.order)
     ? section.order
     : undefined;
 }
 
 /**
- * The rendering order: sections with an `order` first, ascending, then those without, in
- * registration order.
- *
- * Both halves are computed from the registration list, never from `Map` iteration: the sort is on
- * explicit keys with the registration index as the tiebreak, so equal `order`s and unordered
- * sections are deterministic. The array is a fresh copy, so a fan-out that iterates it sees a
- * stable list even if a section registers or disposes mid-iteration.
- */
-export function snapshotSections(): SidebarSection[] {
-  const ordered: Array<{ section: SidebarSection; order: number; index: number }> = [];
-  const rest: SidebarSection[] = [];
-
-  bus().sections.forEach((entry, index) => {
-    const order = sortableOrder(entry.section);
-    if (order === undefined) rest.push(entry.section);
-    else ordered.push({ section: entry.section, order, index });
-  });
-
-  ordered.sort((a, b) => a.order - b.order || a.index - b.index);
-  return [...ordered.map((entry) => entry.section), ...rest];
-}
-
-/**
  * Test-only seam for the section list only, so a provider test and a section test do not clear
  * each other's registrations. Like `resetBusForTests`, it is deliberately not re-exported from
- * `src/index.ts`.
+ * `src/index.ts`. The placement rejections go with it: they describe the same registrations.
  */
 export function resetSectionsForTests(): void {
   bus().sections.length = 0;
+  bus().placementRejections.length = 0;
 }
 
 /**

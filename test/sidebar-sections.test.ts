@@ -130,7 +130,7 @@ test("a disposer called twice is a no-op the second time", () => {
   assert.deepEqual(ids(), ["a", "c"]);
 });
 
-test("sections with an order come first, ascending and ties by registration order", () => {
+test("sections with an order come first, ascending and ties by id", () => {
   registerSection(section("un-ordered-first"));
   registerSection(section("ten", { order: 10 }));
   registerSection(section("one", { order: 1 }));
@@ -141,7 +141,7 @@ test("sections with an order come first, ascending and ties by registration orde
   assert.deepEqual(
     ids(),
     ["one", "tie-a", "tie-b", "ten", "un-ordered-first", "un-ordered-second"],
-    "ordered sections sort ascending ahead of the unordered ones, which keep registration order",
+    "ordered sections sort ascending ahead of the unordered ones, which sort by id",
   );
 });
 
@@ -160,7 +160,9 @@ test("only numbered orders sort; a section without one goes to the tail", () => 
   registerSection(section("negative", { order: -3 }));
   registerSection(section("not-a-number", { order: Number.NaN }));
 
-  assert.deepEqual(ids(), ["negative", "zero", "unordered", "not-a-number"]);
+  // The unordered half is ordered by `id`, not by registration order: the S2 tiebreak replaced the
+  // registration index so the same registrations always draw the same rail (section-placement S2).
+  assert.deepEqual(ids(), ["negative", "zero", "not-a-number", "unordered"]);
 });
 
 test("a section snapshot is a stable copy taken at call time", () => {

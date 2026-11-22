@@ -227,13 +227,6 @@ export interface SidebarSection {
  */
 export type RowPlacement = "start" | "end" | { after: string };
 
-/**
- * Where the PAGE a provider's block opens sits among the menu's pages (S21). Only a block whose
- * `category` is a page the host does not already list opens one; a block that joins an existing
- * page is ordered by `placement` instead, inside that page.
- */
-export type CategoryPlacement = "end" | { after: string };
-
 /** A plugin's contribution: rows for one category, built lazily per menu build. */
 export interface RowProvider {
   /** Unique and stable, e.g. `"loon.banner-source"`; the key for ordering and replacement. */
@@ -273,16 +266,6 @@ export interface RowProvider {
    * at the end instead of vanishing.
    */
   placement?: RowPlacement;
-  /**
-   * Where the PAGE this block opens sits among the menu's pages (S21). Absent means `"end"`, exactly
-   * as before this field existed. `{ after: name }` sits right after that category's block, so
-   * `{ after: "Sections" }` opens the page between `Sections` and the page that follows it. A name
-   * that cannot be honoured — unknown, the provider's own category, or a page this build does not
-   * produce — falls back to the end deterministically, and `/bridge-status` reports the landing and
-   * why. It is honoured while the menu is being built: a page list the host already derived cannot
-   * be resequenced afterwards.
-   */
-  categoryPlacement?: CategoryPlacement;
 }
 
 /**

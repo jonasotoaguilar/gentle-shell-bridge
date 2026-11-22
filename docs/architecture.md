@@ -18,7 +18,7 @@ plugin C ─┘                                                              │
                                                                          │
                                                capture during the factory call
                                                                          │
-                                              fan-out: A + B + C rows, in order
+                                              fan-out: A + B + C rows, placed by the resolver
                                                                          │
                                                  gentle-shell VisualCustomizeView
 ```
@@ -151,6 +151,12 @@ late push; a row naming a new page never could, because nothing can select a pag
 hold (E8). The capture backend therefore has two moments: it pushes the providers' rows when the probe
 observes that `map`, provisionally, and the end of the factory decides.
 
+- **The provisional placement.** The early step still APPENDS the blocks, because the host's own
+  `rows.map(...)` has already captured the length it will iterate and shifting rows under it would
+  make it read the wrong pages. Once the factory returns, the early decision keeps that array and
+  `placeEarlyBlocks` reorders it to the plan (an existing page gets its `start`/`after` slots; a new
+  page was already in the array before `new Set(...)` read it). If the host changed the array in the
+  meantime, the appended rows stay where they are rather than losing a host row.
 - **The proof.** Nothing is written to an array that is not proven at *that* `map` call, and the proof
   runs on **every** call (the host may map its rows to labels first). The callback must derive
   `row.category ?? "Settings"` for the array's own rows, `"Settings"` for a synthetic row with no
@@ -166,8 +172,10 @@ observes that `map`, provisionally, and the end of the factory decides.
 - **The rollback.** A factory that throws leaves no trace. The session stack and the patched
   `Array.prototype.map` are restored first and unconditionally, and every rollback step is best effort
   and never throws (E10: a host that froze its rows and then threw used to make the rollback throw,
-  replace the host's error and leave `map` patched). A session only ever rolls back its own array, so a
-  nested factory's rollback cannot touch the outer menu's rows.
+  replace the host's error and leave `map` patched). The inserted rows are removed **by identity**,
+  wherever the plan put them (before the host's rows, between categories, or at the end), and the
+  `Card style` splice goes back with them; a session only ever rolls back its own array, so a nested
+  factory's rollback cannot touch the outer menu's rows.
 
 Net guarantee: after any factory invocation, no array holds bridge rows except the one the late decision
 chose. Costs, stated: for the duration of the factory an array that satisfies the proof can hold bridge
@@ -191,10 +199,20 @@ trigger further UI work), and fans the single capture out to every registered pr
 1. snapshot the provider list in subscription order,
 2. build each provider's rows independently, inside its own `try`,
 3. drop a provider's rows on throw, record the failure for `/bridge-status`, continue,
-4. push the surviving rows into the captured array and invalidate once.
+4. resolve every surviving block with the pure `resolveRowPlacements` (inside its category, with
+   the `order`/`id` rule), turn that answer into one planned rebuild with `planRowPlacement`, and
+   write the host array once; then invalidate once.
 
 Failure isolation is per provider, so a broken plugin costs its own rows and nothing else:
-not the menu, not the other providers.
+not the menu, not the other providers, and not another provider's placement.
+
+The placement itself is resolved by `src/bus.ts`'s pure `resolveRowPlacements` and turned into
+insertion points by `src/rows.ts`'s `planRowPlacement`. The capture path never re-sorts blocks or
+re-implements the fallbacks: it reads the host array's first and last index for each category,
+computes the whole plan against the array as it stands, and applies it in one in-place write, so no
+index can drift between splices. Rows of one provider stay one contiguous block, which is why an
+insertion point is a block boundary and can never split the host's consecutive `choice.setting`
+pair or the bridge's own `Card style` value splice.
 
 ## 7. Process-global state cannot live in a module
 
@@ -334,10 +352,10 @@ diagnostics stop reporting `hook`.
 | `src/api.ts` | the runtime handshake: the one `Symbol.for` slot, the frozen published object, the shape gate, `bridgeApi()`, `onBridgeApi` and the `gentle-shell-bridge:ready` announcement |
 | `src/extension.ts` | the Pi entry from `pi.extensions`: `session_start` arming (rows + sidebar widget), the `Sections` provider, and the `/bridge-status` command |
 | `src/arm.ts` | backend selection and the arm result |
-| `src/capture.ts` | the single `Array.prototype.map` patch and the captured array |
-| `src/hook.ts` | the host-registry probe and the one fan-out provider |
+| `src/capture.ts` | the single `Array.prototype.map` patch, the captured array, and the provisional placement/rollback |
+| `src/hook.ts` | the host-registry probe and the one fan-out provider; it has no host array, so it orders by `order`/`id` and reports that host-relative placement could not be honoured |
 | `src/bus.ts` | the `globalThis` provider list and its ordered snapshot, plus the section, card-style and transform registries |
-| `src/rows.ts` | the one row builder both backends call, with per-provider isolation and the row-name shape check |
+| `src/rows.ts` | the one row builder both backends call, with per-provider isolation and the row-name shape check; also `planRowPlacement`, which turns the resolver's blocks into one planned array |
 | `src/row-names.ts` | the enforced row-name shape (one to three plain words, no structural marks) and the rejection records `/bridge-status` lists |
 | `src/sidebar.ts` | the rail interception: the state symbol, the patched `parts` map, the rail wrapper |
 | `src/sidebar-render.ts` | the section renderer: card rows and groups per frame, clipping, failures |

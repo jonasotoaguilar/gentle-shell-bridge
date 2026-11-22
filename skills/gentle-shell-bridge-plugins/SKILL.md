@@ -30,13 +30,13 @@ a plain host theme — neither registers through the bridge.
 - **A scope claims CALLS, per tool.** A claim is `(line, tool)`: `scopes: { write: scope }` narrows that tool only, so one line may paint some tools whole and others conditionally; `scope` is the shorthand for the SAME scope everywhere. Scoped claims answer in line-creation order, the unscoped one last; a line storing `default` (`native`) declines. GROUPED shape only, `scope` refused with `scopes`, one scope per tool per line (`===`, the same (`line`, `id`) entry excepted), `description` required (it is the preview), a throw is no match. Without `args` only unscoped claims answer. When every candidate declines the LAST answer stands (`missing`, `not-covered`, stored `native`); no candidate answers `native`, and with NO live claim the historical value answers.
 
 - **Plugin state stays the plugin's**: `createStore(pluginId)`. `createStore` reserves nothing, so never take a bridge id — `bridge-card-style` and `bridge-tool-designs` are the bridge's own files.
-- **A section's `placement` names a PLACE, not a rail key**: `"start"`, `"end"` (default: after every native card) or `{ after: "<id>" }` — a section id or one of `todo`, `jobs`, `agents`, `footer` (native granularity is the PART, so "after a status card" is not offered). Order inside one place never depends on load order (finite `order`, then `id`). A hidden anchor keeps its place, an unknown id or cycle falls back to the end, an unpainted native part falls forward, a malformed value is refused at the end; `/bridge-status` says where and why. Never persisted.
+- **`placement` names a PLACE.** Rows: `"start"`, `"end"` (default: after the category's host rows) or `{ after: "<provider id>" }` — bridge ids only, never host labels; one provider's rows stay one block, so a `choice.setting` pair never splits. Sections: `{ after: "<section id>" }` or `todo`, `jobs`, `agents`, `footer`. Inside one place: finite `order` first, then the rest, ties by `id`, never load order. Unknown/cross-category ids, cycles and unbuilt pages/parts fall back; `/bridge-status` says why, malformed values are refused at registration, and the hook backend reports host-relative placement as unhonourable. Never persisted.
 
 ## Decision Gates
 
 | Need | Call |
 | --- | --- |
-| Rows in a host category or a page of your own | `registerRows({id, category, rows})` |
+| Rows in a host category or a page of your own | `registerRows({id, category, rows, placement?, order?})` |
 | Toggle vs button row | rows sharing one `choice.setting` vs `action` with no `choice`; names: one to three plain words, none of `→ ← ↑ ↓ : . \| / \ [ ] ( ) { }` |
 | Sidebar card (bridge adds its `Sections` toggle) | `registerSection({id, title, lines, meta?, placement?, order?})` |
 | Card chrome, conversation and rail | `registerCardStyle({id, label, frame})` |

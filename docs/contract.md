@@ -49,6 +49,8 @@ interface RowProvider {
   category: string;                            // a category gentle-shell already renders
   name?: string;                               // optional: this plugin's INTEGRATIONS row (§8)
   rows(ctx: RowContext): CustomizeRow[];       // evaluated lazily, per menu build
+  order?: number;                              // finite first inside its slot, then the rest (§2)
+  placement?: "start" | "end" | { after: string }; // absent means "end" (§2)
 }
 ```
 
@@ -64,6 +66,63 @@ interface RowProvider {
 - `id` is the handle used by ordering, replacement and the diagnostics report. Two
   providers may share an `id` only by replacing each other; two providers with different
   `id`s but the same `category` + `setting` conflict (see §6).
+
+### Placement and ordering
+
+`placement` and `order` are REGISTRATION data, like a section's `order`: the bridge resolves them on
+every menu build and never persists them. A provider's rows are one contiguous block, so an insertion
+point is always a block boundary. That is why a placement can never split the host's consecutive
+`choice.setting` pair (or the bridge's own `Card style` value splice): those are consecutive host rows
+inside a category, and a block goes before or after the category's own rows, never inside them.
+
+```ts
+// The three placements; absent is exactly the same as "end".
+placement?: "start" | "end" | { after: string };
+```
+
+- **Absent means `"end"`**, the historical behaviour: after the host's own rows of the provider's
+  category.
+- **`"start"`** sits before the category's first row.
+- **`{ after: id }`** sits right after that provider's block, ids only. A host row's label text
+  (`"Card style"`, `"Bridge card style"`) is NOT an anchor: the host gives its own rows no identity,
+  so a label would be fragile and ambiguous. The anchor may itself be placed (for example at
+  `"start"`); the follower lands after its block, not at the anchor's original position.
+- Resolution is **within the provider's `category`**. The host renders one flat row array and selects a
+  page by filtering it, so `"end"` means after that category's rows, not after every category.
+- **The hook backend cannot honour host-relative placement.** It never sees the host array, so it
+  orders each category by the `order` rule below and reports that `"start"`/`after` could not be
+  honoured. It never claims a host-relative landing it cannot see.
+
+**Inside one slot, load order never decides.** Providers with a finite `order` come first, ascending;
+providers without one follow; every tie (equal `order`, or both missing) is broken by `id` compared
+as UTF-16 code units. This is a **behaviour change** from the previous release, which used the
+subscription index as the tiebreak inside a category — including the `"end"` slot.
+
+```ts
+// Layout: host rows first, then the providers' blocks.
+{ id: "loon.second", category: "Layout", order: 2 }   // order 2
+{ id: "loon.first",  category: "Layout", order: 1 }   // order 1 → draws first
+{ id: "loon.zeta",   category: "Layout", order: 2 }   // tie with "second" → id sorts first
+{ id: "loon.alpha",  category: "Layout" }             // no order → draws after every finite order
+// Result inside Layout: first, second, zeta, alpha — the same for any registration order.
+```
+
+**Fallbacks never throw and never drop a provider's rows.** The block lands at the end of its
+category, and `/bridge-status` reports the reason:
+
+| Request that cannot be honoured | Reported reason |
+| --- | --- |
+| `after` an id that is not registered | `after "loon.nope" is not a registered row provider id` |
+| `after` a provider in another category | `after "loon.banner" is in the category "Banner", not "Layout"` |
+| a cycle (`A after B after A`) | `it would sit after itself: a placement cycle falls back to the end` |
+| a provider `after` itself | the same cycle reason |
+| `"start"` on a page the host did not build | `the host did not build the category "<page>", so it has no first row to sit before; it landed at the end` |
+| `after X` on a page the host did not build | `the host did not build the category "<page>", so after "<X>" cannot be honoured; it landed at the end` |
+
+A **malformed** `placement` (not one of the three shapes, or `after` not a non-empty string) is
+rejected at registration through the same reporting path a section's `placement` uses. The provider
+still registers, its rows are placed at the end, and `/bridge-status` lists it under
+`row placement rejections`; a corrected re-registration clears the record.
 
 ## 3. Row fields
 
@@ -210,8 +269,13 @@ clamp is the only transformation the bridge performs, and only on text it derive
 
 ## 5. Ordering and idempotency
 
-- Providers apply in subscription order; their rows are appended in that order, so a
-  deterministic provider set gives a deterministic menu.
+- **Inside one category slot, subscription order no longer decides.** Providers with a finite
+  `order` come first, ascending; the rest follow; ties are broken by `id` as UTF-16 code units (§2).
+  This is the S2 **behaviour change**: the registration index used to be the tiebreak, including in
+  the `"end"` slot.
+- Subscription order still decides the order in which providers are built and, when NO provider
+  names a `placement` or an `order`, the cross-category append order. It never decides the order
+  inside a placement slot: the rule above still applies there.
 - Disposing one provider leaves the others' relative order intact.
 - Arming is idempotent across `session_start`, `/reload` and double loads: one interception
   layer, one injection per captured row array (non-enumerable marker on the array), one
@@ -221,7 +285,7 @@ clamp is the only transformation the bridge performs, and only on text it derive
 ## 6. Conflicts
 
 Same `category` + same `setting` from two different providers has one of two outcomes,
-determined by insertion order:
+determined by where their rows land in the array (placement included):
 
 - **Consecutive** in the captured array → the renderer coalesces them into a single line
   whose bullets are shared, with the two providers' `action`s behind the same setting
@@ -243,7 +307,7 @@ A provider that throws while its rows are built loses its rows and nothing else:
 - the menu still opens, with the other providers' rows;
 - the failure is recorded as the last failure for `/bridge-status`, with the provider `id` and the
   error message;
-- the remaining providers still apply, in order.
+- the remaining providers still apply, each in its resolved slot.
 
 The same applies to an exception inside a row's `visible()` (the row is hidden) and to a
 rejection from `action()`. Both sync throws and async rejections are routed by the view's
@@ -257,7 +321,7 @@ One command, `/bridge-status`, reporting:
 | Field | Meaning |
 | --- | --- |
 | Gentle-pi | `gentle-pi: present`, or `gentle-pi: missing — <reason>` followed by `bridge: disabled — gentle-pi is required; …`. The required host package is checked through `pi.getCommands()`; when it is missing, every per-surface block below is omitted (nothing was armed) and the report keeps the buffered notices (`src/presence.ts`, `src/status.ts`) |
-| Providers | every registered provider, `id` and `category`, in subscription order |
+| Providers | every registered provider, `id` and `category`, in subscription order. When the provider named a `placement` or its placement could not be honoured, its line also says what it asked for, where it landed, and why (`placement start → end (the host did not build the category "Loon page", …)`). A provider with no `placement` and no `order` keeps the pre-feature line: only requested placements, real landings and fallbacks are printed |
 | Backend | which interception backend is active: `hook` or `capture` |
 | Last capture | outcome of the most recent menu build, with the number of rows injected |
 | Last failures | most recent provider failures: `id`, message, and whether rows were dropped |
@@ -265,7 +329,8 @@ One command, `/bridge-status`, reporting:
 | Duplicate settings | every `category` + `setting` pair contributed by more than one provider in the rows of the last menu build; `no build yet` before the first build |
 | Sections | every registered section with its id, title, the `row` label the menu reads (and the collision note when two wanted the same label), persisted visibility (plus `collapsed` while the card is folded), where its position comes from (`order 3` or `registration order`) and its PLACEMENT: what it asked for, where it really landed, and the reason whenever those differ (`placement after "todo" → after jobs (the native rail part "todo" is not painted; it landed after jobs)`). Omitted when no section is registered. Ids stay here on purpose: this report is for the plugin author, not the user picking a toggle |
 | Rail parts | the parts the host paints, in paint order (`todo, jobs, agents, footer`), or `none`: the context a placement is resolved against, so a fallback is explainable. Emitted with the sections table |
-| Placement rejections | every `placement` the bridge refused, with the section id, the value VERBATIM and the shape that was expected. The section still registered and its card was placed at the end; omitted when nothing was rejected |
+| Placement rejections | every section `placement` the bridge refused, with the section id, the value VERBATIM and the shape that was expected. The section still registered and its card was placed at the end; omitted when nothing was rejected |
+| Row placement rejections | every row provider `placement` the bridge refused, with the provider id, the value VERBATIM and the shape that was expected. The provider still registered and its rows were placed at the end; omitted when nothing was rejected |
 | Section frame | which drawing the section header and rows use: `host` when the host's own `renderPanelHeader`/`renderPanelRow` were found on an object the bridge is handed, `fallback` otherwise — with what was looked for, whether Pi has handed the widget factory a theme, and (for `fallback`) a `section frame gap` line naming what cannot be reached. Emitted with the sections table |
 | Section interaction | how the pointer reaches the rows: the host's own `handleMouse` dispatch, and how the hover claim is carried (`hover owner claimed on the host's sidebar state`, `unavailable` with the reason, or `not used yet`). Emitted with the sections table |
 | Section failures | the most recent sidebar frame's failing sections with `id`, `phase` (`lines`/`meta`/`onClick`) and message |

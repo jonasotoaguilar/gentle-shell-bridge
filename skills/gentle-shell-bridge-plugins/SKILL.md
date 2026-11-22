@@ -9,28 +9,27 @@ metadata:
 
 ## Activation Contract
 
-Read `src/index.ts`, `docs/contract.md` and `examples/bash-card.ts` before editing; never work from memory.
+Read `src/index.ts`, `docs/contract.md`, `examples/bash-card.ts` first; never work from memory.
 
-Not for: a plugin that only touches Pi-native surfaces (its own tools, commands, shortcuts, renderers) or
-a plain host theme — neither registers through the bridge.
+Not for: Pi-native-only work (tools, commands, shortcuts, renderers) or a plain host theme.
 
-- Reach it from the package root: `onBridgeApi(handler, pi.events)` in `session_start` — at once when already published, otherwise on `gentle-shell-bridge:ready` (`src/api.ts`).
+- Reach it with `onBridgeApi(handler, pi.events)` in `session_start` — at once when already published, otherwise on `gentle-shell-bridge:ready` (`src/api.ts`).
 - `bridgeApi()` answers only what is true NOW: `undefined` means not installed, or not published yet.
-- Never patch the host, re-implement the interception, or duck-type its menu, rail or card objects.
+- Never patch the host, re-implement interception, or duck-type its objects.
 
 ## Hard Rules
 
 - **Keep every disposer**, call it on `session_shutdown`: each `register*` returns one; a stable namespaced `id` replaces in place.
 - **Registrations are evaluated when the host builds the surface**: read live state in `current()`, persist in `action()`.
-- **Failures are reported, never thrown at the menu.** An invalid registration throws at the call site and lands in the plugin's INTEGRATIONS line; a throw while building loses only its own surface.
+- **Failures are reported, never thrown at the menu.** Invalid registration throws at the call site and lands in the plugin's INTEGRATIONS line; a build throw loses only its surface.
 - **`Keymaps` is RESERVED for row providers** — refused and reported: that page captures keys and claims a footer a plain row could never honour.
 - **A card style repaints the host's frame** from measured pieces: `top({width, title, hint})`, `line({text, width, first})`, `bottom({width})`. Never parse a card back.
 - **A transform** takes the rows plus `ctx.width`, returns rows. Honour the width; report COUNTS ONLY (`ctx.report?.({candidates, recognised, rewritten})`), never card text.
-- **A tool design** transforms rows the HOST's card produced, by tool name. The bridge owns Pi's single `registerToolRenderer`: never call it, never draw a second grammar, keep every byte you do not change, never label a design `default` or `native` (reserved). `ctx.render` is optional; an array registers several. A grouped `{ line, tools, id, label, apply }` paints several tools from ONE `Card <line>` switch; two UNSCOPED claims of one tool are refused whole, and no scope covers EVERY call. Fields, lines, preview: `docs/contract.md` §14.
-- **A scope claims CALLS, per tool.** A claim is `(line, tool)`: `scopes: { write: scope }` narrows that tool only, so one line may paint some tools whole and others conditionally; `scope` is the shorthand for the SAME scope everywhere. Scoped claims answer in line-creation order, the unscoped one last; a line storing `default` (`native`) declines. GROUPED shape only, `scope` refused with `scopes`, one scope per tool per line (`===`, the same (`line`, `id`) entry excepted), `description` required (it is the preview), a throw is no match. Without `args` only unscoped claims answer. When every candidate declines the LAST answer stands (`missing`, `not-covered`, stored `native`); no candidate answers `native`, and with NO live claim the historical value answers.
+- **A tool design** transforms rows the HOST card produced, by tool name. Never call Pi's `registerToolRenderer`, draw a second grammar, rewrite unchanged bytes, or label a design `default`/`native` (reserved). `ctx.render` is optional; arrays register several. A grouped `{ line, tools, id, label, apply }` paints tools from ONE `Card <line>` switch; two UNSCOPED claims of one tool are refused whole, and no scope covers EVERY call. Fields, lines, preview: contract §14.
+- **A scope claims CALLS, per tool.** A claim is `(line, tool)`: `scopes: { write: scope }` narrows that tool only, so one line may paint some tools whole and others conditionally; `scope` is shorthand for the same scope everywhere. Scoped claims answer in line-creation order, unscoped last; a line storing `default` (`native`) declines. GROUPED only; `scope` with `scopes` refused; one scope per tool per line (`===`, same `(line, id)` excepted); `description` required (the preview); a throw matches nothing. Without `args`, only unscoped claims answer. If all decline, the LAST answer stands (`missing`, `not-covered`, stored `native`); no candidate answers `native`; with NO live claim the historical value answers.
 
 - **Plugin state stays the plugin's**: `createStore(pluginId)`. `createStore` reserves nothing, so never take a bridge id — `bridge-card-style` and `bridge-tool-designs` are the bridge's own files.
-- **`placement` names a PLACE.** Rows: `"start"`, `"end"` (default: after the category's host rows) or `{ after: "<provider id>" }` — bridge ids only, never host labels; one provider's rows stay one block, so a `choice.setting` pair never splits. Sections: `{ after: "<section id>" }` or `todo`, `jobs`, `agents`, `footer`. Inside one place: finite `order` first, then the rest, ties by `id`, never load order. Unknown/cross-category ids, cycles and unbuilt pages/parts fall back; `/bridge-status` says why, malformed values are refused at registration, and the hook backend reports host-relative placement as unhonourable. Never persisted.
+- **`placement` names a PLACE.** Rows: `start`, `end` (default: after the category's host rows), or `{ after: "<provider id>" }` — bridge ids only, never labels. Boundaries follow each row's ACTUAL category (`row.category ?? provider.category`), one block per category, so a rendered `choice.setting` pair never splits. Naming `placement` or `order` opts in; naming neither keeps the pre-feature tail append. Inside a slot: finite `order`, then the rest, ties by `id`, never load order. Unknown/cross-category ids, cycles, unbuilt pages → end; malformed → refused, provider registers at end; hook cannot honour `start`/`after`; `/bridge-status` reports the actual landing (a refused write stays in the tail). Sections: `start`, `end` (default: after native cards), a section id, or native part `todo`/`jobs`/`agents`/`footer` — part granularity only. A hidden/folded anchor keeps its slot; an unpainted native part falls FORWARD to the next painted part (ending at `footer`), while unknown id, cycle or malformed value falls to the END. Never persisted.
 
 ## Decision Gates
 
@@ -72,7 +71,7 @@ export default function plugin(pi: any): void {
 }
 ```
 
-A Pi extension factory returns nothing: disposal hangs off the events, not a returned closure.
+The factory returns nothing: dispose through events.
 
 3. Verify with `/bridge-status`: backend, capture outcome, provider/section/tool-design failures.
 4. Degrade: with no bridge the plugin still loads — `bridgeApi()` is `undefined`, the handler never fires.

@@ -195,16 +195,18 @@ interface RowProviderLike {
   name?: string;
   rows(): CustomizeRowLike[];
   /**
-   * Optional integer read inside one placement slot: finite `order` first, ascending, then the rest;
-   * every tie by `id`, never by load order. Registration data, like a section's `order`.
+   * Optional finite number read inside one placement slot: finite `order` first, ascending, then the
+   * rest; every tie by `id`, never by load order. Registration data, like a section's `order`.
    */
   order?: number;
   /**
-   * Where this provider's block sits in its category: `"start"`, `"end"` (the default, after the
-   * host's own rows of that category), or `{ after: "<id>" }` — another ROW PROVIDER's id, never a
-   * host row's label. Rows of one provider stay one block, so an insertion point cannot split a
-   * `choice.setting` pair. An anchor that cannot be honoured falls back to the end, and
-   * `/bridge-status` says where the block landed and why. Registration data: never persisted.
+   * Where this provider's block sits: `"start"`, `"end"` (the default, after the host's own rows of
+   * that category), or `{ after: "<id>" }` — another ROW PROVIDER's id, never a host row's label.
+   * Boundaries follow each row's ACTUAL category (`row.category ?? provider.category`), one block per
+   * category, so a rendered `choice.setting` pair cannot split. Naming neither `placement` nor `order`
+   * keeps the pre-feature tail append exactly. An anchor that cannot be honoured falls back to the
+   * end, and `/bridge-status` reports the landing that really happened (including a refused write
+   * left in the tail) and why. Registration data: never persisted.
    */
   placement?: "start" | "end" | { after: string };
 }

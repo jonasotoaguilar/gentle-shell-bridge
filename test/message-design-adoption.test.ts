@@ -348,3 +348,29 @@ test("S2: the design reads `ctx.cardStyle`, so the consumer's painter knows whic
   assert.equal(style.kind, "style", "the bridge's own Card style selection, the one a tool design reads");
   assert.equal(style.style?.id, "loon.lunar", "and the exact style the user chose");
 });
+
+test("S2: own-the-box works for ANY custom type, not just the two Pi ships today", () => {
+  // Nothing in the bridge knows this type: no host renderer, no Pi component, no list. A design still
+  // claims it and owns the box, which is the capability a consumer registers for its own messages.
+  const TYPE = "loon.custom-note";
+  const child = fakeCustomMessage(TYPE);
+  registerMessageDesign({
+    customType: TYPE,
+    id: "loon.note",
+    label: "note",
+    apply: (_lines: readonly string[], ctx) => [
+      `╭─ ${ctx.customType} @${ctx.width} ─╮`,
+      `│ ${String((ctx.render.message as { content: string }).content)} │`,
+      "╰─────────╯",
+    ],
+  });
+  setMessageDesignSelection(TYPE, "loon.note");
+
+  adoptCustomMessages(container([child]));
+
+  assert.deepEqual(child.render(30), [
+    "╭─ loon.custom-note @30 ─╮",
+    "│ hello │",
+    "╰─────────╯",
+  ]);
+});

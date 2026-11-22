@@ -362,6 +362,14 @@ export interface TranscriptTransform {
  * exactly where a float heading sits. The bridge wraps the two renderers separately and sets `part`
  * per renderer, so a design can act on the call alone instead of guessing from drawn text. A design
  * that ignores `part` behaves exactly as it did before the field existed.
+ *
+ * `cardStyle` is the style the USER has selected right now (S22): `native` when the bridge paints
+ * nothing, the live registration when a plugin's style is selected, and `missing` for an id nobody
+ * owns any more. It is what lets a design honour `float`/`neon` on a card the host never styles
+ * itself — a tool another extension registers, like `bash_background`. Resolved on ACCESS and at
+ * most once per pass, so a design that never reads it draws exactly what it drew before the field
+ * existed, and pays nothing for it; a design that reads it twice gets ONE answer, so a switch landing
+ * mid-pass can never draw half of each.
  */
 export interface ToolDesignContext {
   readonly width: number;
@@ -376,6 +384,12 @@ export interface ToolDesignContext {
    * without it.
    */
   readonly render?: ToolDesignRender;
+  /**
+   * The style the user has selected, resolved live on access. Absent on a bridge older than S22, and
+   * `missing` for a style that was disposed while it was selected (a `/reload`, a plugin unloaded):
+   * a design must degrade to its own default in both cases, exactly as the bridge itself does.
+   */
+  readonly cardStyle?: CardStyleSelection;
 }
 
 /**
@@ -557,3 +571,18 @@ export interface CardStyleRegistration {
    */
   order?: number;
 }
+
+/**
+ * What the stored card-style selection means right now (S12, S22).
+ *
+ * `native` is "the bridge paints nothing" and is the default, `style` is the live registration a
+ * design should honour, and `missing` is a first-class answer rather than an error: a style that was
+ * disposed while it was selected leaves a stored id nobody owns, and the bridge must degrade to
+ * `native` and say so instead of rendering chrome that no longer exists. Resolving never throws for
+ * any stored value, because that answer is what the transformer — and now a tool design — degrades
+ * from.
+ */
+export type CardStyleSelection =
+  | { kind: "native" }
+  | { kind: "style"; style: CardStyleRegistration }
+  | { kind: "missing"; id: string };

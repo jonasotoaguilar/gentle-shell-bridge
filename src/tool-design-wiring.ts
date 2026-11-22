@@ -71,7 +71,8 @@ import {
   resolveToolDesignSelection,
   type ToolDesignSelection,
 } from "./tool-designs.ts";
-import type { ToolDesignContext, ToolDesignRender } from "./types.ts";
+import { resolveCardStyleSelection } from "./card-styles.ts";
+import type { CardStyleSelection, ToolDesignContext, ToolDesignRender } from "./types.ts";
 
 /**
  * The renderers Pi hands a resolver, described structurally: the bridge reads `renderCall` and
@@ -297,8 +298,23 @@ function wrapComponent(
       }
       // No design selected, or the selected design is gone: the host's bytes, untouched.
       if (selection.kind !== "design") return rows;
-      const ctx: ToolDesignContext =
-        render === undefined ? { width, tool, theme, part } : { width, tool, theme, part, render };
+      // S22: the card's style is resolved ON ACCESS and at most ONCE per pass. A design that never
+      // reads `cardStyle` therefore pays nothing — no store read, no registry walk, no row changed —
+      // and a design that reads it twice gets one answer, so a switch landing mid-pass cannot draw a
+      // card that is half of each. It is read from the live registry, never snapshotted at
+      // resolution, so a style chosen after this card was built still reaches it.
+      let cardStyle: CardStyleSelection | undefined;
+      const ctx: ToolDesignContext = {
+        width,
+        tool,
+        theme,
+        part,
+        ...(render === undefined ? {} : { render }),
+        get cardStyle(): CardStyleSelection {
+          cardStyle ??= resolveCardStyleSelection();
+          return cardStyle;
+        },
+      };
       const applied = applyToolDesign(selection.design, rows, ctx);
       return applied === undefined ? rows : applied;
     },

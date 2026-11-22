@@ -585,14 +585,17 @@ test("T8/T20: the design receives the width the host asked for, its tool, the th
 
   // The two renderers are wrapped SEPARATELY and each says which half of the card it draws (S12): the
   // host draws both with the same chrome, so the rows alone cannot tell a heading from output.
-  const { render: _callRender, ...callContext } = seen[0];
-  const { render: _resultRender, ...resultContext } = seen[1];
+  // `cardStyle` (S22) joins the data fields: it is the style the user has selected, read on the
+  // pass, and `native` here because no style is registered or chosen in this test.
+  const { render: _callRender, cardStyle, ...callContext } = seen[0];
+  const { render: _resultRender, cardStyle: _resultCardStyle, ...resultContext } = seen[1];
   assert.deepEqual(callContext, { width: 72, tool: "bash", theme: THEME, part: "call" });
   assert.deepEqual(
     resultContext,
     { width: 41, tool: "bash", theme: THEME, part: "result" },
     "the theme is the host's own, and the part is the renderer's own",
   );
+  assert.deepEqual(cardStyle, { kind: "native" }, "and the selected card style says so");
 });
 
 test("S12: the design reads the host's render context by value, live, for both halves of a card", () => {

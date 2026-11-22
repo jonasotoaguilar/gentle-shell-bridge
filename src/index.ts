@@ -5,7 +5,8 @@
  * the published artifact: there is no build step and no `dist/`. This module is the package's
  * programmatic API surface for plugins: rows, sidebar sections, card styles, transcript transforms,
  * per-tool card DESIGNS (one registration point for `pi.registerToolRenderer`) with the read-only
- * reader that answers which design a tool draws right now, the optional store and
+ * reader that answers which design a tool draws right now, the active card-style selection a
+ * design — or a plugin outside one — honours (`resolveCardStyleSelection`), the optional store and
  * the runtime handshake (`bridgeApi`, `onBridgeApi`, the announcement event). Backend internals — the capture patch, the hook registry, the arm
  * lifecycle, the rail interception, the section renderer, the card-style line and transformer, the
  * transform pipeline, `status` and the bus snapshots — are reached through the extension entry, not
@@ -35,6 +36,7 @@ export type {
 } from "./api.ts";
 export { registerCardStyle, registerRows, registerSection, registerTransform } from "./bus.ts";
 export { registerToolDesign, resolveToolDesignSelection } from "./tool-designs.ts";
+export { resolveCardStyleSelection } from "./card-styles.ts";
 export type { ToolDesignSelection } from "./tool-designs.ts";
 export { createStore, STORE_SCHEMA_VERSION } from "./store.ts";
 export type { Store, StoreProblem, StoreProblemKind } from "./store.ts";
@@ -44,6 +46,7 @@ export type {
   CardFrameLineContext,
   CardFrameTopContext,
   CardStyleRegistration,
+  CardStyleSelection,
   CustomizeRow,
   InlineHelpers,
   RowChoice,

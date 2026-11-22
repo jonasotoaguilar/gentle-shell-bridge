@@ -631,14 +631,19 @@ export interface MessageDesignContext {
  * A plugin's design for ONE custom message type, or for a line of several (S1).
  *
  * A custom message has no frame of the host's own to preserve: Pi draws a default box, or the
- * registering extension's renderer does. So a design works on ROWS, exactly like a tool design, and the
- * rows it receives say which case it is in — the host renderer's rows when the type has one, and the
- * message body's own plain rows when it has none. Either way the design returns the rows to draw, and
- * anything it does not deliberately change comes back byte for byte.
+ * registering extension's renderer does. So a design works on ROWS, exactly like a tool design, and
+ * what it receives says which case it is in:
  *
- * With NO design selected for a type the bridge does nothing at all: it never even installs a renderer
- * for a type no design claims (S4), so Pi's own output is byte-identical and no pass pays for the
- * surface.
+ * - the type HAS a host renderer: those rows, at the width Pi asked for, with the host's chrome
+ *   already painted around them. The design returns the rows to draw and everything it does not
+ *   deliberately change comes back byte for byte (S3);
+ * - the type has NO host renderer (`gentle-pi.exploration-budget`, `gentle-pi.verifier-settle-reminder`,
+ *   or any custom type nobody renders): NO rows at all, because there is no frame and nothing the
+ *   bridge may invent on the host's behalf. The design owns the box (S2) and draws everything from
+ *   `ctx.render.message`, `ctx.width` and `ctx.cardStyle`.
+ *
+ * With NO design selected for a type the bridge does nothing at all: it never touches a message no
+ * design claims (S4), so Pi's own output is byte-identical and no pass pays for the surface.
  */
 export interface MessageDesignRegistration {
   /**

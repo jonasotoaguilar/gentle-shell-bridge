@@ -304,3 +304,28 @@ test("S2: a claimed type with NO host renderer is drawn by the design, not by de
 
   assert.deepEqual(component.render(40), ["╭─ reminder ─╮", "│ settle    │", "╰───────────╯"]);
 });
+
+test("S2: a design for a type with no host renderer receives NO rows — the box is entirely its own", () => {
+  const seen: Array<readonly string[]> = [];
+  registerMessageDesign(
+    design({
+      customType: REMINDER,
+      id: "loon.reminder",
+      label: "reminder",
+      apply: (lines: readonly string[]) => {
+        seen.push(lines);
+        return ["own box"];
+      },
+    }),
+  );
+  setMessageDesignSelection(REMINDER, "loon.reminder");
+
+  const component = messageDesignRenderer(REMINDER, undefined)(
+    { customType: REMINDER },
+    options,
+    {},
+  ) as { render(width: number): readonly string[] };
+  component.render(40);
+
+  assert.deepEqual(seen, [[]], "no invented rows: the bridge has no frame to hand over");
+});

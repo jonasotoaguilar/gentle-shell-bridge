@@ -114,6 +114,12 @@ interface MessageDesignState {
    * read of the bridge's store, which is what a cost test bounds instead of timing (S4).
    */
   selectionReads: number;
+  /**
+   * The rows line's installer, set by `./message-design-rows.ts` when the bridge arms. It is called
+   * when a design appears, so the line is registered THEN and never before: with no design there is
+   * no provider, no row and nothing added to `/bridge-status` (S4).
+   */
+  rowsInstaller?: () => void;
 }
 
 /** Stable process-global slot: a second loaded copy of this package must see the same registry. */
@@ -138,6 +144,15 @@ function messageDesignState(): MessageDesignState {
   const created: MessageDesignState = { entries: [], conflicts: [], failures: [], selectionReads: 0 };
   host[DESIGNS_KEY] = created;
   return created;
+}
+
+/**
+ * Let the rows line install itself the moment a design exists (S4), and withdraw that request when
+ * the bridge disarms. Passing `undefined` unsubscribes. The installer is the bridge's own, never a
+ * plugin's, so it is never attributed and its failures are the bridge's own.
+ */
+export function setMessageDesignRowsInstaller(installer: (() => void) | undefined): void {
+  messageDesignState().rowsInstaller = installer;
 }
 
 /** A value that cannot be read as text is still a value: the report must not throw on it. */
@@ -324,6 +339,10 @@ function registerStored(design: MessageDesignRegistration): () => void {
     });
     state.entries[existing] = entry;
   }
+
+  // A design now exists, so the `Cards` line that shows it must exist too. Idempotent, and it runs
+  // ONLY here: with no design the bridge registers no provider at all (S4).
+  state.rowsInstaller?.();
 
   let disposed = false;
   return () => {

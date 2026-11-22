@@ -475,3 +475,55 @@ test("the build defers every provider choice on a copy, never mutating the provi
   assert.equal(built[3]?.choice, undefined, "no choice is invented for a button");
   assert.deepEqual(Object.keys(plain).sort(), ["action", "category", "label"], "the provider's row is not mutated");
 });
+
+test("a placed provider's rows defer to Enter, and the host's Card style pair is never split", async () => {
+  const hostActions: string[] = [];
+  const host = createFakeHost({ rows: rowsWithHostLine(hostActions) });
+  armBridge(host.ui);
+  installCardStyleRows();
+  registerCardStyle(style("loon.cute", { label: "cute" }));
+  registerRows({
+    id: "loon.top",
+    category: "Cards",
+    placement: "start",
+    rows: () => [
+      {
+        category: "Cards",
+        label: "Loon mode",
+        choice: { setting: "Loon mode", value: "on", current: () => true },
+        action: () => {},
+      },
+      {
+        category: "Cards",
+        label: "Loon mode",
+        choice: { setting: "Loon mode", value: "off", current: () => false },
+        action: () => {},
+      },
+    ],
+  });
+  host.buildMenu();
+
+  const live = host.liveRows();
+  const styleRows = live.filter((row) => row.choice?.setting === HOST_CARD_STYLE_SETTING);
+  const styleIndices = live
+    .map((row, index) => (row.choice?.setting === HOST_CARD_STYLE_SETTING ? index : -1))
+    .filter((index) => index !== -1);
+  assert.equal(styleRows.length, 3, "the host's neon/float pair still holds the bridge's value");
+  assert.deepEqual(
+    styleIndices,
+    [styleIndices[0], (styleIndices[0] ?? 0) + 1, (styleIndices[0] ?? 0) + 2],
+    "the pair plus the bridge value stay one consecutive line",
+  );
+  assert.deepEqual(
+    styleRows.map((row) => row.choice?.value),
+    ["neon", "float", "cute"],
+    "and the bridge's value still lands inside its pair",
+  );
+
+  const keys = keyDriver(host.liveRows);
+  keys.focus("Loon mode");
+  await keys.arrow(1);
+  assert.equal(keys.focused().choice?.value, "off", "the cursor moved inside the placed block");
+  assert.equal(keys.actions(), 0, "moving applied nothing");
+  assert.equal(keys.focused().choice?.applyOnMove, false, "a placed row still defers to Enter");
+});

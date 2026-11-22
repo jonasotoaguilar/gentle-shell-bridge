@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { registerRows, resetBusForTests } from "../src/bus.ts";
+import { observedHostCategories, registerRows, resetBusForTests } from "../src/bus.ts";
 import {
   getCaptureDiagnostics,
   installCaptureBackend,
@@ -353,4 +353,231 @@ test("providers registering during a build do not disturb the fan-out", () => {
     kind: "injected",
     injectedRows: 1,
   });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Row placement (S4, S5, S6): the capture backend splices blocks into the host's own array
+// ---------------------------------------------------------------------------------------------
+
+/** Labels as the host would render them, including function labels. */
+const rowLabels = (rows: readonly CustomizeRow[]): string[] =>
+  rows.map((row) => (typeof row.label === "function" ? row.label() : (row.label ?? "")));
+
+/** The host's own rows: Cards (two), Banner, Layout. */
+const hostRows = (): CustomizeRow[] => [
+  { category: "Cards", label: "Card bash: builtin", action: () => {} },
+  { category: "Cards", label: "Card output: builtin", action: () => {} },
+  { category: "Banner", label: "Banner: builtin", action: () => {} },
+  { category: "Layout", label: "Layout: builtin", action: () => {} },
+];
+
+/**
+ * A host that maps its rows to labels inside the factory but never derives categories there, so the
+ * provisional early path cannot prove an array: the late path is the only one that injects.
+ */
+const lateOnlyHost = (rows: CustomizeRow[]) => {
+  const ui = {
+    custom: (factory: (ui: unknown, theme: unknown, ...rest: unknown[]) => unknown): unknown =>
+      factory(ui, undefined),
+  };
+  return {
+    rows,
+    ui,
+    build: (): unknown =>
+      ui.custom(() => {
+        rows.map((row) => row.label);
+        return { invalidate: () => {} };
+      }),
+  };
+};
+
+test("a start provider's block is spliced before its category's host rows (late path)", () => {
+  const rows = hostRows();
+  const host = lateOnlyHost(rows);
+  registerRows({
+    id: "loon.top",
+    category: "Layout",
+    placement: "start",
+    rows: () => [{ label: "Top", action: () => {} }],
+  });
+  installCaptureBackend(host.ui);
+
+  host.build();
+
+  assert.deepEqual(rowLabels(rows), [
+    "Card bash: builtin",
+    "Card output: builtin",
+    "Banner: builtin",
+    "Top",
+    "Layout: builtin",
+  ]);
+  assert.deepEqual(
+    observedHostCategories(),
+    ["Cards", "Banner", "Layout"],
+    "the categories the host really had are recorded for /bridge-status",
+  );
+});
+
+test("an explicit end provider's block lands after its category's host rows (late path)", () => {
+  const rows = hostRows();
+  const host = lateOnlyHost(rows);
+  registerRows({
+    id: "loon.after-banner",
+    category: "Banner",
+    placement: "end",
+    rows: () => [{ label: "After banner", action: () => {} }],
+  });
+  installCaptureBackend(host.ui);
+
+  host.build();
+
+  assert.deepEqual(rowLabels(rows), [
+    "Card bash: builtin",
+    "Card output: builtin",
+    "Banner: builtin",
+    "After banner",
+    "Layout: builtin",
+  ]);
+});
+
+test("an after block follows a provider that is itself at start (late path)", () => {
+  const rows = hostRows();
+  const host = lateOnlyHost(rows);
+  registerRows({
+    id: "loon.top",
+    category: "Layout",
+    placement: "start",
+    rows: () => [{ label: "Top", action: () => {} }],
+  });
+  registerRows({
+    id: "loon.next",
+    category: "Layout",
+    placement: { after: "loon.top" },
+    rows: () => [{ label: "Next", action: () => {} }],
+  });
+  installCaptureBackend(host.ui);
+
+  host.build();
+
+  assert.deepEqual(rowLabels(rows), [
+    "Card bash: builtin",
+    "Card output: builtin",
+    "Banner: builtin",
+    "Top",
+    "Next",
+    "Layout: builtin",
+  ]);
+});
+
+test("two providers in one category keep the S2 order whatever their registration order", () => {
+  const build = (ids: readonly string[]): string[] => {
+    resetBusForTests();
+    const rows = hostRows();
+    const host = lateOnlyHost(rows);
+    for (const id of ids) {
+      registerRows({
+        id,
+        category: "Layout",
+        placement: "end",
+        rows: () => [{ label: id === "loon.z" ? "Zed" : "Alpha", action: () => {} }],
+      });
+    }
+    installCaptureBackend(host.ui);
+    host.build();
+    return rowLabels(rows);
+  };
+
+  const first = build(["loon.z", "loon.a"]);
+  const second = build(["loon.a", "loon.z"]);
+
+  assert.deepEqual(first, second, "the same registrations in either order draw the same rows");
+  assert.deepEqual(first.slice(-2), ["Alpha", "Zed"], "ties are broken by id, not by load order");
+});
+
+test("a throwing provider loses only its own rows and does not disturb another placement", () => {
+  const rows = hostRows();
+  const host = lateOnlyHost(rows);
+  registerRows({
+    id: "loon.top",
+    category: "Layout",
+    placement: "start",
+    rows: () => [{ label: "Top", action: () => {} }],
+  });
+  registerRows({
+    id: "boom",
+    category: "Banner",
+    placement: "end",
+    rows: () => {
+      throw new Error("provider exploded");
+    },
+  });
+  registerRows({
+    id: "loon.last",
+    category: "Layout",
+    placement: "end",
+    rows: () => [{ label: "Last", action: () => {} }],
+  });
+  installCaptureBackend(host.ui);
+
+  host.build();
+
+  assert.deepEqual(rowLabels(rows), [
+    "Card bash: builtin",
+    "Card output: builtin",
+    "Banner: builtin",
+    "Top",
+    "Layout: builtin",
+    "Last",
+  ]);
+  assert.deepEqual(getCaptureDiagnostics().lastFailures, [
+    { providerId: "boom", message: "provider exploded", rowsDropped: true },
+  ]);
+});
+
+test("no insertion splits a consumed choice.setting pair", () => {
+  const rows: CustomizeRow[] = [
+    {
+      category: "Cards",
+      label: "Pair on",
+      action: () => {},
+      choice: { setting: "Pair", value: "on", current: () => true },
+    },
+    {
+      category: "Cards",
+      label: "Pair off",
+      action: () => {},
+      choice: { setting: "Pair", value: "off", current: () => false },
+    },
+    { category: "Banner", label: "Banner: builtin", action: () => {} },
+    { category: "Layout", label: "Layout: builtin", action: () => {} },
+  ];
+  const host = lateOnlyHost(rows);
+  registerRows({
+    id: "loon.before",
+    category: "Cards",
+    placement: "start",
+    rows: () => [{ label: "Before pair", action: () => {} }],
+  });
+  registerRows({
+    id: "loon.after",
+    category: "Cards",
+    placement: "end",
+    rows: () => [{ label: "After pair", action: () => {} }],
+  });
+  installCaptureBackend(host.ui);
+
+  host.build();
+
+  const pairIndices = rows
+    .map((row, index) => (row.choice?.setting === "Pair" ? index : -1))
+    .filter((index) => index !== -1);
+  assert.deepEqual(pairIndices, [1, 2], "the pair stays consecutive, after the start block");
+  assert.deepEqual(rowLabels(rows), [
+    "Before pair",
+    "Pair on",
+    "Pair off",
+    "After pair",
+    "Banner: builtin",
+    "Layout: builtin",
+  ]);
 });

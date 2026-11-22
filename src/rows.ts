@@ -7,11 +7,15 @@
  * row values (docs/state.md).
  */
 
-import { snapshotProviders } from "./bus.ts";
+import {
+  resolveRowPlacements,
+  snapshotProviders,
+  type RowPlacementResolution,
+} from "./bus.ts";
 import { getConfigHome } from "./config.ts";
 import { recordNotice } from "./notices.ts";
 import { clearRowNameRejections, rejectReservedCategory, rejectRowName } from "./row-names.ts";
-import type { CustomizeRow, InlineHelpers, RowContext } from "./types.ts";
+import type { CustomizeRow, InlineHelpers, RowContext, RowProvider } from "./types.ts";
 
 /** A provider that threw while its rows were built; all of that provider's rows were dropped. */
 export interface RowBuildFailure {
@@ -23,6 +27,13 @@ export interface RowBuildFailure {
 export interface RowBuildResult {
   rows: CustomizeRow[];
   failures: RowBuildFailure[];
+  /** The providers this build fanned out to, in the same snapshot order. */
+  providers: RowProvider[];
+  /**
+   * One record per provider that did not throw, in snapshot order. Each `rows` array is that
+   * provider's staged block; capture and hook place these instead of re-deriving the fan-out.
+   */
+  blocks: RowBuildRecord[];
 }
 
 /** One provider's contribution to the most recent fan-out, kept for duplicate diagnostics. */
@@ -33,6 +44,9 @@ export interface RowBuildRecord {
 }
 
 const ROWS_STATE = Symbol.for("gentle-shell-bridge.rows.state.v1");
+
+/** The host's category for a row that names none (`lib/visual-customize-view.ts:387`). */
+const HOST_DEFAULT_CATEGORY = "Settings";
 
 interface RowsState {
   /** Rows produced by the last menu build, per provider; `undefined` before any build. */
@@ -236,7 +250,150 @@ export function buildRows(ctx: RowContext): RowBuildResult {
   }
 
   rowsState().lastBuild = buildRecords;
-  return { rows, failures };
+  return { rows, failures, providers, blocks: buildRecords };
+}
+
+/** Where one build's provider blocks go, and the array that results from placing them. */
+export interface RowPlacementPlan {
+  /** Every provider row the plan inserts, in the order it holds in `planned`. */
+  rows: CustomizeRow[];
+  /** The complete array: the host rows by identity, with each provider's block at its slot. */
+  planned: CustomizeRow[];
+  /** The host's own categories in first-appearance order, for `/bridge-status`. */
+  hostCategories: string[];
+}
+
+/**
+ * Place a build's provider blocks into the host array (S4, S5).
+ *
+ * `resolveRowPlacements` is the ONLY source of the draw order: this function turns its per-category
+ * blocks into insertion points, never re-sorting them. The host array is read, never mutated here:
+ * the caller applies `planned` in one in-place write, so no index can drift between splices.
+ *
+ * - a category is a contiguous region; the rows of a category may repeat, so its first and last
+ *   index are the block's boundaries;
+ * - `start` inserts before the category's first host row; `after X` follows X's block, including
+ *   when X is itself at `start`; `end` follows the category's own rows;
+ * - a category the host did not build has no boundary, so its blocks are appended after every host
+ *   row, and the page appears after the host's pages (`new Set(...)` sees it);
+ * - when NO provider names a `placement` or an `order`, every block is appended after the host
+ *   array in its registration order — exactly where it landed before this feature (S6). Host rows
+ *   are never split: an insertion point is a block boundary, so a consecutive `choice.setting`
+ *   pair stays consecutive.
+ */
+export function planRowPlacement(
+  host: readonly CustomizeRow[],
+  providers: readonly RowProvider[],
+  blocks: readonly RowBuildRecord[],
+): RowPlacementPlan {
+  const spans = new Map<string, { first: number; last: number }>();
+  const hostCategories: string[] = [];
+  for (let index = 0; index < host.length; index++) {
+    const row = host[index];
+    const category = row.category ?? HOST_DEFAULT_CATEGORY;
+    const span = spans.get(category);
+    if (span === undefined) {
+      spans.set(category, { first: index, last: index });
+      hostCategories.push(category);
+    } else {
+      span.last = index;
+    }
+  }
+
+  const blockOf = new Map(blocks.map((block) => [block.providerId, block]));
+  const resolutions = resolveRowPlacements(providers, hostCategories);
+  const byCategory = new Map<string, RowPlacementResolution[]>();
+  for (const resolution of resolutions) {
+    const list = byCategory.get(resolution.category);
+    if (list === undefined) byCategory.set(resolution.category, [resolution]);
+    else list.push(resolution);
+  }
+
+  // Split one category's resolver output into the start side and the end side. The resolver emits
+  // every block that hangs off `start` before every block that hangs off `end`, so the first
+  // direct `end` anchor is the boundary; a follower keeps the side of its anchor.
+  const startByCategory = new Map<string, CustomizeRow[]>();
+  const endByCategory = new Map<string, CustomizeRow[]>();
+  for (const [category, list] of byCategory) {
+    let side: "start" | "end" = "start";
+    const startRows: CustomizeRow[] = [];
+    const endRows: CustomizeRow[] = [];
+    for (const resolution of list) {
+      if (resolution.anchor === "end") side = "end";
+      const block = blockOf.get(resolution.provider.id);
+      if (block === undefined || block.rows.length === 0) continue;
+      if (side === "start") startRows.push(...block.rows);
+      else endRows.push(...block.rows);
+    }
+    if (startRows.length > 0) startByCategory.set(category, startRows);
+    if (endRows.length > 0) endByCategory.set(category, endRows);
+  }
+
+  const placedMode = providers.some(
+    (provider) => provider.placement !== undefined || provider.order !== undefined,
+  );
+
+  if (!placedMode) {
+    // S6: no placement and no order means today's behaviour, verbatim. The resolver still decides
+    // the order INSIDE one category (S2); categories keep the order they were registered in.
+    const inserted: CustomizeRow[] = [];
+    const seen = new Set<string>();
+    for (const block of blocks) {
+      if (seen.has(block.category)) continue;
+      seen.add(block.category);
+      inserted.push(...(endByCategory.get(block.category) ?? []));
+    }
+    for (const category of startByCategory.keys()) {
+      if (!seen.has(category)) {
+        seen.add(category);
+        inserted.push(...(startByCategory.get(category) ?? []));
+      }
+    }
+    return { rows: inserted, planned: [...host, ...inserted], hostCategories };
+  }
+
+  const before = new Map<number, CustomizeRow[]>();
+  const after = new Map<number, CustomizeRow[]>();
+  const append: CustomizeRow[] = [];
+  for (const [category, rows] of startByCategory) {
+    const span = spans.get(category);
+    if (span === undefined) {
+      append.push(...rows);
+      continue;
+    }
+    const existing = before.get(span.first) ?? [];
+    before.set(span.first, [...existing, ...rows]);
+  }
+  for (const [category, rows] of endByCategory) {
+    const span = spans.get(category);
+    if (span === undefined) {
+      append.push(...rows);
+      continue;
+    }
+    const existing = after.get(span.last) ?? [];
+    after.set(span.last, [...existing, ...rows]);
+  }
+
+  const planned: CustomizeRow[] = [];
+  const inserted: CustomizeRow[] = [];
+  for (let index = 0; index < host.length; index++) {
+    const beforeRows = before.get(index);
+    if (beforeRows !== undefined) {
+      planned.push(...beforeRows);
+      inserted.push(...beforeRows);
+    }
+    planned.push(host[index]);
+    const afterRows = after.get(index);
+    if (afterRows !== undefined) {
+      planned.push(...afterRows);
+      inserted.push(...afterRows);
+    }
+  }
+  if (append.length > 0) {
+    planned.push(...append);
+    inserted.push(...append);
+  }
+  return { rows: inserted, planned, hostCategories };
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

@@ -34,7 +34,14 @@
 
 import type { CaptureOutcome } from "./capture.ts";
 import type { CustomizeRow } from "./types.ts";
-import { buildRows, contextFromHost, isRecord, type RowBuildFailure } from "./rows.ts";
+import { recordObservedHostCategories } from "./bus.ts";
+import {
+  buildRows,
+  contextFromHost,
+  isRecord,
+  planRowPlacement,
+  type RowBuildFailure,
+} from "./rows.ts";
 
 /** The host registry key from S4. Read only; the bridge never creates it. */
 const HOOK_REGISTRY = Symbol.for("gentle-pi.customize-row-providers");
@@ -297,10 +304,15 @@ function createFanOutProvider(state: HookState): HookFanOutProvider {
     rows(hostCtx?: unknown): CustomizeRow[] {
       // Same ordered snapshot and same builder as the capture backend, so `registerRows`
       // behaves identically on either backend.
-      const { rows, failures } = buildRows(contextFromHost(hostCtx));
-      state.lastFailures = failures;
-      state.lastCapture = { kind: "injected", injectedRows: rows.length };
-      return rows;
+      const built = buildRows(contextFromHost(hostCtx));
+      // This backend never sees the host array, so it has no host categories to honour. The resolver
+      // still orders each category by S2, and every `start`/`after` falls back to the end with the
+      // reason `/bridge-status` reports: this backend must not claim host-relative placement (S6).
+      const plan = planRowPlacement([], built.providers, built.blocks);
+      recordObservedHostCategories(plan.hostCategories);
+      state.lastFailures = built.failures;
+      state.lastCapture = { kind: "injected", injectedRows: plan.rows.length };
+      return plan.rows;
     },
   };
 }

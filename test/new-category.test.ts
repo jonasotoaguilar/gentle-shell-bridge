@@ -977,3 +977,87 @@ test("E10: a rollback that cannot touch a frozen array never masks the host's er
     reason: "factory-threw",
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// Row placement (S4, S5, S6): a new page still exists, and a placed block still rolls back
+// ---------------------------------------------------------------------------------------------
+
+test("a start placement on a page the host did not build is appended with a reason, and the page still appears", () => {
+  publishBridgeApi().registerRows({
+    id: "loon.placed-page",
+    category: "Loon page",
+    placement: "start",
+    rows: loonPage,
+  });
+
+  const host = menuHost();
+  host.build();
+
+  assert.deepEqual(
+    host.view().pages(),
+    ["Cards", "Banner", "Layout", "Loon page"],
+    "the page is still discovered before the host reads new Set(...), after the host's own pages",
+  );
+  assert.equal(host.view().rowsOf("Loon page").length, 3, "and holds the provider's rows once");
+
+  const lines = formatStatus(collectStatus());
+  assert.ok(
+    lines.some((line) =>
+      /^  - loon\.placed-page \(Loon page\), placement start → end \(the host did not build the category "Loon page"/u.test(
+        line,
+      ),
+    ),
+    lines.join("\n"),
+  );
+});
+
+test("a rollback takes back a placed block and the Card style splice together, exactly", async () => {
+  publishBridgeApi().registerRows({
+    id: "loon.top",
+    category: "Cards",
+    placement: "start",
+    rows: () => [button("Loon top")],
+  });
+  registerCardStyle(cardStyle("loon.cute"));
+
+  const midBuild: string[][] = [];
+  const host = menuHost({
+    rows: rowsWithHostLine(),
+    factoryPromise: true,
+    postBuild: () => {
+      midBuild.push(host.liveRows().map((row) => String(row.choice?.value ?? row.label ?? "")));
+    },
+  });
+  const before = [...host.liveRows()];
+
+  await host.build();
+
+  assert.ok(
+    midBuild[0]?.includes("Loon top") === true,
+    "the provisional step did place the provider's block while the guess was live",
+  );
+  assert.ok(
+    midBuild[0]?.includes("loon.cute") === true,
+    "and it did splice the registered card style into the host's line",
+  );
+  assert.ok(
+    sameRows(host.liveRows(), before),
+    "the host's own rows come back by identity, in the host's own order",
+  );
+  assert.equal(host.liveRows().length, before.length, "same length");
+  assert.deepEqual(
+    host.liveRows().filter((row) => row.label === "Loon top"),
+    [],
+    "no placed block was left behind",
+  );
+  assert.deepEqual(
+    host.liveRows().filter((row) => row.choice?.value === "loon.cute"),
+    [],
+    "and the Card style value went with the guess",
+  );
+  assert.deepEqual(getCaptureDiagnostics().lastOutcome, {
+    kind: "uncaptured",
+    injectedRows: 0,
+    reason: "async-factory",
+  });
+});

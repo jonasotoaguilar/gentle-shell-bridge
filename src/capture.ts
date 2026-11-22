@@ -98,9 +98,15 @@
  * and the same diagnostics.
  */
 
+import { recordObservedHostCategories } from "./bus.ts";
 import { extendCardStyleLine } from "./card-style-rows.ts";
 import { findCardStyleLine } from "./card-style-line.ts";
-import { buildRows, createRowContext, type RowBuildFailure } from "./rows.ts";
+import {
+  buildRows,
+  createRowContext,
+  planRowPlacement,
+  type RowBuildFailure,
+} from "./rows.ts";
 import {
   patchSharedSections,
   resetSharedSectionsPreviewForTests,
@@ -244,10 +250,12 @@ interface CaptureSession {
 /** One provisional injection: what landed, where, and how to take it back out. */
 interface EarlyInjection {
   array: CustomizeRow[];
-  /** The array's length before the providers' rows were appended. */
-  start: number;
-  /** The rows appended, by identity, so a rollback removes exactly those and nothing else. */
+  /** The array exactly as it was before the provider blocks were placed, by identity. */
+  original: readonly CustomizeRow[];
+  /** The provider rows inserted, by identity, so a rollback removes exactly those and nothing else. */
   rows: readonly CustomizeRow[];
+  /** Where the blocks go once the host's category map has finished, by identity. */
+  planned: readonly CustomizeRow[];
   /** The in-place `Card style` splice, when one happened, so a rollback can undo it exactly. */
   cardStyle?: EarlyCardStyleSplice;
   /** The in-place `Sections` preview patch, when one happened, for the same rollback. */
@@ -567,6 +575,11 @@ function resolveSession(session: CaptureSession, component: HostCustomResult): v
   // The early path put the rows in before the view read its page list (S18) and the late decision
   // agrees: report that build and do not build a second time, so the providers run once.
   if (early !== undefined && early.array === captured) {
+    // The provisional step APPENDED the blocks so the host's `new Set(...)` could see a new page.
+    // The factory has returned, so that map is finished; place the blocks at their slots now. This
+    // is also why the provisional step must not splice in the middle: the host's own map captured
+    // the length it will iterate, and shifting rows under it would make it read the wrong pages.
+    placeEarlyBlocks(early);
     state.lastFailures = early.failures;
     state.lastOutcome = { kind: "injected", injectedRows: early.rows.length };
     invalidate(component);
@@ -605,8 +618,13 @@ function resolveSession(session: CaptureSession, component: HostCustomResult): v
 
   const built = buildRows(createRowContext(session.theme));
   state.lastFailures = built.failures;
-  if (built.rows.length > 0) captured.push(...built.rows);
-  state.lastOutcome = { kind: "injected", injectedRows: built.rows.length };
+  // S4/S5: place each provider's block at the slot the ONE resolver names. The plan is computed
+  // against the array as it is now and written in one in-place splice, so no insertion index can
+  // drift. A host `choice.setting` pair is never split: every insertion point is a block boundary.
+  const plan = planRowPlacement(captured, built.providers, built.blocks);
+  recordObservedHostCategories(plan.hostCategories);
+  if (plan.rows.length > 0) captured.splice(0, captured.length, ...plan.planned);
+  state.lastOutcome = { kind: "injected", injectedRows: plan.rows.length };
 
   invalidate(component);
 }
@@ -640,13 +658,35 @@ function pickLateTarget(session: CaptureSession): LatePick {
 }
 
 /**
+ * Put the provisional blocks at the slots the resolver named, once the host's category map has
+ * finished. Only the exact `original + inserted rows` shape is reordered: if the host changed its
+ * array in the meantime, the appended rows stay where they are rather than losing a host row.
+ */
+function placeEarlyBlocks(early: EarlyInjection): void {
+  try {
+    const { array } = early;
+    const expectedLength = early.original.length + early.rows.length;
+    if (array.length !== expectedLength) return;
+    for (let index = 0; index < early.original.length; index++) {
+      if (array[index] !== early.original[index]) return;
+    }
+    for (let index = 0; index < early.rows.length; index++) {
+      if (array[early.original.length + index] !== early.rows[index]) return;
+    }
+    array.splice(0, array.length, ...early.planned);
+  } catch {
+    // frozen, sealed or exotic: the appended blocks still render, at the category's end
+  }
+}
+
+/**
  * Take a provisional injection back out, exactly.
  *
  * Three things were written and all three are undone in place, on the SAME array object the host
- * holds: the providers' rows (by identity, at the index they were appended to), the `Card style`
- * values the provisional splice inserted into the host's own line, and the injection marker. If the
- * host itself moved those elements the rollback leaves them alone rather than guessing — but the
- * marker still comes off, so nothing is left claiming this array was served.
+ * holds: the providers' rows (by identity, wherever they sit now), the `Card style` values the
+ * provisional splice inserted into the host's own line, and the injection marker. If the host itself
+ * moved those elements the rollback leaves them alone rather than guessing — but the marker still
+ * comes off, so nothing is left claiming this array was served.
  */
 function rollbackEarly(session: CaptureSession): void {
   const early = session.earlyInjection;
@@ -658,16 +698,18 @@ function rollbackEarly(session: CaptureSession): void {
   // between our push and this rollback, and a rollback that threw would replace the host's own error
   // and skip the steps after it. An array we cannot restore is left as the host made it.
   try {
-    if (early.rows.length > 0 && array.length >= early.start + early.rows.length) {
-      let intact = true;
-      for (let index = 0; index < early.rows.length; index++) {
-        if (array[early.start + index] !== early.rows[index]) {
-          intact = false;
-          break;
-        }
-      }
-      if (intact) array.splice(early.start, early.rows.length);
-    }
+    // Remove exactly the rows this injection inserted, wherever they sit now. A placed block can be
+    // before the host's rows, between two categories, or at the end, so the old `start` index is not
+    // enough. Filtering by identity restores the host's own order when the host has not moved
+    // anything; if it has, its own rows keep the relative order the host gave them.
+    const inserted = new Set(early.rows);
+    const survivors: CustomizeRow[] = [];
+    for (const row of array) if (!inserted.has(row)) survivors.push(row);
+    const alreadyExact =
+      array.length === survivors.length &&
+      survivors.length === early.original.length &&
+      survivors.every((row, index) => row === early.original[index]);
+    if (!alreadyExact) array.splice(0, array.length, ...survivors);
   } catch {
     // frozen, sealed or exotic: nothing more can be taken back from this array
   }
@@ -757,8 +799,17 @@ function injectProvisionalRows(
     // so the list it previews already names the bridge's sections. Undone with everything else.
     sectionPreview = patchSharedSections(array);
     const built = buildRows(createRowContext(session.theme));
-    if (built.rows.length > 0 && !provesAppendedRows(callback, thisArg, array, built.rows)) {
-      // The host's own `map` would meet a row it cannot derive a page for. Nothing is pushed: the
+    // S4/S5: the provisional placement uses the same plan as the late path, computed against the
+    // array BEFORE the host's own `map` reads it. A brand-new page is already in the array, so the
+    // host's `new Set(...)` sees it; an existing page gets its `start`/`after` slots at the block
+    // boundaries the resolver named.
+    const plan = planRowPlacement(array, built.providers, built.blocks);
+    recordObservedHostCategories(plan.hostCategories);
+    if (
+      plan.rows.length > 0 &&
+      !provesPlannedRows(callback, thisArg, plan.planned, plan.rows)
+    ) {
+      // The host's own `map` would meet a row it cannot derive a page for. Nothing is written: the
       // splice and the preview patch go back too, and the late path handles this array exactly as it
       // did before S18.
       undoSharedSections(sectionPreview);
@@ -766,8 +817,11 @@ function injectProvisionalRows(
       session.extendedCardStyle = false;
       return;
     }
-    const start = array.length;
-    if (built.rows.length > 0) array.push(...built.rows);
+    const original = [...array];
+    // Append, never splice in the middle: this runs while the host is inside its own `rows.map(...)`,
+    // whose length was captured before the callback. A new page is still in the array before
+    // `new Set(...)` reads it; the blocks move to their real slots once the factory returns.
+    if (plan.rows.length > 0) array.push(...plan.rows);
     Object.defineProperty(array as object, CAPTURE_INJECTED, {
       value: true,
       enumerable: false,
@@ -775,8 +829,9 @@ function injectProvisionalRows(
     });
     const injection: EarlyInjection = {
       array,
-      start,
-      rows: built.rows,
+      original,
+      rows: plan.rows,
+      planned: plan.planned,
       failures: built.failures,
     };
     if (cardStyle !== undefined) injection.cardStyle = cardStyle;
@@ -857,27 +912,24 @@ function provesCategoryMap(
 }
 
 /**
- * The same mapper, run over the rows this injection is about to append — BEFORE they are pushed, so
- * a mapper that throws on a bridge row (or that would put one in the wrong page) never meets one in
- * the host's own `map` call (JD-A-003).
- *
- * The index is the one the row will have in the host's array, and the third argument is the live
- * array itself: it is the same object the host will map, one row shorter at this point.
+ * The mapper, run over only the rows this injection inserts — at the index they will have in
+ * `planned`, so a mapper that throws on a bridge row (or would put one in the wrong page) never
+ * meets one in the host's own `map` call (JD-A-003). The host's own rows are already proved.
  */
-function provesAppendedRows(
+function provesPlannedRows(
   callback: unknown,
   thisArg: unknown,
-  array: readonly CustomizeRow[],
+  planned: readonly CustomizeRow[],
   rows: readonly CustomizeRow[],
 ): boolean {
   if (typeof callback !== "function") return false;
   const mapper = callback as CategoryMapper;
+  const inserted = new Set(rows);
   try {
-    for (let index = 0; index < rows.length; index++) {
-      const row = rows[index];
-      if (mapper.call(thisArg, row, array.length + index, array) !== expectedCategory(row)) {
-        return false;
-      }
+    for (let index = 0; index < planned.length; index++) {
+      const row = planned[index];
+      if (!inserted.has(row)) continue;
+      if (mapper.call(thisArg, row, index, planned) !== expectedCategory(row)) return false;
     }
     return true;
   } catch {

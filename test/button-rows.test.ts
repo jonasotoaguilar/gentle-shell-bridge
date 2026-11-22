@@ -407,3 +407,29 @@ test("toggles and buttons in one category keep the provider's order", () => {
     "each toggle line is still one line; the button is its own row between them",
   );
 });
+
+test("a placed block keeps its toggle pair and its button together, before the host rows", () => {
+  publishBridgeApi().registerRows({
+    id: "loon.block",
+    category: "Cards",
+    placement: "start",
+    rows: () => [
+      ...toggles("Loon alpha", "Loon alpha", ["on", "off"]),
+      { category: "Cards", label: "Loon refresh", action: () => {} },
+    ],
+  });
+
+  const host = menuHost();
+  host.buildMenu();
+
+  assert.deepEqual(
+    host.liveRows().filter((row) => row.category === "Cards").map((row) => labelText(row.label)),
+    ["Loon alpha", "Loon alpha", "Loon refresh", "Card bash: builtin", "Card output: builtin"],
+    "one block, before the host's own Card rows",
+  );
+  assert.deepEqual(
+    host.toggleLines(),
+    ["Loon alpha ● on ○ off"],
+    "and its two values are still one line",
+  );
+});

@@ -390,6 +390,14 @@ export function registerMessageDesign(
 // The lines, as the menu and `/bridge-status` read them
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * Whether a custom type is claimed by a live design right now. A registry walk with NO persistence
+ * read, which is what lets a conversation pass skip unclaimed messages for free (S4).
+ */
+export function isMessageTypeClaimed(customType: string): boolean {
+  return messageDesignState().entries.some((entry) => entry.types.includes(customType));
+}
+
 /** Every line that has designs, in creation order, with its type set and its designs in order. */
 export function messageDesignLines(): MessageDesignLine[] {
   const lines: MessageDesignLine[] = [];

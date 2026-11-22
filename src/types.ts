@@ -249,9 +249,10 @@ export interface RowProvider {
   /** Evaluated each time the menu is built, never at registration. */
   rows(ctx: RowContext): CustomizeRow[];
   /**
-   * Optional integer, read INSIDE one placement slot: providers with a finite `order` draw first,
-   * ascending; providers without one follow. Every tie (equal `order`, or both missing) is broken
-   * by `id` — never by load order, so the same registrations in any order draw the same menu (S2).
+   * Optional finite number, read INSIDE one placement slot: providers with a finite `order` draw
+   * first, ascending; providers without one follow. Every tie (equal `order`, or both missing) is
+   * broken by `id` — never by load order, so the same registrations in any order draw the same menu
+   * (S2).
    */
   order?: number;
   /**

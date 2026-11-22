@@ -9,7 +9,9 @@
 
 import {
   resolveRowPlacements,
+  rowPlacementLandingText,
   snapshotProviders,
+  type RowPlacementLandingRecord,
   type RowPlacementResolution,
 } from "./bus.ts";
 import { getConfigHome } from "./config.ts";
@@ -261,25 +263,31 @@ export interface RowPlacementPlan {
   planned: CustomizeRow[];
   /** The host's own categories in first-appearance order, for `/bridge-status`. */
   hostCategories: string[];
+  /** What the resolver says each opted-in provider asked for and where it should land. */
+  landings: RowPlacementLandingRecord[];
+  /** False when no provider named `placement` or `order`: the pre-feature tail append applies. */
+  optsIn: boolean;
 }
 
 /**
- * Place a build's provider blocks into the host array (S4, S5).
+ * Place a build's provider blocks into the host array (S4, S5, S6).
  *
  * `resolveRowPlacements` is the ONLY source of the draw order: this function turns its per-category
  * blocks into insertion points, never re-sorting them. The host array is read, never mutated here:
  * the caller applies `planned` in one in-place write, so no index can drift between splices.
  *
- * - a category is a contiguous region; the rows of a category may repeat, so its first and last
- *   index are the block's boundaries;
+ * - a block's category is the ROW's actual category (`row.category ?? provider.category`), never the
+ *   provider's declared one; a provider whose rows override it contributes one block per actual
+ *   category, so an insertion point is a boundary of the category the renderer filters;
  * - `start` inserts before the category's first host row; `after X` follows X's block, including
  *   when X is itself at `start`; `end` follows the category's own rows;
  * - a category the host did not build has no boundary, so its blocks are appended after every host
  *   row, and the page appears after the host's pages (`new Set(...)` sees it);
- * - when NO provider names a `placement` or an `order`, every block is appended after the host
- *   array in its registration order — exactly where it landed before this feature (S6). Host rows
- *   are never split: an insertion point is a block boundary, so a consecutive `choice.setting`
- *   pair stays consecutive.
+ * - the two fields ARE the opt-in: a provider that names neither keeps the pre-feature tail append
+ *   exactly, in subscription order, while only opted-in providers are placed (S6). With no opted-in
+ *   provider the plan is byte-for-byte the old `[...host, ...built rows]`;
+ * - host rows are never split: an insertion point is a block boundary, so a consecutive
+ *   `choice.setting` pair stays consecutive.
  */
 export function planRowPlacement(
   host: readonly CustomizeRow[],
@@ -300,8 +308,65 @@ export function planRowPlacement(
     }
   }
 
-  const blockOf = new Map(blocks.map((block) => [block.providerId, block]));
-  const resolutions = resolveRowPlacements(providers, hostCategories);
+  const providerById = new Map(providers.map((provider) => [provider.id, provider]));
+  const categoriesByProvider = new Map<string, string[]>();
+  const rowsByProviderCategory = new Map<string, Map<string, CustomizeRow[]>>();
+  for (const block of blocks) {
+    const categories = categoriesByProvider.get(block.providerId) ?? [];
+    const perCategory = rowsByProviderCategory.get(block.providerId) ?? new Map();
+    rowsByProviderCategory.set(block.providerId, perCategory);
+    for (const row of block.rows) {
+      const category = row.category ?? block.category;
+      if (!categories.includes(category)) categories.push(category);
+      const list = perCategory.get(category) ?? [];
+      list.push(row);
+      perCategory.set(category, list);
+    }
+    categoriesByProvider.set(block.providerId, categories);
+  }
+  for (const provider of providers) {
+    if (!categoriesByProvider.has(provider.id)) {
+      categoriesByProvider.set(provider.id, [provider.category]);
+    }
+  }
+
+  const optedIn = new Set(
+    providers
+      .filter((provider) => provider.placement !== undefined || provider.order !== undefined)
+      .map((provider) => provider.id),
+  );
+  const unoptedRows: CustomizeRow[] = [];
+  for (const block of blocks) {
+    if (!optedIn.has(block.providerId)) unoptedRows.push(...block.rows);
+  }
+
+  if (optedIn.size === 0) {
+    // S6: no placement and no order anywhere is the pre-feature path, verbatim.
+    return {
+      rows: unoptedRows,
+      planned: [...host, ...unoptedRows],
+      hostCategories,
+      landings: [],
+      optsIn: false,
+    };
+  }
+
+  const resolutions = resolveRowPlacements(providers, hostCategories, categoriesByProvider);
+  const rowsOf = (resolution: RowPlacementResolution): CustomizeRow[] =>
+    rowsByProviderCategory.get(resolution.provider.id)?.get(resolution.category) ?? [];
+  const landings: RowPlacementLandingRecord[] = [];
+  for (const resolution of resolutions) {
+    if (!optedIn.has(resolution.provider.id)) continue;
+    if (rowsOf(resolution).length === 0) continue;
+    landings.push({
+      providerId: resolution.provider.id,
+      category: resolution.category,
+      requested: resolution.requested,
+      landed: rowPlacementLandingText(resolution),
+      ...(resolution.reason === undefined ? {} : { reason: resolution.reason }),
+    });
+  }
+
   const byCategory = new Map<string, RowPlacementResolution[]>();
   for (const resolution of resolutions) {
     const list = byCategory.get(resolution.category);
@@ -310,8 +375,8 @@ export function planRowPlacement(
   }
 
   // Split one category's resolver output into the start side and the end side. The resolver emits
-  // every block that hangs off `start` before every block that hangs off `end`, so the first
-  // direct `end` anchor is the boundary; a follower keeps the side of its anchor.
+  // every block that hangs off `start` before every block that hangs off `end`, so the first direct
+  // `end` anchor is the boundary; a follower keeps the side of its anchor.
   const startByCategory = new Map<string, CustomizeRow[]>();
   const endByCategory = new Map<string, CustomizeRow[]>();
   for (const [category, list] of byCategory) {
@@ -320,36 +385,14 @@ export function planRowPlacement(
     const endRows: CustomizeRow[] = [];
     for (const resolution of list) {
       if (resolution.anchor === "end") side = "end";
-      const block = blockOf.get(resolution.provider.id);
-      if (block === undefined || block.rows.length === 0) continue;
-      if (side === "start") startRows.push(...block.rows);
-      else endRows.push(...block.rows);
+      if (!optedIn.has(resolution.provider.id)) continue;
+      const rows = rowsOf(resolution);
+      if (rows.length === 0) continue;
+      if (side === "start") startRows.push(...rows);
+      else endRows.push(...rows);
     }
     if (startRows.length > 0) startByCategory.set(category, startRows);
     if (endRows.length > 0) endByCategory.set(category, endRows);
-  }
-
-  const placedMode = providers.some(
-    (provider) => provider.placement !== undefined || provider.order !== undefined,
-  );
-
-  if (!placedMode) {
-    // S6: no placement and no order means today's behaviour, verbatim. The resolver still decides
-    // the order INSIDE one category (S2); categories keep the order they were registered in.
-    const inserted: CustomizeRow[] = [];
-    const seen = new Set<string>();
-    for (const block of blocks) {
-      if (seen.has(block.category)) continue;
-      seen.add(block.category);
-      inserted.push(...(endByCategory.get(block.category) ?? []));
-    }
-    for (const category of startByCategory.keys()) {
-      if (!seen.has(category)) {
-        seen.add(category);
-        inserted.push(...(startByCategory.get(category) ?? []));
-      }
-    }
-    return { rows: inserted, planned: [...host, ...inserted], hostCategories };
   }
 
   const before = new Map<number, CustomizeRow[]>();
@@ -393,7 +436,83 @@ export function planRowPlacement(
     planned.push(...append);
     inserted.push(...append);
   }
-  return { rows: inserted, planned, hostCategories };
+  if (unoptedRows.length > 0) {
+    planned.push(...unoptedRows);
+    inserted.push(...unoptedRows);
+  }
+  return { rows: inserted, planned, hostCategories, landings, optsIn: true };
+}
+
+/**
+ * The landings to report when the planned write could not be made: every block that would have
+ * moved stays at the end, with why. A block the resolver ALREADY fell back to `end` keeps its exact
+ * reason (malformed, unknown id, cycle, unbuilt page), which `/bridge-status` pins.
+ */
+export function rowPlacementLandingsAfterSkippedMove(
+  plan: RowPlacementPlan,
+  problem: string,
+): RowPlacementLandingRecord[] {
+  return plan.landings.map((landing) =>
+    landing.landed === "end"
+      ? landing
+      : {
+          ...landing,
+          landed: "end",
+          reason: `the block stayed at the end because ${problem}`,
+        },
+  );
+}
+
+/**
+ * Why writing `planned` into `array` would be refused, checked BEFORE any mutation. An array index
+ * that is not writable used to make `splice` overwrite an earlier row and then throw, leaving a
+ * half-applied menu (S6); the caller now skips the move and reports the landing instead.
+ */
+export function plannedArrayWriteProblem(
+  array: readonly CustomizeRow[],
+  planned: readonly CustomizeRow[],
+): string | undefined {
+  try {
+    const length = Object.getOwnPropertyDescriptor(array, "length");
+    if (length !== undefined && length.writable === false) {
+      return "the host array's length is read-only";
+    }
+    const extensible = Object.isExtensible(array);
+    for (let index = 0; index < planned.length; index++) {
+      const descriptor = Object.getOwnPropertyDescriptor(array, String(index));
+      if (descriptor !== undefined) {
+        if (descriptor.writable === false) {
+          return `the host array's index ${index} is read-only`;
+        }
+      } else if (!extensible) {
+        return "the host array is not extensible";
+      }
+    }
+    for (let index = planned.length; index < array.length; index++) {
+      const descriptor = Object.getOwnPropertyDescriptor(array, String(index));
+      if (descriptor !== undefined && descriptor.configurable === false) {
+        return `the host array's index ${index} cannot be removed`;
+      }
+    }
+    return undefined;
+  } catch {
+    return "the host array could not be inspected";
+  }
+}
+
+/** Apply a plan in one in-place write, or change nothing and return why it could not be done. */
+export function applyRowPlacementPlan(
+  array: CustomizeRow[],
+  planned: readonly CustomizeRow[],
+): string | undefined {
+  const problem = plannedArrayWriteProblem(array, planned);
+  if (problem !== undefined) return problem;
+  try {
+    array.splice(0, array.length, ...planned);
+    return undefined;
+  } catch {
+    return "the host array refused the planned write";
+  }
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

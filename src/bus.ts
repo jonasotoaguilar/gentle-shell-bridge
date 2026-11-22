@@ -76,6 +76,8 @@ interface BusState {
   placementRejections: SectionPlacementRejection[];
   /** Row providers that asked for a `placement` the bridge cannot honour; one per live `id`. */
   rowPlacementRejections: RowPlacementRejection[];
+  /** The ACTUAL landing each row provider got in the last menu build (S5). */
+  rowPlacementLandings: RowPlacementLandingRecord[];
   /** The host's own category names as the last capture observed them (T2 writes this). */
   observedHostCategories?: string[];
 }
@@ -111,6 +113,9 @@ function bus(): BusState {
     if (!Array.isArray(existing.placementRejections)) existing.placementRejections = [];
     // And for the row placement rejections, the same discipline for the row surface.
     if (!Array.isArray(existing.rowPlacementRejections)) existing.rowPlacementRejections = [];
+    // The last build's actual landings are diagnostics, not registrations; an older copy gains the
+    // list instead of being replaced.
+    if (!Array.isArray(existing.rowPlacementLandings)) existing.rowPlacementLandings = [];
     return existing;
   }
   const created: BusState = {
@@ -120,6 +125,7 @@ function bus(): BusState {
     transforms: [],
     placementRejections: [],
     rowPlacementRejections: [],
+    rowPlacementLandings: [],
   };
   host[BUS_KEY] = created;
   return created;
@@ -258,6 +264,7 @@ export function resetBusForTests(): void {
   const state = bus();
   state.entries.length = 0;
   state.rowPlacementRejections.length = 0;
+  state.rowPlacementLandings.length = 0;
   delete state.observedHostCategories;
 }
 
@@ -301,6 +308,19 @@ export interface RowPlacementRejection {
   value: string;
   /** One sentence naming the shape that was expected. */
   reason: string;
+}
+
+/** Where one provider block REALLY landed in the last menu build (S5), not where it asked to sit. */
+export interface RowPlacementLandingRecord {
+  providerId: string;
+  /** The row's actual category, which may differ from the provider's declared one. */
+  category: string;
+  /** The request as a person reads it: `start`, `end`, `after "loon.news"`. */
+  requested: string;
+  /** The real landing: `start`, `end`, `after "loon.news"`, or `end` after a skipped move. */
+  landed: string;
+  /** Why it is not where it asked to be; the resolver's exact reason, or why the move was skipped. */
+  reason?: string;
 }
 
 /** The rule, quoted by every rejection so the message stands on its own. */
@@ -356,6 +376,18 @@ export function getRowPlacementRejections(): RowPlacementRejection[] {
   return bus().rowPlacementRejections.map((rejection) => ({ ...rejection }));
 }
 
+/** Record the ACTUAL landings of one menu build, so the report never repeats a skipped plan (S5). */
+export function recordRowPlacementLandings(
+  landings: readonly RowPlacementLandingRecord[],
+): void {
+  bus().rowPlacementLandings = landings.map((landing) => ({ ...landing }));
+}
+
+/** The landings of the last menu build. A fresh copy. */
+export function getRowPlacementLandings(): RowPlacementLandingRecord[] {
+  return bus().rowPlacementLandings.map((landing) => ({ ...landing }));
+}
+
 /** One provider's placement as a phrase: `start`, `end`, `after "loon.news"`. */
 export function requestedRowPlacementText(provider: RowProvider): string {
   const placement = provider.placement;
@@ -401,8 +433,9 @@ interface RowDirectPlacement {
 /** What one provider asked for, before cycles are broken and categories are resolved. */
 function rowDirectPlacement(
   provider: RowProvider,
+  category: string,
   ownIds: ReadonlySet<string>,
-  categoryById: ReadonlyMap<string, string>,
+  categoriesById: ReadonlyMap<string, ReadonlySet<string>>,
   hostBuilt: boolean,
 ): RowDirectPlacement {
   const placement = provider.placement;
@@ -415,7 +448,7 @@ function rowDirectPlacement(
     if (!hostBuilt) {
       return {
         anchor: { kind: "end" },
-        reason: `the host did not build the category ${JSON.stringify(provider.category)}, so it has no first row to sit before; it landed at the end`,
+        reason: `the host did not build the category ${JSON.stringify(category)}, so it has no first row to sit before; it landed at the end`,
       };
     }
     return { anchor: { kind: "start" } };
@@ -425,15 +458,18 @@ function rowDirectPlacement(
   if (!hostBuilt) {
     return {
       anchor: { kind: "end" },
-      reason: `the host did not build the category ${JSON.stringify(provider.category)}, so after ${JSON.stringify(target)} cannot be honoured; it landed at the end`,
+      reason: `the host did not build the category ${JSON.stringify(category)}, so after ${JSON.stringify(target)} cannot be honoured; it landed at the end`,
     };
   }
   if (ownIds.has(target)) return { anchor: { kind: "provider", id: target } };
-  const otherCategory = categoryById.get(target);
-  if (otherCategory !== undefined) {
+  const targetCategories = categoriesById.get(target);
+  if (targetCategories !== undefined && targetCategories.size > 0) {
+    const otherCategory =
+      [...targetCategories].sort(compareProviderIds).find((candidate) => candidate !== category) ??
+      category;
     return {
       anchor: { kind: "end" },
-      reason: `after ${JSON.stringify(target)} is in the category ${JSON.stringify(otherCategory)}, not ${JSON.stringify(provider.category)}`,
+      reason: `after ${JSON.stringify(target)} is in the category ${JSON.stringify(otherCategory)}, not ${JSON.stringify(category)}`,
     };
   }
   return {
@@ -479,7 +515,9 @@ function compareRowProviders(a: RowProvider, b: RowProvider): number {
  *
  * - within one slot, providers with a finite `order` come first, ascending, then the rest, and ties
  *   are broken by `id` compared as UTF-16 code units (S2) — the input order does not matter;
- * - placement is resolved WITHIN the provider's category (S4): `start` is before that category's
+ * - placement is resolved WITHIN the category a block actually belongs to (S4): `categoriesByProvider`
+ *   lets the capture pass the rows' real categories (`row.category ?? provider.category`), so a
+ *   provider contributing to two categories is one block in each; `start` is before that category's
  *   first row, `end` after its own rows, and every provider id is a slot whose followers draw right
  *   after its block, so chains resolve transitively and several providers asking for the same `X`
  *   form one block (S3);
@@ -492,29 +530,36 @@ function compareRowProviders(a: RowProvider, b: RowProvider): number {
 export function resolveRowPlacements(
   providers: readonly RowProvider[],
   hostCategories: readonly string[],
+  categoriesByProvider?: ReadonlyMap<string, readonly string[]>,
 ): RowPlacementResolution[] {
   const hostBuilt = new Set(
     hostCategories.filter((category): category is string => typeof category === "string"),
   );
-  const categoryById = new Map<string, string>();
+  const categoriesById = new Map<string, Set<string>>();
   const categories = new Set<string>(hostBuilt);
   for (const provider of providers) {
-    categoryById.set(provider.id, provider.category);
-    categories.add(provider.category);
+    const declared = categoriesByProvider?.get(provider.id) ?? [provider.category];
+    const actual = new Set(declared.filter((category) => typeof category === "string"));
+    if (actual.size === 0) actual.add(provider.category);
+    categoriesById.set(provider.id, actual);
+    for (const category of actual) categories.add(category);
   }
 
   const out: RowPlacementResolution[] = [];
   // A deterministic category order: the host's pages and the plugin-created ones together, sorted
   // by code unit, so collecting the host set differently cannot reorder the result.
   for (const category of [...categories].sort(compareProviderIds)) {
-    const own = providers.filter((provider) => provider.category === category);
+    const own = providers.filter((provider) => categoriesById.get(provider.id)?.has(category));
     if (own.length === 0) continue;
     const ownIds = new Set(own.map((provider) => provider.id));
     const built = hostBuilt.has(category);
 
     const anchors = new Map<string, RowDirectPlacement>();
     for (const provider of own) {
-      anchors.set(provider.id, rowDirectPlacement(provider, ownIds, categoryById, built));
+      anchors.set(
+        provider.id,
+        rowDirectPlacement(provider, category, ownIds, categoriesById, built),
+      );
     }
     for (const id of rowCycleMembers(own, anchors)) {
       anchors.set(id, {

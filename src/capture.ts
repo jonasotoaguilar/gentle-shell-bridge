@@ -98,14 +98,17 @@
  * and the same diagnostics.
  */
 
-import { recordObservedHostCategories } from "./bus.ts";
+import { recordObservedHostCategories, recordRowPlacementLandings } from "./bus.ts";
 import { extendCardStyleLine } from "./card-style-rows.ts";
 import { findCardStyleLine } from "./card-style-line.ts";
 import {
+  applyRowPlacementPlan,
   buildRows,
   createRowContext,
   planRowPlacement,
+  rowPlacementLandingsAfterSkippedMove,
   type RowBuildFailure,
+  type RowPlacementPlan,
 } from "./rows.ts";
 import {
   patchSharedSections,
@@ -252,10 +255,10 @@ interface EarlyInjection {
   array: CustomizeRow[];
   /** The array exactly as it was before the provider blocks were placed, by identity. */
   original: readonly CustomizeRow[];
-  /** The provider rows inserted, by identity, so a rollback removes exactly those and nothing else. */
+  /** The provider rows appended, by identity, so a rollback can identify the provisional build. */
   rows: readonly CustomizeRow[];
-  /** Where the blocks go once the host's category map has finished, by identity. */
-  planned: readonly CustomizeRow[];
+  /** The plan: where the blocks go once the host's category map has finished. */
+  plan: RowPlacementPlan;
   /** The in-place `Card style` splice, when one happened, so a rollback can undo it exactly. */
   cardStyle?: EarlyCardStyleSplice;
   /** The in-place `Sections` preview patch, when one happened, for the same rollback. */
@@ -579,7 +582,13 @@ function resolveSession(session: CaptureSession, component: HostCustomResult): v
     // The factory has returned, so that map is finished; place the blocks at their slots now. This
     // is also why the provisional step must not splice in the middle: the host's own map captured
     // the length it will iterate, and shifting rows under it would make it read the wrong pages.
-    placeEarlyBlocks(early);
+    // A frozen/exotic array skips the move; the report then states the landing it really got (S5).
+    const problem = early.plan.optsIn ? placeEarlyBlocks(early) : undefined;
+    recordRowPlacementLandings(
+      problem === undefined
+        ? early.plan.landings
+        : rowPlacementLandingsAfterSkippedMove(early.plan, problem),
+    );
     state.lastFailures = early.failures;
     state.lastOutcome = { kind: "injected", injectedRows: early.rows.length };
     invalidate(component);
@@ -623,8 +632,26 @@ function resolveSession(session: CaptureSession, component: HostCustomResult): v
   // drift. A host `choice.setting` pair is never split: every insertion point is a block boundary.
   const plan = planRowPlacement(captured, built.providers, built.blocks);
   recordObservedHostCategories(plan.hostCategories);
-  if (plan.rows.length > 0) captured.splice(0, captured.length, ...plan.planned);
-  state.lastOutcome = { kind: "injected", injectedRows: plan.rows.length };
+  if (!plan.optsIn) {
+    // No provider opted in: the pre-feature tail append, exactly (S6).
+    if (built.rows.length > 0) captured.push(...built.rows);
+    recordRowPlacementLandings([]);
+  } else {
+    const problem = applyRowPlacementPlan(captured, plan.planned);
+    if (problem === undefined) {
+      recordRowPlacementLandings(plan.landings);
+    } else {
+      // The planned splice is refused (a read-only index, a frozen array): change nothing, leave
+      // the rows where the pre-feature path put them, and report the landing that really happened.
+      try {
+        if (built.rows.length > 0) captured.push(...built.rows);
+      } catch {
+        // the host refuses even the tail append; the landing report still says why nothing moved
+      }
+      recordRowPlacementLandings(rowPlacementLandingsAfterSkippedMove(plan, problem));
+    }
+  }
+  state.lastOutcome = { kind: "injected", injectedRows: built.rows.length };
 
   invalidate(component);
 }
@@ -662,21 +689,19 @@ function pickLateTarget(session: CaptureSession): LatePick {
  * finished. Only the exact `original + inserted rows` shape is reordered: if the host changed its
  * array in the meantime, the appended rows stay where they are rather than losing a host row.
  */
-function placeEarlyBlocks(early: EarlyInjection): void {
-  try {
-    const { array } = early;
-    const expectedLength = early.original.length + early.rows.length;
-    if (array.length !== expectedLength) return;
-    for (let index = 0; index < early.original.length; index++) {
-      if (array[index] !== early.original[index]) return;
-    }
-    for (let index = 0; index < early.rows.length; index++) {
-      if (array[early.original.length + index] !== early.rows[index]) return;
-    }
-    array.splice(0, array.length, ...early.planned);
-  } catch {
-    // frozen, sealed or exotic: the appended blocks still render, at the category's end
+function placeEarlyBlocks(early: EarlyInjection): string | undefined {
+  const { array } = early;
+  const expectedLength = early.original.length + early.rows.length;
+  if (array.length !== expectedLength) return "the host array changed before the planned move";
+  for (let index = 0; index < early.original.length; index++) {
+    if (array[index] !== early.original[index]) return "the host array changed before the planned move";
   }
+  for (let index = 0; index < early.rows.length; index++) {
+    if (array[early.original.length + index] !== early.rows[index]) {
+      return "the host array changed before the planned move";
+    }
+  }
+  return applyRowPlacementPlan(array, early.plan.planned);
 }
 
 /**
@@ -698,18 +723,13 @@ function rollbackEarly(session: CaptureSession): void {
   // between our push and this rollback, and a rollback that threw would replace the host's own error
   // and skip the steps after it. An array we cannot restore is left as the host made it.
   try {
-    // Remove exactly the rows this injection inserted, wherever they sit now. A placed block can be
-    // before the host's rows, between two categories, or at the end, so the old `start` index is not
-    // enough. Filtering by identity restores the host's own order when the host has not moved
-    // anything; if it has, its own rows keep the relative order the host gave them.
-    const inserted = new Set(early.rows);
-    const survivors: CustomizeRow[] = [];
-    for (const row of array) if (!inserted.has(row)) survivors.push(row);
+    // Restore the recorded contents EXACTLY. Never filter by identity: a provider may hand back a
+    // host row object, and deleting every element with that identity would delete the host's own
+    // row as well (S6). The snapshot is the array as it was before this build's append.
     const alreadyExact =
-      array.length === survivors.length &&
-      survivors.length === early.original.length &&
-      survivors.every((row, index) => row === early.original[index]);
-    if (!alreadyExact) array.splice(0, array.length, ...survivors);
+      array.length === early.original.length &&
+      early.original.every((row, index) => array[index] === row);
+    if (!alreadyExact) array.splice(0, array.length, ...early.original);
   } catch {
     // frozen, sealed or exotic: nothing more can be taken back from this array
   }
@@ -818,10 +838,12 @@ function injectProvisionalRows(
       return;
     }
     const original = [...array];
-    // Append, never splice in the middle: this runs while the host is inside its own `rows.map(...)`,
-    // whose length was captured before the callback. A new page is still in the array before
-    // `new Set(...)` reads it; the blocks move to their real slots once the factory returns.
-    if (plan.rows.length > 0) array.push(...plan.rows);
+    // Append the PRE-FEATURE tail order, never splice in the middle: this runs while the host is
+    // inside its own `rows.map(...)`, whose length was captured before the callback. A new page is
+    // still in the array before `new Set(...)` reads it; the blocks move to their real slots once the
+    // factory returns, and if that move is refused they are already exactly where the old path put
+    // them (S6).
+    if (built.rows.length > 0) array.push(...built.rows);
     Object.defineProperty(array as object, CAPTURE_INJECTED, {
       value: true,
       enumerable: false,
@@ -830,8 +852,8 @@ function injectProvisionalRows(
     const injection: EarlyInjection = {
       array,
       original,
-      rows: plan.rows,
-      planned: plan.planned,
+      rows: built.rows,
+      plan,
       failures: built.failures,
     };
     if (cardStyle !== undefined) injection.cardStyle = cardStyle;

@@ -10,6 +10,7 @@
  */
 
 import {
+  getRowPlacementLandings,
   getRowPlacementRejections,
   getSectionPlacementRejections,
   observedHostCategories,
@@ -21,6 +22,7 @@ import {
   snapshotProviders,
   snapshotSections,
   snapshotTransforms,
+  type RowPlacementLandingRecord,
   type RowPlacementRejection,
   type SectionPlacementRejection,
 } from "./bus.ts";
@@ -539,6 +541,17 @@ export function collectStatus(): StatusSnapshot {
       (entry) => [entry.provider.id, entry],
     ),
   );
+  // The capture backend records the ACTUAL landing of the last build (a frozen or read-only array
+  // can leave a block at the end). The hook backend never sees the host array, so it keeps resolving
+  // with its empty observed set and reports that limitation instead of borrowing a capture landing.
+  const recordedLandings = new Map<string, RowPlacementLandingRecord[]>();
+  if (backend !== "hook") {
+    for (const landing of getRowPlacementLandings()) {
+      const list = recordedLandings.get(landing.providerId);
+      if (list === undefined) recordedLandings.set(landing.providerId, [landing]);
+      else list.push(landing);
+    }
+  }
 
   // Diagnostics never run providers: duplicate detection comes from the rows the LAST menu build
   // actually received, and is unknown until such a build exists.
@@ -559,14 +572,24 @@ export function collectStatus(): StatusSnapshot {
       )
       .map((provider) => {
         const resolved = rowPlacements.get(provider.id);
+        const candidates = recordedLandings.get(provider.id) ?? [];
+        const landing =
+          candidates.find((candidate) => candidate.category === provider.category) ??
+          candidates[0];
         const placement: StatusRowPlacement | undefined =
-          resolved === undefined
-            ? undefined
-            : {
-                requested: resolved.requested,
-                landed: rowPlacementLandingText(resolved),
-                ...(resolved.reason === undefined ? {} : { reason: resolved.reason }),
-              };
+          landing !== undefined
+            ? {
+                requested: landing.requested,
+                landed: landing.landed,
+                ...(landing.reason === undefined ? {} : { reason: landing.reason }),
+              }
+            : resolved === undefined
+              ? undefined
+              : {
+                  requested: resolved.requested,
+                  landed: rowPlacementLandingText(resolved),
+                  ...(resolved.reason === undefined ? {} : { reason: resolved.reason }),
+                };
         // A default `end` that was honoured is not news: omitting it keeps every historical
         // provider entry (and every pre-feature report) byte for byte.
         const report =

@@ -1,7 +1,7 @@
 ---
 name: gentle-shell-bridge-plugins
 description: "Trigger: build or extend a Pi plugin adding a /gentle:customize row or page, sidebar section, card style, transcript transform, per-tool card design or persisted state to gentle-shell through gentle-shell-bridge."
-license: Apache-2.0
+license: GPL-3.0-or-later
 metadata:
   author: gentleman-programming
   version: "1.1"

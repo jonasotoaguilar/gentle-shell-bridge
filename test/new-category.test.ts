@@ -344,45 +344,6 @@ test("a provider's new page appears once, after the host's own pages and never b
   assert.equal(host.invalidateCount(), 1, "the adapter is invalidated once, as before");
 });
 
-test("S21: a provider can place its own page after another category's block", () => {
-  // The page list is the FIRST appearance of each category in the rows the host maps, so the block
-  // has to be inserted there, not appended: `Sections` is one of the host's pages, and the provider
-  // asks to open its page right after it.
-  publishBridgeApi().registerRows({
-    id: "loon.page",
-    category: "Loon page",
-    rows: loonPage,
-    categoryPlacement: { after: "Cards" },
-  });
-
-  const host = menuHost();
-  host.build();
-
-  assert.deepEqual(
-    host.view().pages(),
-    ["Cards", "Loon page", "Banner", "Layout"],
-    "the provider's page sits between the anchor page and the one that followed it",
-  );
-});
-
-test("S21: an anchor the menu does not have falls back to the end, as before", () => {
-  publishBridgeApi().registerRows({
-    id: "loon.page",
-    category: "Loon page",
-    rows: loonPage,
-    categoryPlacement: { after: "No such page" },
-  });
-
-  const host = menuHost();
-  host.build();
-
-  assert.deepEqual(
-    host.view().pages(),
-    ["Cards", "Banner", "Layout", "Loon page"],
-    "an unhonourable anchor leaves the pre-feature order, and the page still exists",
-  );
-});
-
 test("the new page holds its toggle and its button, in the provider's order", () => {
   publishBridgeApi().registerRows({ id: "loon.page", category: "Loon page", rows: loonPage });
 

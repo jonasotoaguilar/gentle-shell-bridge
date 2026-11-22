@@ -1741,9 +1741,19 @@ registerMessageDesign({
 - **It is answered LIVE, per pass.** Flipping `Card tags` repaints the messages already on screen and
   turns them off again; no re-registration and no session reload. `resolveMessageDesignFollow({ line, id })`
   answers `{ line, found, answered, active }` for a plugin that wants to ask.
-- **Nothing is paid when the follow answers nothing.** No design for a type means no provider, no row,
-  no report block and no store read, exactly as before; a resolve pays one read of the message
-  document, plus one of the tool document only when the design it resolves actually follows something.
+- **An active follow wins, and no stored value can veto it.** A value left in the message document by a
+  design that is gone (`missing`) does not turn off a design whose switch is on: the follow is answered
+  BEFORE that document is opened, and a following design is selected while its line answers, whatever
+  the document holds. A line that also has designs of its OWN keeps its row, and their values decide
+  their own types when no follow is active — that is the only case in which the document is read.
+- **A claimed-but-inactive alert costs nothing.** The message document is opened neither when a follow
+  is active nor when follows are the only thing claiming the type and none is on; the follow's own
+  answer is one read of the tool document, and only for the design being resolved.
+- **No design for a type costs nothing at all**: no provider, no row, no report block, no store read,
+  exactly as before.
+- **The line's provider, once installed by the first design, stays for the process** and contributes no
+  row when nothing is registered any more. Disposing the last design removes the value, not the
+  provider; `/bridge-status` filters that object out by identity, so the report is unchanged.
 - **`/bridge-status`** prints the follow on the design's value line:
   `loon.budget-card "budget card": covers gentle-pi.exploration-budget — follows tags/activity: answers native (off)`.
 - **A registration without `follows`** — every 0.11.0 one — behaves exactly as it did.

@@ -163,8 +163,8 @@ test("S1: the follow is READ, never written: the tool document is byte-identical
   assert.equal(readFileSync(toolStorePath(), "utf8"), before, "reading a switch never rewrites it");
   assert.equal(
     getMessageDesignSelectionReads(),
-    1,
-    "and the message design's own selection is read once per resolve, not once per design",
+    0,
+    "and the message document is never opened: the follow decides, so there is nothing to look up",
   );
 });
 
@@ -329,4 +329,59 @@ test("S1: `/bridge-status` names the line and the id a design follows, and what 
     /follows tags\/activity: answers native \(off\)/u,
     "the report says the switch is off, not that the design is broken",
   );
+});
+
+// ---------------------------------------------------------------------------------------------
+// 0.12.1 — a stale message-side value cannot veto an active follow (the case 0.12.0 was built for)
+// ---------------------------------------------------------------------------------------------
+
+test("S1: a stale stored id in the message document cannot veto an active follow", () => {
+  toolLine();
+  registerMessageDesign(follows());
+  // What a disposed 0.11.0 design leaves behind: its id is still stored for this custom type.
+  setMessageDesignSelection(BUDGET, "stale.previous-design");
+  setToolDesignLineSelection("line", TOOL_LINE, TOOL_DESIGN_ID);
+
+  const resolved = resolveMessageDesignSelection(BUDGET);
+  assert.equal(resolved.kind, "design", "the follow decides, whatever the message document holds");
+  assert.equal(resolved.kind === "design" ? resolved.design.id : "", "loon.budget");
+});
+
+test("S1: an active follow wins over a stale id even when the followed line has other designs", () => {
+  toolLine();
+  registerToolDesign({
+    line: TOOL_LINE,
+    tools: ["read"],
+    id: "plain",
+    label: "plain",
+    apply: (lines: readonly string[]) => [...lines],
+  });
+  registerMessageDesign(follows());
+  setMessageDesignSelection(BUDGET, "loon.removed-long-ago");
+  setToolDesignLineSelection("line", TOOL_LINE, TOOL_DESIGN_ID);
+
+  assert.equal(resolveMessageDesignSelection(BUDGET).kind, "design");
+});
+
+test("S4: a claimed alert whose follow answers nothing reads NO store at all", () => {
+  toolLine();
+  registerMessageDesign(follows()); // claimed, and the tool line answers something else
+  resetMessageDesignSelectionReads();
+
+  assert.deepEqual(resolveMessageDesignSelection(BUDGET), { kind: "native" });
+  assert.equal(
+    getMessageDesignSelectionReads(),
+    0,
+    "no message-document read: the follow is the only thing that could select it",
+  );
+});
+
+test("S4: and it still reads nothing on the second pass", () => {
+  toolLine();
+  registerMessageDesign(follows());
+  resetMessageDesignSelectionReads();
+  resolveMessageDesignSelection(BUDGET);
+  const after = getMessageDesignSelectionReads();
+  resolveMessageDesignSelection(BUDGET);
+  assert.equal(getMessageDesignSelectionReads() - after, 0);
 });

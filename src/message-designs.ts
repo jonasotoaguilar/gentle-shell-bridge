@@ -37,7 +37,7 @@ import { assertRegistrationId } from "./bus.ts";
 import { attributeRegistration } from "./plugin-lines.ts";
 import { isRecord } from "./rows.ts";
 import { createStore } from "./store.ts";
-import type { MessageDesignRegistration } from "./types.ts";
+import type { MessageDesignContext, MessageDesignRegistration } from "./types.ts";
 
 /** The reserved value that means "the host's own output": never a design id, never selectable as one. */
 export const MESSAGE_DESIGN_NATIVE = "native";
@@ -524,6 +524,40 @@ export function resolveMessageDesignSelection(customType: string): MessageDesign
   if (chosen === undefined) return { kind: "missing", id: stored };
   if (!chosen.types.includes(customType)) return { kind: "not-covered", id: stored };
   return { kind: "design", design: chosen.design };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Applying a design
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Hand one pass's rows to a design and take back the rows to draw. `undefined` means "draw what was
+ * passed in": a design that throws, or that answers something which is not an array of strings, loses
+ * its own output only — the host's rows stay on screen and the failure is reported (S5).
+ */
+export function applyMessageDesign(
+  design: MessageDesignRegistration,
+  lines: readonly string[],
+  ctx: MessageDesignContext,
+): string[] | undefined {
+  let applied: unknown;
+  try {
+    applied = design.apply([...lines], ctx);
+  } catch (error) {
+    recordMessageDesignFailure(ctx.customType, design.id, errorMessage(error));
+    return undefined;
+  }
+  if (!Array.isArray(applied) || !applied.every((line) => typeof line === "string")) {
+    recordMessageDesignFailure(
+      ctx.customType,
+      design.id,
+      "apply returned something that is not an array of strings; the host's own output is drawn " +
+        "instead. Return the rows to draw, e.g. `return lines`.",
+    );
+    return undefined;
+  }
+  // SAFETY: the element check above proves every member is a string.
+  return applied as string[];
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -65,7 +65,7 @@ behind the adapter.
 | R18 | A registration may group several tools behind ONE switch: `{ line, tools, id, label, apply }` registrations naming the same line join one line whose tool set is their union, `default` is added once by the bridge, a tool belongs to at most one line (a registration that would add a second line is refused whole and reported), the selection persists per line under `$lines` in the same document, and a tool the selected value does not cover draws `default`. | `registerToolDesign`, [docs/contract.md](docs/contract.md) §14 | Implemented; union, all-or-nothing refusal, per-line persistence, the one-time migration at registration and the uncovered-tool fallback are covered, and the one-read-per-card cost is pinned; the same resolution is published read-only as `resolveToolDesignSelection` |
 | R20 | The bridge requires `gentle-pi` and says so instead of arming nothing: `/bridge-status` prints `gentle-pi: present` or `gentle-pi: missing — <reason>` plus `bridge: disabled — …`, every per-surface block is then omitted, and one notice per process explains why. | `src/presence.ts`, [docs/contract.md](docs/contract.md) §8 | Implemented; the presence check, the disabled report and the notice are covered |
 
-Nineteen requirements are implemented and covered by the `node --test` suite — 768 tests at `0.9.0`,
+Nineteen requirements are implemented and covered by the `node --test` suite — 775 tests at `0.10.0`,
 including an end-to-end file that drives the public API and the real extension entry. What is proven
 and what is not:
 

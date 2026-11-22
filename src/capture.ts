@@ -735,6 +735,21 @@ function removalReport(
   return detail === undefined ? counts : `${detail}; ${counts}`;
 }
 
+/** Why one index cannot receive a write, decided from its own descriptor (S14). */
+function indexWriteProblem(
+  array: readonly CustomizeRow[],
+  index: number,
+  descriptor: PropertyDescriptor | undefined,
+): string | undefined {
+  if (descriptor === undefined) {
+    return Object.isExtensible(array) ? undefined : `index ${index} cannot be written`;
+  }
+  if ("get" in descriptor || "set" in descriptor) {
+    return typeof descriptor.set === "function" ? undefined : `index ${index} is read-only`;
+  }
+  return descriptor.writable === true ? undefined : `index ${index} is read-only`;
+}
+
 /** Why the appended range cannot be deleted as one unit, checked before any write. */
 function appendedRangeProblem(
   array: readonly CustomizeRow[],
@@ -745,7 +760,8 @@ function appendedRangeProblem(
     const descriptor = Object.getOwnPropertyDescriptor(array, String(index));
     if (descriptor === undefined) return `index ${index} is missing`;
     if (descriptor.configurable === false) return `index ${index} is non-configurable`;
-    if (descriptor.writable === false) return `index ${index} is read-only`;
+    const writeProblem = indexWriteProblem(array, index, descriptor);
+    if (writeProblem !== undefined) return writeProblem;
   }
   return undefined;
 }
@@ -884,11 +900,9 @@ function removeInjectedTail(early: EarlyInjection): string | undefined {
     }
     for (let index = start; index < nextLength; index += 1) {
       const descriptor = Object.getOwnPropertyDescriptor(array, String(index));
-      if (descriptor !== undefined && descriptor.writable === false) {
-        return removalReport(appended, 0, 0, appended, `index ${index} is read-only`);
-      }
-      if (descriptor === undefined && !Object.isExtensible(array)) {
-        return removalReport(appended, 0, 0, appended, `index ${index} cannot be written`);
+      const writeProblem = indexWriteProblem(array, index, descriptor);
+      if (writeProblem !== undefined) {
+        return removalReport(appended, 0, 0, appended, writeProblem);
       }
     }
     try {

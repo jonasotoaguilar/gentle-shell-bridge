@@ -488,5 +488,74 @@ test("the documented values and types are reachable from the public entry", () =
   assert.equal(section.title, "API");
   assert.equal(section.lines(context).length, 1);
   assert.deepEqual(transform.transform(["a"], { width: 3 }), ["a", "3"]);
-  assert.equal(VERSION, "0.13.0");
+  assert.equal(VERSION, "0.14.0");
+});
+
+// ---------------------------------------------------------------------------------------------
+// Row placement (S4, S5, S6) through the real entry and the two backends
+// ---------------------------------------------------------------------------------------------
+
+test("row placement survives the real entry: start and after land inside the category", () => {
+  registerRows({
+    id: "loon.top",
+    category: "Cards",
+    placement: "start",
+    rows: () => [{ label: "Loon top", action: () => {} }],
+  });
+  registerRows({
+    id: "loon.next",
+    category: "Cards",
+    placement: { after: "loon.top" },
+    rows: () => [{ label: "Loon next", action: () => {} }],
+  });
+  const host = createFakeHost();
+
+  armAndBuild(host);
+
+  assert.deepEqual(host.rendered(), [
+    "Loon top",
+    "Loon next",
+    "Card bash: builtin",
+    "Card output: builtin",
+    "Banner: builtin",
+    "Layout: builtin",
+  ]);
+});
+
+test("the hook backend orders by S2 and reports that start/after could not be honoured", () => {
+  const registry: Array<{ id: string; rows: (ctx?: unknown) => CustomizeRow[] }> = [];
+  hookSlot()[HOOK_KEY] = registry;
+  registerRows({
+    id: "loon.start",
+    category: "Cards",
+    placement: "start",
+    rows: () => [{ label: "Loon start", action: () => {} }],
+  });
+  registerRows({
+    id: "loon.first",
+    category: "Cards",
+    order: 1,
+    rows: () => [{ label: "Loon first", action: () => {} }],
+  });
+  const entry = armThroughEntry(createFakeHost().ui);
+
+  const rows = registry[0].rows({});
+
+  assert.deepEqual(
+    rows.map((row) => row.label),
+    ["Loon first", "Loon start"],
+    "the finite order comes first; the start request falls back to the end here",
+  );
+  const status = printStatus(entry);
+  assert.match(status, /^backend: hook$/m);
+  assert.ok(
+    status
+      .split("\n")
+      .some((line) =>
+        /^  - loon\.start \(Cards\), placement start → end \(the host did not build the category "Cards"/u.test(
+          line,
+        ),
+      ),
+    status,
+  );
 });

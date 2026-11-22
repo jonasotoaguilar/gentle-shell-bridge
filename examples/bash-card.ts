@@ -194,6 +194,23 @@ interface RowProviderLike {
   category: string;
   name?: string;
   rows(): CustomizeRowLike[];
+  /**
+   * Optional finite number read inside one placement slot: finite `order` first, ascending, then the
+   * rest; every tie by `id`, never by load order. Registration data, like a section's `order`.
+   */
+  order?: number;
+  /**
+   * Where this provider's block sits: `"start"`, `"end"` (the default, after the host's own rows of
+   * that category), or `{ after: "<id>" }` — another ROW PROVIDER's id, never a host row's label.
+   * An `after` anchor that opted in is followed in its category; an anchor that did not opt in is a
+   * tail block, so the follower lands after it in the tail. Opted-in blocks follow each row's ACTUAL
+   * category (`row.category ?? provider.category`), one block per category, while an unopted provider
+   * keeps one tail block; so a rendered `choice.setting` pair cannot split. Naming neither `placement`
+   * nor `order` keeps the pre-feature tail append exactly. An anchor that cannot be honoured falls back to the end, and
+   * `/bridge-status` reports the landing that really happened (including a refused write left in the
+   * tail) and why. Registration data: never persisted.
+   */
+  placement?: "start" | "end" | { after: string };
 }
 
 /**

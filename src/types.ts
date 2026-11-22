@@ -219,6 +219,14 @@ export interface SidebarSection {
   placement?: SectionPlacement;
 }
 
+/**
+ * Where a provider asks its block of rows to sit inside its category (S1). Absent means `"end"`,
+ * the historical behaviour: after the host's own rows of that category. It is registration data,
+ * like `order` — never persisted, never a setting, and it names a PLACEMENT in the menu, never a
+ * category or a setting the plugin writes.
+ */
+export type RowPlacement = "start" | "end" | { after: string };
+
 /** A plugin's contribution: rows for one category, built lazily per menu build. */
 export interface RowProvider {
   /** Unique and stable, e.g. `"loon.banner-source"`; the key for ordering and replacement. */
@@ -240,6 +248,24 @@ export interface RowProvider {
   name?: string;
   /** Evaluated each time the menu is built, never at registration. */
   rows(ctx: RowContext): CustomizeRow[];
+  /**
+   * Optional finite number, read INSIDE one placement slot: providers with a finite `order` draw
+   * first, ascending; providers without one follow. Every tie (equal `order`, or both missing) is
+   * broken by `id` — never by load order, so the same registrations in any order draw the same menu
+   * (S2).
+   */
+  order?: number;
+  /**
+   * Where this provider's block sits in its category (S1). Absent means `"end"`: after the host's
+   * own rows of that category, exactly as before this field existed. `"start"` sits before the
+   * category's first row; `{ after: id }` sits right after another row provider's block, where
+   * `id` is a PROVIDER id — a host row's label is not an anchor. An anchor that cannot be honoured
+   * (unknown, in another category, a cycle, or a category the host did not build) falls back
+   * deterministically, and `/bridge-status` reports where the block really went and why. A
+   * malformed value is reported the way a rejected section `placement` is, and the block is placed
+   * at the end instead of vanishing.
+   */
+  placement?: RowPlacement;
 }
 
 /**

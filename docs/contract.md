@@ -49,6 +49,8 @@ interface RowProvider {
   category: string;                            // a category gentle-shell already renders
   name?: string;                               // optional: this plugin's INTEGRATIONS row (§8)
   rows(ctx: RowContext): CustomizeRow[];       // evaluated lazily, per menu build
+  order?: number;                              // finite first inside its slot, then the rest (§2)
+  placement?: "start" | "end" | { after: string }; // omitted + no order keeps the tail (§2)
 }
 ```
 
@@ -64,6 +66,86 @@ interface RowProvider {
 - `id` is the handle used by ordering, replacement and the diagnostics report. Two
   providers may share an `id` only by replacing each other; two providers with different
   `id`s but the same `category` + `setting` conflict (see §6).
+
+### Placement and ordering
+
+`placement` and `order` are REGISTRATION data, like a section's `order`: the bridge resolves them on
+every menu build and never persists them. Placement is resolved per the category each ROW actually
+uses (`row.category ?? provider.category`), never the provider's declared category. A provider whose
+rows stay in one category contributes one block there; an opted-in provider whose rows override the
+category contributes one block per actual category, while an unopted provider keeps its rows in one
+tail block. For a block placed in a category, an insertion point is therefore a boundary of that
+category, so a rendered consecutive `choice.setting` pair — and the bridge's own `Card style` value
+splice — is never split, with or without a category override. Rows of one provider stay contiguous
+WITHIN one category.
+
+`placement` and `order` are also the opt-in. A provider that names NEITHER keeps the pre-feature tail
+append exactly, in subscription order, and nothing it did not ask to move moves. Only providers that
+name at least one of the two are placed; a provider with only `order` uses the default `"end"` slot.
+An unopted provider can still be named by `after`: its tail block is then the target (see below).
+
+```ts
+// The placement shapes. A provider that names neither field keeps the pre-feature tail append.
+placement?: "start" | "end" | { after: string };
+```
+
+- **`"end"`** follows the category's own rows. A provider that opts in with `order` alone gets this
+  default; a provider that names neither field is not placed and keeps the tail append above.
+- **`"start"`** sits before the category's first row.
+- **`{ after: id }`** sits right after that provider's block, ids only. A host row's label text
+  (`"Card style"`, `"Bridge card style"`) is NOT an anchor: the host gives its own rows no identity,
+  so a label would be fragile and ambiguous. The follower goes where the anchor's rows actually are:
+  - an anchor that opted in (`placement` or `order`) is inside its actual category, so the follower
+    lands right after its block there, and chains resolve transitively inside that category;
+  - an anchor that named neither field is a pre-feature tail block, so the follower lands right after
+    that provider's rows in the tail, before any later tail block. Same-tail followers keep the S2
+    order.
+- Resolution is **per the category each row actually uses** (`row.category ?? provider.category`) for
+  `"start"` and for an anchor that opted in. The host renders one flat row array and selects a page by
+  filtering it, so `"end"` means after that category's own rows, not after every category. An anchor
+  that did not opt in is the tail exception in the bullet above.
+- **The hook backend cannot honour host-relative placement.** It never sees the host array, so it
+  orders each category by the `order` rule below and reports that `"start"`/`after` could not be
+  honoured. It never claims a host-relative landing it cannot see.
+
+**Inside one slot, load order never decides.** Among providers that named `placement` or `order`,
+those with a finite `order` come first, ascending; the rest follow; every tie (equal `order`, or both
+missing) is broken by `id` compared as UTF-16 code units. This is a **behaviour change** from the
+previous release, which used the subscription index as the tiebreak inside a category — including the
+`"end"` slot. A provider that names neither field is not in a slot: it keeps the pre-feature tail
+append, in subscription order, even while other providers opt in.
+
+```ts
+// Layout: host rows first, then the providers' blocks.
+{ id: "loon.second", category: "Layout", order: 2 }   // order 2
+{ id: "loon.first",  category: "Layout", order: 1 }   // order 1 → draws first
+{ id: "loon.zeta",   category: "Layout", order: 2 }   // tie with "second" → "second" sorts first
+{ id: "loon.alpha",  category: "Layout" }             // no order → draws after every finite order
+// Result inside Layout: first, second, zeta, alpha — the same for any registration order.
+```
+
+**Fallbacks never throw and never drop a provider's rows.** The block falls back to the end of the
+category the host built; on a page the host did not build it is appended after the host's rows. With
+no refused write, `/bridge-status` reports the reason:
+
+| Request that cannot be honoured | Reported reason |
+| --- | --- |
+| `after` an id that is not registered | `after "loon.nope" is not a registered row provider id` |
+| `after` a provider in another category | `after "loon.banner" is in the category "Banner", not "Layout"` |
+| a cycle (`A after B after A`) | `it would sit after itself: a placement cycle falls back to the end` |
+| a provider `after` itself | the same cycle reason |
+| `"start"` on a page the host did not build | `the host did not build the category "<page>", so it has no first row to sit before; it landed at the end` |
+| `after X` on a page the host did not build | `the host did not build the category "<page>", so after "<X>" cannot be honoured; it landed at the end` |
+
+A **malformed** `placement` (not one of the three shapes, or `after` not a non-empty string) is
+rejected at registration through the same reporting path a section's `placement` uses. The provider
+still registers, its rows use the default end placement, and `/bridge-status` lists it under
+`row placement rejections`; a corrected re-registration clears the record.
+
+When the write itself is refused — a read-only index, a frozen array, or no writable slot — the
+bridge skips the whole move and leaves every block in the pre-feature tail position rather than
+half-applying it. `/bridge-status` then reports the real landing, for example `placement start → end
+(the block stayed at the end because the host array's index 1 is read-only)`.
 
 ## 3. Row fields
 
@@ -210,8 +292,13 @@ clamp is the only transformation the bridge performs, and only on text it derive
 
 ## 5. Ordering and idempotency
 
-- Providers apply in subscription order; their rows are appended in that order, so a
-  deterministic provider set gives a deterministic menu.
+- **Among providers that named `placement` or `order`, subscription order no longer decides a
+  slot.** Providers with a finite `order` come first, ascending; the rest follow; ties are broken by
+  `id` as UTF-16 code units (§2). This is the S2 **behaviour change**: the registration index used to
+  be the tiebreak, including in the `"end"` slot.
+- Subscription order still decides the order in which providers are built and the relative order of
+  providers that named neither field: they keep the pre-feature tail append, in subscription order,
+  even when other providers opt in. It never decides the order inside a placement slot.
 - Disposing one provider leaves the others' relative order intact.
 - Arming is idempotent across `session_start`, `/reload` and double loads: one interception
   layer, one injection per captured row array (non-enumerable marker on the array), one
@@ -221,7 +308,7 @@ clamp is the only transformation the bridge performs, and only on text it derive
 ## 6. Conflicts
 
 Same `category` + same `setting` from two different providers has one of two outcomes,
-determined by insertion order:
+determined by where their rows land in the array (placement included):
 
 - **Consecutive** in the captured array → the renderer coalesces them into a single line
   whose bullets are shared, with the two providers' `action`s behind the same setting
@@ -243,7 +330,7 @@ A provider that throws while its rows are built loses its rows and nothing else:
 - the menu still opens, with the other providers' rows;
 - the failure is recorded as the last failure for `/bridge-status`, with the provider `id` and the
   error message;
-- the remaining providers still apply, in order.
+- the remaining providers still apply, each in its resolved slot.
 
 The same applies to an exception inside a row's `visible()` (the row is hidden) and to a
 rejection from `action()`. Both sync throws and async rejections are routed by the view's
@@ -257,7 +344,7 @@ One command, `/bridge-status`, reporting:
 | Field | Meaning |
 | --- | --- |
 | Gentle-pi | `gentle-pi: present`, or `gentle-pi: missing — <reason>` followed by `bridge: disabled — gentle-pi is required; …`. The required host package is checked through `pi.getCommands()`; when it is missing, every per-surface block below is omitted (nothing was armed) and the report keeps the buffered notices (`src/presence.ts`, `src/status.ts`) |
-| Providers | every registered provider, `id` and `category`, in subscription order |
+| Providers | every registered provider, `id` and `category`, in subscription order. When the provider named a `placement` or the last build could not honour it, its line also says what it asked for, where the LAST BUILD actually landed, and why (`placement start → end (the host did not build the category "Loon page", …)`). With the capture backend, after a build the landing is observed, not planned (before the first build the resolver's answer is reported): a refused write reports the real tail landing (`placement start → end (the block stayed at the end because …)`), and a follower after an unopted anchor reports that tail landing (`after "anchor" → after "anchor"`). A provider that named no `placement` and has no fallback reason keeps the pre-feature line: only requested placements, real landings and fallbacks are printed |
 | Backend | which interception backend is active: `hook` or `capture` |
 | Last capture | outcome of the most recent menu build, with the number of rows injected |
 | Last failures | most recent provider failures: `id`, message, and whether rows were dropped |
@@ -265,7 +352,8 @@ One command, `/bridge-status`, reporting:
 | Duplicate settings | every `category` + `setting` pair contributed by more than one provider in the rows of the last menu build; `no build yet` before the first build |
 | Sections | every registered section with its id, title, the `row` label the menu reads (and the collision note when two wanted the same label), persisted visibility (plus `collapsed` while the card is folded), where its position comes from (`order 3` or `registration order`) and its PLACEMENT: what it asked for, where it really landed, and the reason whenever those differ (`placement after "todo" → after jobs (the native rail part "todo" is not painted; it landed after jobs)`). Omitted when no section is registered. Ids stay here on purpose: this report is for the plugin author, not the user picking a toggle |
 | Rail parts | the parts the host paints, in paint order (`todo, jobs, agents, footer`), or `none`: the context a placement is resolved against, so a fallback is explainable. Emitted with the sections table |
-| Placement rejections | every `placement` the bridge refused, with the section id, the value VERBATIM and the shape that was expected. The section still registered and its card was placed at the end; omitted when nothing was rejected |
+| Placement rejections | every section `placement` the bridge refused, with the section id, the value VERBATIM and the shape that was expected. The section still registered and its card was placed at the end; omitted when nothing was rejected |
+| Row placement rejections | every row provider `placement` the bridge refused, with the provider id, the value VERBATIM and the shape that was expected. The provider still registered and its rows use the default end placement; omitted when nothing was rejected |
 | Section frame | which drawing the section header and rows use: `host` when the host's own `renderPanelHeader`/`renderPanelRow` were found on an object the bridge is handed, `fallback` otherwise — with what was looked for, whether Pi has handed the widget factory a theme, and (for `fallback`) a `section frame gap` line naming what cannot be reached. Emitted with the sections table |
 | Section interaction | how the pointer reaches the rows: the host's own `handleMouse` dispatch, and how the hover claim is carried (`hover owner claimed on the host's sidebar state`, `unavailable` with the reason, or `not used yet`). Emitted with the sections table |
 | Section failures | the most recent sidebar frame's failing sections with `id`, `phase` (`lines`/`meta`/`onClick`) and message |
@@ -386,7 +474,7 @@ told once, on Pi's cross-extension bus.
 Object.freeze({
   schema: "gentle-shell-bridge/api", // identity, so a foreign payload is never mistaken for ours
   version: 1,                        // the major; a breaking change is a NEW symbol key
-  VERSION: "0.13.0",                 // the publishing release; informational only
+  VERSION: "0.14.0",                 // the publishing release; informational only
   registerRows,
   registerSection,
   registerCardStyle,                 // since 0.2.0; optional on an older published object
@@ -471,7 +559,7 @@ When this package publishes its object, it emits one event on Pi's cross-extensi
 
 ```ts
 pi.events.on("gentle-shell-bridge:ready", (payload) => {
-  // { schema: "gentle-shell-bridge/api", version: 1, VERSION: "0.13.0" }
+  // { schema: "gentle-shell-bridge/api", version: 1, VERSION: "0.14.0" }
 });
 ```
 
@@ -539,7 +627,7 @@ const dispose = api.registerSection({
   meta: () => "1 playing",      // optional right-aligned text
   lines: () => ["track  Blue in Green", "album  Kind of Blue"], // per frame, live
   defaultVisible: true,         // absent means true
-  order: 10,                    // optional integer, read INSIDE one placement slot
+  order: 10,                    // optional finite number, read INSIDE one placement slot
   placement: "start",           // optional: "start" | "end" | { after: "<id>" }; absent means "end"
 });
 ```
@@ -752,7 +840,7 @@ const dispose: () => void = registerSection({
     },
   ],
   defaultVisible: true,             // absent means true
-  order: 10,                        // optional integer
+  order: 10,                        // optional finite number
 });
 ```
 
@@ -2296,9 +2384,10 @@ Three limits belong to the contract, not to the implementation:
   mapped exactly like the host's page derivation would have its rows injected into the wrong array and
   report `injected`; the real host derives them at `:387`, and with that shape a competing array stays
   `ambiguous` and nothing is injected.
-- **Sections join the rail after the native cards, never between them.** The host's status
-  sections are unreachable (a closure), so "interleaved with `CHANGES`" is not offered; the
-  limit is documented rather than faked.
+- **Sections cannot interleave with the host's own status cards** (`CHANGES`, `STATS`,
+  `INTEGRATIONS`): those are built in an unreachable closure. Placement granularity is the rail PART
+  (`start`, `end`, or after `todo`/`jobs`/`agents`/`footer`), not an individual status card; the limit
+  is documented rather than faked.
 - **Resolver order is not ours.** Pi composes tool-renderer resolvers in extension load order and
   offers no reordering API, so a resolver ahead of this package that does not call `next()` hides the
   resolver path. Adoption after construction exists for exactly that case (S10); it depends on Pi's
@@ -2311,7 +2400,8 @@ Three limits belong to the contract, not to the implementation:
 - `current()` must read live state and `action()` must persist before returning. This is a
   correctness rule the bridge cannot enforce at runtime; a plugin that caches a stale value
   renders a lying `●`.
-- No priority or insertion-index API exists: order is subscription order only.
+- No numeric insertion index exists: `placement` names a slot (`start`, `end`, or after an id) and
+  `order` only orders providers inside that slot.
 - The runtime handshake is proven under `node --test` with a simulated process (a reset
   `globalThis`, a fake `pi.events` and a freshly loaded example per scenario), not by two live Pi
   extensions loading in either order inside one real session. What it pins: the announcement's name,
@@ -2338,6 +2428,6 @@ Three limits belong to the contract, not to the implementation:
   access, absent on an older copy, and irrelevant to a design that never reads it.
 - A transform is a per-frame pass, so a slow transform is a slow frame; the bridge isolates its
   failures and clips its width, and can bound nothing else. It sees lines, never tool metadata.
-- The API is released (`0.13.0`). The `v1` symbol is the compatibility boundary: a breaking
+- The API is released (`0.14.0`). The `v1` symbol is the compatibility boundary: a breaking
   change takes a new key instead of mutating this one (§9). The `gentle-shell-bridge:ready` event is
   additive: a plugin that never subscribes loses nothing but the late-load case.

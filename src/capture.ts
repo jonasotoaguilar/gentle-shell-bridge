@@ -98,9 +98,19 @@
  * and the same diagnostics.
  */
 
+import { recordObservedHostCategories, recordRowPlacementLandings } from "./bus.ts";
+import { recordNotice } from "./notices.ts";
 import { extendCardStyleLine } from "./card-style-rows.ts";
 import { findCardStyleLine } from "./card-style-line.ts";
-import { buildRows, createRowContext, type RowBuildFailure } from "./rows.ts";
+import {
+  applyRowPlacementPlan,
+  buildRows,
+  createRowContext,
+  planRowPlacement,
+  rowPlacementLandingsAfterSkippedMove,
+  type RowBuildFailure,
+  type RowPlacementPlan,
+} from "./rows.ts";
 import {
   patchSharedSections,
   resetSharedSectionsPreviewForTests,
@@ -244,10 +254,12 @@ interface CaptureSession {
 /** One provisional injection: what landed, where, and how to take it back out. */
 interface EarlyInjection {
   array: CustomizeRow[];
-  /** The array's length before the providers' rows were appended. */
-  start: number;
-  /** The rows appended, by identity, so a rollback removes exactly those and nothing else. */
+  /** The array exactly as it was before the provider blocks were placed, by identity. */
+  original: readonly CustomizeRow[];
+  /** The provider rows appended, by identity, so a rollback can identify the provisional build. */
   rows: readonly CustomizeRow[];
+  /** The plan: where the blocks go once the host's category map has finished. */
+  plan: RowPlacementPlan;
   /** The in-place `Card style` splice, when one happened, so a rollback can undo it exactly. */
   cardStyle?: EarlyCardStyleSplice;
   /** The in-place `Sections` preview patch, when one happened, for the same rollback. */
@@ -567,6 +579,17 @@ function resolveSession(session: CaptureSession, component: HostCustomResult): v
   // The early path put the rows in before the view read its page list (S18) and the late decision
   // agrees: report that build and do not build a second time, so the providers run once.
   if (early !== undefined && early.array === captured) {
+    // The provisional step APPENDED the blocks so the host's `new Set(...)` could see a new page.
+    // The factory has returned, so that map is finished; place the blocks at their slots now. This
+    // is also why the provisional step must not splice in the middle: the host's own map captured
+    // the length it will iterate, and shifting rows under it would make it read the wrong pages.
+    // A frozen/exotic array skips the move; the report then states the landing it really got (S5).
+    const problem = early.plan.optsIn ? placeEarlyBlocks(early) : undefined;
+    recordRowPlacementLandings(
+      problem === undefined
+        ? early.plan.landings
+        : rowPlacementLandingsAfterSkippedMove(early.plan, problem),
+    );
     state.lastFailures = early.failures;
     state.lastOutcome = { kind: "injected", injectedRows: early.rows.length };
     invalidate(component);
@@ -605,7 +628,30 @@ function resolveSession(session: CaptureSession, component: HostCustomResult): v
 
   const built = buildRows(createRowContext(session.theme));
   state.lastFailures = built.failures;
-  if (built.rows.length > 0) captured.push(...built.rows);
+  // S4/S5: place each provider's block at the slot the ONE resolver names. The plan is computed
+  // against the array as it is now and written in one in-place splice, so no insertion index can
+  // drift. A host `choice.setting` pair is never split: every insertion point is a block boundary.
+  const plan = planRowPlacement(captured, built.providers, built.blocks);
+  recordObservedHostCategories(plan.hostCategories);
+  if (!plan.optsIn) {
+    // No provider opted in: the pre-feature tail append, exactly (S6).
+    if (built.rows.length > 0) captured.push(...built.rows);
+    recordRowPlacementLandings([]);
+  } else {
+    const problem = applyRowPlacementPlan(captured, plan.planned);
+    if (problem === undefined) {
+      recordRowPlacementLandings(plan.landings);
+    } else {
+      // The planned splice is refused (a read-only index, a frozen array): change nothing, leave
+      // the rows where the pre-feature path put them, and report the landing that really happened.
+      try {
+        if (built.rows.length > 0) captured.push(...built.rows);
+      } catch {
+        // the host refuses even the tail append; the landing report still says why nothing moved
+      }
+      recordRowPlacementLandings(rowPlacementLandingsAfterSkippedMove(plan, problem));
+    }
+  }
   state.lastOutcome = { kind: "injected", injectedRows: built.rows.length };
 
   invalidate(component);
@@ -640,13 +686,262 @@ function pickLateTarget(session: CaptureSession): LatePick {
 }
 
 /**
+ * Put the provisional blocks at the slots the resolver named, once the host's category map has
+ * finished. Only the exact `original + inserted rows` shape is reordered: if the host changed its
+ * array in the meantime, the appended rows stay where they are rather than losing a host row.
+ */
+function placeEarlyBlocks(early: EarlyInjection): string | undefined {
+  const { array } = early;
+  const expectedLength = early.original.length + early.rows.length;
+  if (array.length !== expectedLength) return "the host array changed before the planned move";
+  for (let index = 0; index < early.original.length; index++) {
+    if (array[index] !== early.original[index]) return "the host array changed before the planned move";
+  }
+  for (let index = 0; index < early.rows.length; index++) {
+    if (array[early.original.length + index] !== early.rows[index]) {
+      return "the host array changed before the planned move";
+    }
+  }
+  return applyRowPlacementPlan(array, early.plan.planned);
+}
+
+/** Describe an error without reading any property off it (a hostile getter can throw). */
+function describeRollbackError(error: unknown): string {
+  try {
+    if (error === null) return "null";
+    if (error === undefined) return "undefined";
+    if (typeof error === "string") return "a string";
+    if (typeof error === "number") return "a number";
+    if (typeof error === "boolean") return "a boolean";
+    if (typeof error === "object") return "an object";
+    return `a ${typeof error}`;
+  } catch {
+    return "an unreadable value";
+  }
+}
+
+/** One truthful rollback count: appended, already removed by the host, removed by the bridge, left. */
+function removalReport(
+  appended: number,
+  hostRemoved: number,
+  bridgeRemoved: number,
+  unremovable: number,
+  detail?: string,
+): string {
+  const rows = appended === 1 ? "row" : "rows";
+  const counts =
+    `appended ${appended} ${rows}; ${hostRemoved} already removed by the host; ` +
+    `${bridgeRemoved} removed by the bridge; ${unremovable} could not be removed`;
+  return detail === undefined ? counts : `${detail}; ${counts}`;
+}
+
+/** Why one index cannot receive a write, decided from its own descriptor (S14). */
+function indexWriteProblem(
+  array: readonly CustomizeRow[],
+  index: number,
+  descriptor: PropertyDescriptor | undefined,
+): string | undefined {
+  if (descriptor === undefined) {
+    return Object.isExtensible(array) ? undefined : `index ${index} cannot be written`;
+  }
+  if ("get" in descriptor || "set" in descriptor) {
+    // A setter is code, not a write this preflight can verify: it may reject or swallow the value.
+    return `index ${index} is read-only`;
+  }
+  return descriptor.writable === true ? undefined : `index ${index} is read-only`;
+}
+
+/** Why the appended range cannot be deleted as one unit, checked before any write. */
+function appendedRangeProblem(
+  array: readonly CustomizeRow[],
+  start: number,
+  count: number,
+): string | undefined {
+  for (let index = start; index < start + count; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(array, String(index));
+    if (descriptor === undefined) return `index ${index} is missing`;
+    if (descriptor.configurable === false) return `index ${index} is non-configurable`;
+    const writeProblem = indexWriteProblem(array, index, descriptor);
+    if (writeProblem !== undefined) return writeProblem;
+  }
+  return undefined;
+}
+
+/** Match every appended occurrence by identity anywhere in one range, not by suffix position. */
+function matchAppendedRange(
+  array: readonly CustomizeRow[],
+  start: number,
+  count: number,
+  rows: readonly CustomizeRow[],
+): { found: number; reordered: boolean } | undefined {
+  const matched = rows.map(() => false);
+  let found = 0;
+  let reordered = false;
+  for (let offset = 0; offset < count; offset += 1) {
+    const row = array[start + offset];
+    const expected = offset;
+    if (expected < rows.length && !matched[expected] && row === rows[expected]) {
+      matched[expected] = true;
+      found += 1;
+      continue;
+    }
+    const index = rows.findIndex((candidate, candidateIndex) => {
+      return !matched[candidateIndex] && candidate === row;
+    });
+    if (index === -1) return undefined;
+    matched[index] = true;
+    found += 1;
+    reordered = true;
+  }
+  return { found, reordered };
+}
+
+/** Shrink the array to `start` after its appended range was preflighted, writing no element. */
+function removeTailTo(array: CustomizeRow[], start: number): string | undefined {
+  const descriptor = Object.getOwnPropertyDescriptor(array, "length");
+  if (descriptor !== undefined && descriptor.writable === false) {
+    return "the host array's length is read-only";
+  }
+  try {
+    array.length = start;
+  } catch {
+    return "the host array refused the tail trim";
+  }
+  return array.length === start ? undefined : "the host array kept a phantom length";
+}
+
+/**
+ * Remove exactly the rows this build appended, without writing a retained host index (S10).
+ *
+ * The normal case is the unchanged array `original + rows`: shrinking `length` removes the tail
+ * append and writes no element, so a retained read-only index is never touched and no hole can
+ * appear. If the host already removed some appended rows, the remaining tail rows are removed and the
+ * notice says who removed what. If the host appended its own rows after ours, only the indices at or
+ * after the append point are rewritten, after the whole appended range is preflighted. Anything that
+ * cannot be removed as a whole removes nothing, leaves the array as the build left it, and returns the
+ * reason and truthful counts for the notice.
+ */
+function removeInjectedTail(early: EarlyInjection): string | undefined {
+  const { array, original, rows } = early;
+  const appended = rows.length;
+  if (appended === 0) return undefined;
+  const start = original.length;
+  try {
+    const length = array.length;
+    const target = start + appended;
+    const tailCount = Math.max(0, length - start);
+    if (length <= target) {
+      // Everything after `start` must be an appended identity; a foreign row means the host mutated
+      // the segment beyond recognition, so remove nothing rather than guess.
+      const match = matchAppendedRange(array, start, tailCount, rows);
+      if (match === undefined) {
+        return removalReport(
+          appended,
+          0,
+          0,
+          appended,
+          "the host changed the appended rows beyond recognition",
+        );
+      }
+      const hostRemoved = appended - match.found;
+      if (tailCount > 0) {
+        const rangeProblem = appendedRangeProblem(array, start, tailCount);
+        if (rangeProblem !== undefined) {
+          return removalReport(appended, hostRemoved, 0, match.found, rangeProblem);
+        }
+        const trimProblem = removeTailTo(array, start);
+        if (trimProblem !== undefined) {
+          return removalReport(appended, hostRemoved, 0, match.found, trimProblem);
+        }
+      }
+      if (hostRemoved === 0 && !match.reordered) return undefined;
+      return removalReport(
+        appended,
+        hostRemoved,
+        match.found,
+        0,
+        match.reordered ? "the host changed the appended rows before the rollback" : undefined,
+      );
+    }
+
+    // The host appended rows after ours. Only the first `appended` positions may be ours; a host row
+    // carrying one of our identities makes the boundary ambiguous, so remove nothing.
+    const match = matchAppendedRange(array, start, appended, rows);
+    if (match === undefined) {
+      return removalReport(
+        appended,
+        0,
+        0,
+        appended,
+        "the host changed the appended rows beyond recognition",
+      );
+    }
+    for (let index = target; index < length; index += 1) {
+      if (rows.includes(array[index])) {
+        return removalReport(
+          appended,
+          0,
+          0,
+          appended,
+          "the host changed the appended rows beyond recognition",
+        );
+      }
+    }
+
+    // The removal really touches every index from `start` to the current end while it shifts the
+    // host's later rows; preflight that whole range, then the target indices the splice will assign.
+    const rangeProblem = appendedRangeProblem(array, start, length - start);
+    if (rangeProblem !== undefined) {
+      return removalReport(appended, 0, 0, appended, rangeProblem);
+    }
+    const nextLength = length - appended;
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(array, "length");
+    if (lengthDescriptor !== undefined && lengthDescriptor.writable === false) {
+      return removalReport(appended, 0, 0, appended, "the host array's length is read-only");
+    }
+    for (let index = start; index < nextLength; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(array, String(index));
+      const writeProblem = indexWriteProblem(array, index, descriptor);
+      if (writeProblem !== undefined) {
+        return removalReport(appended, 0, 0, appended, writeProblem);
+      }
+    }
+    try {
+      array.splice(start, appended);
+    } catch {
+      return removalReport(appended, 0, 0, appended, "the host array refused the tail trim");
+    }
+    if (array.length !== nextLength) {
+      return removalReport(appended, 0, 0, appended, "the host array kept a phantom length");
+    }
+    return match.reordered
+      ? removalReport(
+          appended,
+          0,
+          appended,
+          0,
+          "the host changed the appended rows before the rollback",
+        )
+      : undefined;
+  } catch (error) {
+    return removalReport(
+      appended,
+      0,
+      0,
+      appended,
+      `the host array could not be inspected or changed (${describeRollbackError(error)})`,
+    );
+  }
+}
+
+/**
  * Take a provisional injection back out, exactly.
  *
  * Three things were written and all three are undone in place, on the SAME array object the host
- * holds: the providers' rows (by identity, at the index they were appended to), the `Card style`
- * values the provisional splice inserted into the host's own line, and the injection marker. If the
- * host itself moved those elements the rollback leaves them alone rather than guessing — but the
- * marker still comes off, so nothing is left claiming this array was served.
+ * holds: the appended provider rows (removed from their tail segment, never by filtering identities),
+ * the `Card style` values the provisional splice inserted into the host's own line, and the injection
+ * marker. A retained index the build never changed is never written (S10); if the host moved the
+ * appended rows the rollback reports that instead of guessing, but the marker still comes off.
  */
 function rollbackEarly(session: CaptureSession): void {
   const early = session.earlyInjection;
@@ -657,19 +952,13 @@ function rollbackEarly(session: CaptureSession): void {
   // Every step is best effort and none may throw (E10): the host can freeze, seal or proxy its array
   // between our push and this rollback, and a rollback that threw would replace the host's own error
   // and skip the steps after it. An array we cannot restore is left as the host made it.
-  try {
-    if (early.rows.length > 0 && array.length >= early.start + early.rows.length) {
-      let intact = true;
-      for (let index = 0; index < early.rows.length; index++) {
-        if (array[early.start + index] !== early.rows[index]) {
-          intact = false;
-          break;
-        }
-      }
-      if (intact) array.splice(early.start, early.rows.length);
-    }
-  } catch {
-    // frozen, sealed or exotic: nothing more can be taken back from this array
+  const rollbackProblem = removeInjectedTail(early);
+  if (rollbackProblem !== undefined) {
+    recordNotice(
+      `gentle-shell-bridge: could not fully roll back the provisional rows: ${rollbackProblem}. ` +
+        "The host menu was left as consistent as the array allowed.",
+      "error",
+    );
   }
   // Reverse order of the writes: the preview patch was applied after the `Card style` splice, so it
   // goes back FIRST, while its recorded indices still describe the array it edited.
@@ -685,7 +974,11 @@ function rollbackEarly(session: CaptureSession): void {
   }
   // The late path may now extend the line of the array IT picks; the splice runs once per build.
   session.extendedCardStyle = false;
-  Reflect.deleteProperty(array as object, CAPTURE_INJECTED);
+  try {
+    Reflect.deleteProperty(array as object, CAPTURE_INJECTED);
+  } catch {
+    // A hostile Proxy can refuse even the marker removal; the host's own error still surfaces.
+  }
 }
 
 /**
@@ -757,8 +1050,17 @@ function injectProvisionalRows(
     // so the list it previews already names the bridge's sections. Undone with everything else.
     sectionPreview = patchSharedSections(array);
     const built = buildRows(createRowContext(session.theme));
-    if (built.rows.length > 0 && !provesAppendedRows(callback, thisArg, array, built.rows)) {
-      // The host's own `map` would meet a row it cannot derive a page for. Nothing is pushed: the
+    // S4/S5: the provisional placement uses the same plan as the late path, computed against the
+    // array BEFORE the host's own `map` reads it. A brand-new page is already in the array, so the
+    // host's `new Set(...)` sees it; an existing page gets its `start`/`after` slots at the block
+    // boundaries the resolver named.
+    const plan = planRowPlacement(array, built.providers, built.blocks);
+    recordObservedHostCategories(plan.hostCategories);
+    if (
+      plan.rows.length > 0 &&
+      !provesPlannedRows(callback, thisArg, plan.planned, plan.rows)
+    ) {
+      // The host's own `map` would meet a row it cannot derive a page for. Nothing is written: the
       // splice and the preview patch go back too, and the late path handles this array exactly as it
       // did before S18.
       undoSharedSections(sectionPreview);
@@ -766,7 +1068,12 @@ function injectProvisionalRows(
       session.extendedCardStyle = false;
       return;
     }
-    const start = array.length;
+    const original = [...array];
+    // Append the PRE-FEATURE tail order, never splice in the middle: this runs while the host is
+    // inside its own `rows.map(...)`, whose length was captured before the callback. A new page is
+    // still in the array before `new Set(...)` reads it; the blocks move to their real slots once the
+    // factory returns, and if that move is refused they are already exactly where the old path put
+    // them (S6).
     if (built.rows.length > 0) array.push(...built.rows);
     Object.defineProperty(array as object, CAPTURE_INJECTED, {
       value: true,
@@ -775,8 +1082,9 @@ function injectProvisionalRows(
     });
     const injection: EarlyInjection = {
       array,
-      start,
+      original,
       rows: built.rows,
+      plan,
       failures: built.failures,
     };
     if (cardStyle !== undefined) injection.cardStyle = cardStyle;
@@ -857,27 +1165,24 @@ function provesCategoryMap(
 }
 
 /**
- * The same mapper, run over the rows this injection is about to append — BEFORE they are pushed, so
- * a mapper that throws on a bridge row (or that would put one in the wrong page) never meets one in
- * the host's own `map` call (JD-A-003).
- *
- * The index is the one the row will have in the host's array, and the third argument is the live
- * array itself: it is the same object the host will map, one row shorter at this point.
+ * The mapper, run over only the rows this injection inserts — at the index they will have in
+ * `planned`, so a mapper that throws on a bridge row (or would put one in the wrong page) never
+ * meets one in the host's own `map` call (JD-A-003). The host's own rows are already proved.
  */
-function provesAppendedRows(
+function provesPlannedRows(
   callback: unknown,
   thisArg: unknown,
-  array: readonly CustomizeRow[],
+  planned: readonly CustomizeRow[],
   rows: readonly CustomizeRow[],
 ): boolean {
   if (typeof callback !== "function") return false;
   const mapper = callback as CategoryMapper;
+  const inserted = new Set(rows);
   try {
-    for (let index = 0; index < rows.length; index++) {
-      const row = rows[index];
-      if (mapper.call(thisArg, row, array.length + index, array) !== expectedCategory(row)) {
-        return false;
-      }
+    for (let index = 0; index < planned.length; index++) {
+      const row = planned[index];
+      if (!inserted.has(row)) continue;
+      if (mapper.call(thisArg, row, index, planned) !== expectedCategory(row)) return false;
     }
     return true;
   } catch {

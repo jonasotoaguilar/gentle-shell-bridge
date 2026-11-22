@@ -18,7 +18,7 @@ plugin C ─┘                                                              │
                                                                          │
                                                capture during the factory call
                                                                          │
-                                              fan-out: A + B + C rows, in order
+                                              fan-out: A + B + C rows, placed by the resolver
                                                                          │
                                                  gentle-shell VisualCustomizeView
 ```
@@ -151,6 +151,13 @@ late push; a row naming a new page never could, because nothing can select a pag
 hold (E8). The capture backend therefore has two moments: it pushes the providers' rows when the probe
 observes that `map`, provisionally, and the end of the factory decides.
 
+- **The provisional placement.** The probe runs the proof and appends the provider rows BEFORE it
+  forwards the call to the saved native `map` (`src/capture.ts:354-379`), so the host's own
+  `rows.map(...)` sees the appended rows and a new page enters `new Set(...)`. Because the factory is
+  still in flight, this step is append-only and provisional; once the factory returns,
+  `placeEarlyBlocks` applies the plan (an existing page gets its `start`/`after` slots). If a write is
+  refused, the appended rows stay in the pre-feature tail position; if the host changed the array,
+  they stay where the append put them. The report says why.
 - **The proof.** Nothing is written to an array that is not proven at *that* `map` call, and the proof
   runs on **every** call (the host may map its rows to labels first). The callback must derive
   `row.category ?? "Settings"` for the array's own rows, `"Settings"` for a synthetic row with no
@@ -163,20 +170,34 @@ observes that `map`, provisionally, and the end of the factory decides.
   previous behaviour applies exactly. When exactly one captured array proves itself the menu's rows it is
   the target by evidence, so a merely row-like array mapped beside it no longer makes the build
   ambiguous; two proven arrays, or two unproven ones, still do.
-- **The rollback.** A factory that throws leaves no trace. The session stack and the patched
-  `Array.prototype.map` are restored first and unconditionally, and every rollback step is best effort
-  and never throws (E10: a host that froze its rows and then threw used to make the rollback throw,
-  replace the host's error and leave `map` patched). A session only ever rolls back its own array, so a
-  nested factory's rollback cannot touch the outer menu's rows.
+- **The rollback.** A factory that throws takes the provisional append back; it does not restore a
+  whole snapshot. The session stack and the patched `Array.prototype.map` are restored first and
+  unconditionally, and every rollback step is best effort and never throws (E10: a host that froze its
+  rows and then threw used to make the rollback throw, replace the host's error and leave `map`
+  patched). The removal is all-or-nothing against the range it will REALLY touch. It matches every
+  appended occurrence by identity and position across the whole tail, so a reordered segment is still
+  removed entirely; when the host already removed some rows, it removes the remaining occurrences and
+  the notice counts host removals separately. Every source and target index that a length trim or
+  splice will inspect or write is preflighted first, including host rows appended after the build; a
+  locked or non-configurable index means nothing is written, so a host row is never duplicated and no
+  hole appears. An accessor is never a safe target, not even one carrying a setter: a setter is code,
+  and one that rejects its assignment would swallow the write after an earlier element had already been
+  changed. Only a writable data descriptor, or an index with no own descriptor yet, passes. When the appended segment was mutated beyond recognition, the bridge also removes
+  nothing: that is the documented exception, and the notice reports it rather than guessing. The
+  `Card style` values are undone by their own recorded splice, not by a snapshot. A session only ever
+  rolls back its own array, so a nested factory's rollback cannot touch the outer menu's rows.
 
-Net guarantee: after any factory invocation, no array holds bridge rows except the one the late decision
-chose. Costs, stated: for the duration of the factory an array that satisfies the proof can hold bridge
+Net guarantee: when the appended identities can be removed as a whole and every range index passes
+preflight, after a factory invocation no array holds bridge rows except the one the late decision
+chose. When the segment was mutated beyond recognition or the removal range cannot be handled exactly,
+no rows are removed and the notice reports that outcome; that is the documented exception. Costs, stated: for the duration of the factory an array that satisfies the proof can hold bridge
 rows, visible only to code running inside that factory; the host's category mapper runs once more per
 row-like `map` call and once per appended row; when a guess is rolled back the providers are built twice
 for that menu build; and the proof is pinned to the host's default `Settings`, so a host that renames it
-degrades to the late path (no new page) rather than guessing. Not reviewed by anyone: rollback when the
-host reorders or removes our rows or pushes its own after them (Proxy arrays included), and a stale
-`cardStyleRowMode()` after a rolled-back guess.
+degrades to the late path (no new page) rather than guessing. A host that reorders the appended
+segment is removed by identity and reported, not restored from a snapshot; one that mutates it beyond
+recognition gets the exception above (Proxy arrays included); a stale `cardStyleRowMode()` after a
+rolled-back guess remains not reviewed.
 
 ## 6. Why one bridge beats N wrappers
 
@@ -191,10 +212,28 @@ trigger further UI work), and fans the single capture out to every registered pr
 1. snapshot the provider list in subscription order,
 2. build each provider's rows independently, inside its own `try`,
 3. drop a provider's rows on throw, record the failure for `/bridge-status`, continue,
-4. push the surviving rows into the captured array and invalidate once.
+4. resolve the surviving blocks that named `placement` or `order` with the pure
+   `resolveRowPlacements` (per actual category, with the `order`/`id` rule), keep providers that named
+   neither in the pre-feature tail append, turn that answer into one planned rebuild with
+   `planRowPlacement`, and apply it in one preflighted in-place write; if the write is refused, leave
+   every block in the pre-feature tail position and record why. Then invalidate once.
 
 Failure isolation is per provider, so a broken plugin costs its own rows and nothing else:
-not the menu, not the other providers.
+not the menu, not the other providers, and not another provider's placement.
+
+The placement itself is resolved by `src/bus.ts`'s pure `resolveRowPlacements` and turned into
+insertion points by `src/rows.ts`'s `planRowPlacement`. An opted-in block's boundary comes from the
+category its rows actually use (`row.category ?? provider.category`): a provider with rows in several
+categories contributes one block per category, and its rows stay contiguous WITHIN one category,
+while an unopted provider keeps one tail block. An `after` follower of a provider that did not opt in
+is not a category insertion: that provider's rows are in the pre-feature tail, so the follower is
+emitted in that tail right after them. The capture path never re-sorts blocks or re-implements the
+fallbacks: for each actual category it reads the host array's first and last index, computes the
+whole plan against the array as it stands, and
+applies it in one preflighted in-place write, so no index can drift between splices. A rendered
+consecutive `choice.setting` pair — and the bridge's own `Card style` value splice — is therefore
+never split. If the write is refused, nothing is half-applied: every block stays in the pre-feature
+tail position and `/bridge-status` reports that landing.
 
 ## 7. Process-global state cannot live in a module
 
@@ -334,10 +373,10 @@ diagnostics stop reporting `hook`.
 | `src/api.ts` | the runtime handshake: the one `Symbol.for` slot, the frozen published object, the shape gate, `bridgeApi()`, `onBridgeApi` and the `gentle-shell-bridge:ready` announcement |
 | `src/extension.ts` | the Pi entry from `pi.extensions`: `session_start` arming (rows + sidebar widget), the `Sections` provider, and the `/bridge-status` command |
 | `src/arm.ts` | backend selection and the arm result |
-| `src/capture.ts` | the single `Array.prototype.map` patch and the captured array |
-| `src/hook.ts` | the host-registry probe and the one fan-out provider |
+| `src/capture.ts` | the single `Array.prototype.map` patch, the captured array, and the provisional placement/rollback |
+| `src/hook.ts` | the host-registry probe and the one fan-out provider; it has no host array, so it orders by `order`/`id` and reports that host-relative placement could not be honoured |
 | `src/bus.ts` | the `globalThis` provider list and its ordered snapshot, plus the section, card-style and transform registries |
-| `src/rows.ts` | the one row builder both backends call, with per-provider isolation and the row-name shape check |
+| `src/rows.ts` | the one row builder both backends call, with per-provider isolation and the row-name shape check; also `planRowPlacement`, which turns the resolver's blocks into one planned array |
 | `src/row-names.ts` | the enforced row-name shape (one to three plain words, no structural marks) and the rejection records `/bridge-status` lists |
 | `src/sidebar.ts` | the rail interception: the state symbol, the patched `parts` map, the rail wrapper |
 | `src/sidebar-render.ts` | the section renderer: card rows and groups per frame, clipping, failures |
@@ -1105,8 +1144,9 @@ status order the previous release produced.
   `lib/shell-sidebar.ts` + `lib/shell-sidebar-layout.ts`'s card frame. The capture technique itself
   is verified in the real TUI only by the reference probe; the sidebar section surface has never
   been seen in one.
-- **Sections cannot be interleaved.** They render after every native card, by construction (see
-  §12); a request to slot one between `CHANGES` and `STATS` is not supported.
+- **Sections cannot be interleaved with the host's own status cards.** A section can start, end, or
+  sit after a painted rail part (`todo`, `jobs`, `agents`, `footer`), but `CHANGES`, `STATS` and
+  `INTEGRATIONS` are built in a closure (see §12); slotting one between them is not supported.
 - **The sidebar widget's visual footprint is unconfirmed** (see §12): the `tui` is acquired through
   a widget factory, and whether an empty component is invisible has not been observed.
 - **The card-style repaint is proven against a fake conversation, not a live one** (see §14). The

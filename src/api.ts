@@ -68,7 +68,7 @@ import { createStore } from "./store.ts";
 import { registerToolDesign, resolveToolDesignSelection } from "./tool-designs.ts";
 
 /** The release that published the object; informational, never the compatibility check. */
-export const VERSION = "0.16.1";
+export const VERSION = "0.16.2";
 
 /** Identity of the object, so a foreign payload at the symbol is never mistaken for ours. */
 export const API_SCHEMA = "gentle-shell-bridge/api";

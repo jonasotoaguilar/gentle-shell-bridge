@@ -224,6 +224,14 @@ export interface RailRowRange {
 export interface RailContributionPosition {
   /** The part whose frame the event's `y` counts. */
   part: string;
+  /**
+   * The width the event was mapped at for this part — the width whose memo entry produced the ranges
+   * below. A contributor records its rows per part AND per width, so an event that does not match
+   * the width its rows were drawn at is declined instead of mapped onto a stale offset. Optional: a
+   * position produced by an older copy carries no width, and a contributor that checks it declines
+   * exactly as it does for its own parts it never rendered.
+   */
+  width?: number;
   /** The host's own rows in that frame. */
   native?: RailRowRange;
   /**
@@ -1016,6 +1024,7 @@ function contributorMouse(
  * (`lib/shell-sidebar-layout.ts:245-259`), so `y` counts the part's rows, our before-block included;
  * the render that preceded the event recorded how many rows each block has at that width. Without
  * such a frame there is nothing to map, and the contributor declines instead of guessing an offset.
+ * The width comes along, because the contributor's own ranges belong to the width they were drawn at.
  */
 function contributionPosition(
   key: RailPart,
@@ -1031,6 +1040,7 @@ function contributionPosition(
   const after = entry.contribution?.after?.lines.length ?? 0;
   return {
     part: key,
+    width,
     native: { start: before, end: before + entry.nativeLength },
     ...(before === 0 ? {} : { before: { start: 0, end: before } }),
     ...(after === 0

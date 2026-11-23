@@ -534,6 +534,19 @@ is no longer the shape of a contribution. A row with `onClick` is clickable and 
 pointer; a row without it is inert and declines (so the host's own dispatch continues). The header is
 always actionable: it folds the section.
 
+The ranges are recorded PER PART and PER WIDTH, and the backend hands the event's width along with
+them (`RailContributionPosition.width`). This is not bookkeeping: the layout memo re-renders ONE part
+when that part's digest moves (`lib/shell-sidebar-layout.ts:114-119`), so a live tick in `todo`,
+`jobs` or `agents` repaints that part alone. A renderer that kept one set of ranges for the whole
+rail lost every other part's rows on the first part of a new pass, and the footer's contributed rows
+went inert with no error — the defect this per-part map fixes. So a part's ranges are replaced
+wholesale when that part renders (a part re-rendered inside one pass cannot double count, a part that
+lost every section loses its ranges), and an event whose width is not the width those ranges were
+drawn at is declined rather than mapped onto a stale offset. The failure list read by `/bridge-status`
+stays PASS-scoped: it is the one thing a new pass still resets. Pinned by
+`test/rail-part-hits.test.ts` (the partial pass: click, hover, width, and the test seam's reset)
+beside `test/rail-width.test.ts` for the `given`/`widest` report.
+
 Because a part's frame now starts with our rows as well as ending with them, the event the HOST sees
 is translated: its own `y` (minus our before-block) for a host row, and `nativeLength` — one past its
 last row, where an appended row already sat before this feature — for one of ours. So a host row keeps

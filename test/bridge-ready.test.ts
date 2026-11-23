@@ -115,7 +115,7 @@ test("the bridge announces itself with the schema, the major and the publishing 
   assert.deepEqual(payload, { schema: API_SCHEMA, version: API_VERSION, VERSION });
   assert.equal(payload.schema, "gentle-shell-bridge/api");
   assert.equal(payload.version, 1);
-  assert.equal(payload.VERSION, "0.16.1");
+  assert.equal(payload.VERSION, "0.16.2");
   assert.ok(Object.isFrozen(payload), "a listener cannot rewrite the announcement in place");
 });
 

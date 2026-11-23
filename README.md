@@ -1,3 +1,5 @@
+![gentle-shell-bridge: one interception layer for gentle-shell plugins](assets/banner.png)
+
 # gentle-shell-bridge
 
 One interception layer between gentle-shell and the plugins that want a line in its menus, a card

@@ -111,34 +111,48 @@ export interface SectionRowHit {
   activate?: () => void;
 }
 
+/** Where the most recent render stood on width (N20): what it was given, and its widest row. */
 interface SectionFrame {
   width: number;
-  /** One block of contributed rows per (part, side), so a pointer event can be mapped to what it hit. */
-  blocks: SectionBlock[];
   /** The widest row any part produced at this width, measured the way the host measures (N20). */
   widest: number;
 }
 
+/** The rows this contributor drew for ONE part, at the width they were drawn at (S3). */
+interface SectionPartRanges {
+  width: number;
+  /** One block per side of the part's own rows, so a pointer event can be mapped to what it hit. */
+  blocks: SectionBlock[];
+}
+
 /** One block of contributed rows: the rows this contributor drew on one side of one part. */
 interface SectionBlock {
-  part: RailPart;
   side: "before" | "after";
   hits: SectionRowHit[];
 }
 
-const SECTION_RENDER_STATE = Symbol.for("gentle-shell-bridge.sections.render.v1");
+// Bumped to v2 with the per-part ranges: a copy at 0.16.1 shares this slot, and its single wide
+// `frame.blocks` is not the shape read below, so the two versions must not read one another's state.
+const SECTION_RENDER_STATE = Symbol.for("gentle-shell-bridge.sections.render.v2");
 
 interface SectionRenderState {
   /** What the most recent frame failed on, so `/bridge-status` reports the latest frame. */
   lastFailures: SectionRenderFailure[];
-  /** The rows of the most recent contribution, for pointer hit-testing. */
+  /** The most recent render's width and its widest row (N20). */
   frame?: SectionFrame;
+  /**
+   * The rows of the most recent contribution of EACH part, for pointer hit-testing. Replaced
+   * wholesale when that part renders, so a part re-rendered inside one pass cannot double count and a
+   * part that lost every section loses its ranges — and a part re-rendered on its own, which is what
+   * the host's memo does, leaves every other part's ranges alone (S1, S3).
+   */
+  partRanges?: Map<RailPart, SectionPartRanges>;
   /** The hovered row's key, or absent when the pointer is not on one of ours. */
   hovered?: string;
   /**
    * The paint index of the part rendered last. The layout renders the parts in paint order, so a
-   * part at or before the previous index means a NEW frame began — which is how one report of
-   * failures and one frame of row ranges survive across the four parts of the same pass.
+   * part at or before the previous index means a NEW pass began — which is how one report of
+   * failures survives across the four parts of the same pass.
    */
   lastPartIndex?: number;
 }
@@ -182,11 +196,15 @@ export function getSectionFrameWidth(): SectionFrameWidth | undefined {
   return { given: frame.width, widest: frame.widest };
 }
 
-/** Test-only seam; drops the last frame and the hover too, so one test cannot leak into another. */
+/**
+ * Test-only seam; drops the last frame, the per-part ranges and the hover too, so one test cannot
+ * leak into another.
+ */
 export function resetSectionFailuresForTests(): void {
   const state = sectionRenderState();
   state.lastFailures = [];
   delete state.frame;
+  delete state.partRanges;
   delete state.hovered;
 }
 
@@ -231,21 +249,32 @@ export function buildSectionContribution(
       ctx,
     });
     if (built === undefined) continue;
-    blocks.push({ part: rail.part, side, hits: built.hits });
+    blocks.push({ side, hits: built.hits });
     contribution[side] = built.contribution;
   }
 
-  // This part's blocks replace its previous ones: a part re-rendered inside the same frame must not
-  // be counted twice, and a part that lost every section must lose its row ranges too.
-  frame.blocks = [...frame.blocks.filter((block) => block.part !== rail.part), ...blocks];
+  // This part's ranges are REPLACED, never merged: a part re-rendered inside the same pass must not
+  // be counted twice, a part that lost every section must lose its row ranges too, and a part
+  // re-rendered on its own must leave every other part's ranges untouched (S1, S3).
+  partRanges(state).set(rail.part, { width, blocks });
   if (contribution.before === undefined && contribution.after === undefined) return undefined;
   return contribution;
 }
 
+/** The per-part row ranges, created on first use. */
+function partRanges(state: SectionRenderState): Map<RailPart, SectionPartRanges> {
+  const existing = state.partRanges;
+  if (existing !== undefined) return existing;
+  const created = new Map<RailPart, SectionPartRanges>();
+  state.partRanges = created;
+  return created;
+}
+
 /**
- * Start (or continue) the frame of one part. The layout renders the parts in paint order, so a part
- * whose index is not after the previous one belongs to a NEW frame: that is where the failure list
- * and the row ranges restart, once per pass instead of once per part.
+ * Start (or continue) one part's place in the pass. The layout renders the parts in paint order, so a
+ * part whose index is not after the previous one belongs to a NEW pass: that is where the failure
+ * list restarts, once per pass instead of once per part. The row ranges are NOT part of that reset —
+ * they are recorded per part and replaced only when that part renders.
  */
 function beginPartFrame(
   state: SectionRenderState,
@@ -254,15 +283,15 @@ function beginPartFrame(
 ): SectionFrame {
   const index = RAIL_PARTS.indexOf(part);
   const frame = state.frame;
-  const newFrame =
+  const newPass =
     frame === undefined ||
     frame.width !== width ||
     state.lastPartIndex === undefined ||
     index <= state.lastPartIndex;
-  if (newFrame) {
-    // Failures describe the frame, not history: a section that stops throwing stops being reported.
+  if (newPass) {
+    // Failures describe the pass, not history: a section that stops throwing stops being reported.
     state.lastFailures = [];
-    state.frame = { width, blocks: [], widest: 0 };
+    state.frame = { width, widest: 0 };
   }
   state.lastPartIndex = index;
   // SAFETY: every branch above leaves a frame in place.
@@ -466,21 +495,25 @@ function themeSignature(): string {
  * The position the backend hands over is the set of ROW RANGES of this part's frame, so a block may
  * sit above the host's rows as well as below them (S7): the event is matched against the block that
  * contains it, and never against "everything after the host's rows".
+ *
+ * The ranges belong to ONE part and to the width that part was rendered at (S1, S3): the host's memo
+ * re-renders a single part when its digest moves, and an event mapped at another width has no ranges
+ * to be mapped onto, so both mismatches decline instead of guessing an offset.
  */
 export function handleSectionMouse(
   event: unknown,
   position?: RailContributionPosition,
 ): RailMouseResult | undefined {
+  if (position === undefined) return undefined;
   const state = sectionRenderState();
-  const frame = state.frame;
-  if (frame === undefined || position === undefined) return undefined;
+  const part = railPartNamed(position.part);
+  const ranges = part === undefined ? undefined : state.partRanges?.get(part);
+  if (ranges === undefined || ranges.width !== position.width) return undefined;
   const pointer = readPointer(event);
   if (pointer === undefined) return undefined;
   const block = blockAt(position, pointer.y);
   if (block === undefined) return undefined;
-  const hits = frame.blocks.find(
-    (candidate) => candidate.part === position.part && candidate.side === block.side,
-  )?.hits;
+  const hits = ranges.blocks.find((candidate) => candidate.side === block.side)?.hits;
   if (hits === undefined) return undefined;
   const hit = hits.find((candidate) => candidate.row === pointer.y - block.start);
   if (hit === undefined) return undefined;
@@ -513,6 +546,11 @@ export function handleSectionMouse(
   }
 
   return undefined;
+}
+
+/** The painted part a position names, or `undefined` for a part the rail never wraps. */
+function railPartNamed(part: string): RailPart | undefined {
+  return RAIL_PARTS.find((candidate) => candidate === part);
 }
 
 /** Which of this contributor's two blocks the event's row falls in, and where that block starts. */

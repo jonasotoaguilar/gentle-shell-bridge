@@ -14,7 +14,7 @@
     "type": "git",
     "url": "git+https://github.com/jonasotoaguilar/gentle-shell-bridge.git"
   },
-  "license": "GPL-3.0-or-later",
+  "license": "MIT",
   "files": [
     "src",
     "assets",
